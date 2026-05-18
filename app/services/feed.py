@@ -358,8 +358,16 @@ class FeedService:
                 raise RuntimeError(f"Invalid tar1090 URL: {exc}") from exc
             feeds.append(("primary", f"{base}/data/aircraft.json", "tar1090"))
         else:
-            lat = float(s.get("global_center_lat") or 0.0)
-            lon = float(s.get("global_center_lon") or 0.0)
+            # Prefer the user's receiver coords as the global feed centre — they nearly always
+            # want adsb.lol traffic around their actual location, not some unrelated default.
+            # The dedicated global_center_* fields are only used when receiver coords aren't set.
+            lat = (s.get("global_center_lat") if s.get("global_center_lat") not in (None, "")
+                   else s.get("receiver_lat") if s.get("receiver_lat") not in (None, "")
+                   else 51.5)
+            lon = (s.get("global_center_lon") if s.get("global_center_lon") not in (None, "")
+                   else s.get("receiver_lon") if s.get("receiver_lon") not in (None, "")
+                   else -0.1)
+            lat, lon = float(lat), float(lon)
             nm = int(s.get("global_radius_nm") or 250)
             feeds.append(("primary", ADSB_LOL_URL.format(lat=lat, lon=lon, nm=nm), "adsblol"))
             if self.receiver is None:

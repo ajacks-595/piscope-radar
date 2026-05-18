@@ -772,8 +772,13 @@ input[type="range"] {
   height: 100%;
   fill: currentColor;
   transform-origin: center;
-  transition: transform 0.2s ease;
+  /* No CSS transition by default — at 600+ markers each animating a transform on every
+     WS tick we were burning client CPU (and laptop fans) for negligible visual benefit.
+     The selected aircraft keeps the smooth rotation tween for polish (see below). */
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7));
+}
+.aircraft-marker.selected svg {
+  transition: transform 0.25s ease;
 }
 .aircraft-marker.ground .ac-svg-wrap svg { transform: scale(0.6); }
 .aircraft-marker.selected .ac-svg-wrap svg {

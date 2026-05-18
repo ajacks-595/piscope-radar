@@ -69,6 +69,12 @@ class RadarSweep {
     if (!this.running) return;
     requestAnimationFrame((t) => this._tick(t));
 
+    // CPU budget: cap repaints at ~30 fps. The radar sweep only rotates over 3-5 s, so
+    // a 33 ms frame interval still looks smooth and halves canvas work on high-refresh
+    // displays (60/120 Hz) where the default RAF cadence is wasteful.
+    if (timestamp - this.lastFrame < 33) return;
+    this.lastFrame = timestamp;
+
     if (!this.map || !this.receiver) return;
     const ctx = this.ctx;
     const W = this.canvas.clientWidth;

@@ -648,14 +648,43 @@ function setupMap() {
   // Also catch layout changes that don't fire window resize (e.g. responsive panel toggle, modal open).
   const ro = new ResizeObserver(() => resize());
   ro.observe(document.querySelector('.map-section'));
-  ['move', 'zoom', 'zoomend', 'moveend', 'viewreset'].forEach((evt) => map.on(evt, () => {
-    refreshMapMarkers();
-    refreshTrails();
-    refreshRangeRings();
-    syncLabelPaneAttrs();
-  }));
+  // Leaflet handles marker / polyline re-projection natively on pan/zoom — we don't need
+  // to rebuild any of them per event. The only state we DO need to sync is the label-pane
+  // data attribute (`data-labels-zoomed-out` flips at the configured zoom threshold),
+  // and that's cheap to check on `zoomend`.
+  map.on('zoomend', syncLabelPaneAttrs);
+
+  // Right-click anywhere on the empty map → menu with "Set receiver here". Marker
+  // contextmenu handlers stopPropagation so this only fires on background clicks.
+  map.on('contextmenu', (e) => {
+    const { lat, lng } = e.latlng;
+    showContextMenu(e.originalEvent.clientX, e.originalEvent.clientY, [
+      { label: `📍 Set receiver here (${lat.toFixed(3)}, ${lng.toFixed(3)})`,
+        run: () => setReceiverLocation(lat, lng) },
+      { label: 'Copy coords to clipboard',
+        run: () => navigator.clipboard?.writeText(`${lat.toFixed(5)}, ${lng.toFixed(5)}`)
+                    .then(() => toast('Coords copied')) },
+    ]);
+  });
+
   // Initial pane attribute write so the CSS knows what mode to use immediately.
   syncLabelPaneAttrs();
+}
+
+async function setReceiverLocation(lat, lon) {
+  state.settings.receiver_lat = lat;
+  state.settings.receiver_lon = lon;
+  // Keep global feed centre in sync so adsb.lol queries also recentre.
+  state.settings.global_center_lat = lat;
+  state.settings.global_center_lon = lon;
+  await fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ receiver_lat: lat, receiver_lon: lon,
+                            global_center_lat: lat, global_center_lon: lon }) });
+  state.receiver = { lat, lon };
+  refreshReceiverMarker();
+  refreshRangeRings();
+  if (radar) radar.setReceiver(state.receiver);
+  toast(`Receiver set to ${lat.toFixed(3)}, ${lon.toFixed(3)}`);
 }
 
 function fitToData() {
@@ -815,8 +844,17 @@ function refreshMapMarkers() {
     seen.add(ac.hex);
     const existing = aircraftMarkers.get(ac.hex);
     if (existing) {
-      existing.setLatLng([ac.lat, ac.lon]);
-      updateMarkerVisual(existing, ac);
+      // Diff-skip: stringify everything visible into a signature and only touch the DOM
+      // when the signature changes. With 600+ aircraft updating every 2 s, this drops
+      // the per-tick CPU dramatically (most aircraft are unchanged from poll to poll).
+      const sig = `${ac.lat}|${ac.lon}|${ac.heading ?? 0}|${ac.altitude_band}|`
+                + `${ac.is_emergency_squawk?1:0}|${ac.on_ground?1:0}|${ac.military?1:0}|`
+                + `${state.selectedHex === ac.hex?1:0}|${state.settings.map_label_mode || 'off'}`;
+      if (existing._sig !== sig) {
+        existing._sig = sig;
+        existing.setLatLng([ac.lat, ac.lon]);
+        updateMarkerVisual(existing, ac);
+      }
     } else {
       const marker = createMarker(ac);
       marker.addTo(markersLayer);
@@ -998,19 +1036,36 @@ function speedColor(speed) {
   return `rgb(${r},${g},80)`;
 }
 
+// Cache the parameters that drove the last trail render per hex, so we can short-circuit
+// the (expensive) rebuild for aircraft that didn't actually move this poll.
+const _trailRenderCache = new Map();   // hex → { len, mode, fade, isSel, anySel }
+
 function refreshTrails() {
   if (!map) return;
   const mode = state.settings.trail_colour_mode || 'single';
   const fade = state.settings.trail_fade !== false;
   const accent = themeColors.mapTrail;
+  const anySel = !!state.selectedHex;
   const seen = new Set();
   for (const [hex, pts] of state.trails) {
     if (!pts.length) continue;
     seen.add(hex);
     const isSel = hex === state.selectedHex;
-    const baseOpacity = state.selectedHex ? (isSel ? 0.95 : 0.18) : 0.55;
+    // Diff-skip: if nothing that affects the trail's rendering changed since last poll,
+    // leave the existing polylines alone. The hot path here is "the aircraft is on the
+    // map but didn't move", which is most aircraft on most ticks.
+    const cached = _trailRenderCache.get(hex);
+    if (cached && cached.len === pts.length && cached.mode === mode && cached.fade === fade
+        && cached.isSel === isSel && cached.anySel === anySel) {
+      continue;
+    }
+    _trailRenderCache.set(hex, { len: pts.length, mode, fade, isSel, anySel });
+
+    const baseOpacity = anySel ? (isSel ? 0.95 : 0.18) : 0.55;
     const weight = isSel ? 2.5 : 1.2;
-    // Drop any previous rendering for this hex (mode may have changed since last refresh).
+    // Drop any previous rendering for this hex — we always rebuild rather than reuse polyline
+    // segments because the per-segment style (colour by altitude band etc.) needs recompute
+    // on every change anyway. The diff-skip above is what actually saves CPU.
     const old = aircraftTrails.get(hex);
     if (old) {
       if (Array.isArray(old)) old.forEach((p) => trailsLayer.removeLayer(p));
@@ -1022,7 +1077,6 @@ function refreshTrails() {
       poly.addTo(trailsLayer);
       aircraftTrails.set(hex, poly);
     } else {
-      // Segmented rendering: lets us colour or fade per segment.
       const segs = [];
       for (let i = 0; i < pts.length - 1; i++) {
         const a = pts[i], b = pts[i + 1];
@@ -1044,6 +1098,7 @@ function refreshTrails() {
       if (Array.isArray(val)) val.forEach((p) => trailsLayer.removeLayer(p));
       else trailsLayer.removeLayer(val);
       aircraftTrails.delete(hex);
+      _trailRenderCache.delete(hex);
     }
   }
 }
