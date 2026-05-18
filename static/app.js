@@ -151,7 +151,7 @@ let bookmarkedHexes = new Set();   // mirror of /api/bookmarks for instant ★ r
 
 // ---------- WebSocket client ----------
 
-class PiScope RadarClient {
+class PiScopeClient {
   constructor() {
     this.ws = null;
     this.backoff = 1000;
@@ -2666,7 +2666,7 @@ async function init() {
   await loadSettings();
   setupMap();
   applySettingsToUI();   // re-apply after radar is created
-  const client = new PiScope RadarClient();
+  const client = new PiScopeClient();
   client.connect();
   // Best-effort initial REST fetch in case WS hasn't connected yet
   try {

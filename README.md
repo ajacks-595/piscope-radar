@@ -8,6 +8,8 @@
 > Designed for LAN use — no auth, no HTTPS dance, no cloud accounts. Open
 > `http://<pi-ip>/piscope` and you're tracking aircraft.
 
+![PiScope Radar — radar classic theme over the UK](docs/screenshots/01-overview.jpg)
+
 ## Highlights
 
 - **Live map** with custom rotated aircraft silhouettes, altitude-banded colouring, trails (single / by altitude / by speed gradient), range rings, and a receiver pulse marker
@@ -27,6 +29,45 @@
 - **PWA install** — adds to your phone homescreen, offline-aware
 - **Keyboard shortcuts** for everything (`?` for help)
 - **`piscope` admin CLI** for status / logs / backup / restore / health
+
+## A few looks
+
+### Detail panel with compass rose, signal bars, photo, and route
+
+![Aircraft detail panel](docs/screenshots/02-detail-panel.jpg)
+
+### Theme gallery (11 included — a few favourites)
+
+| Radar Modern (cyan ATC scope) | Terminal (CRT amber) |
+|---|---|
+| ![Radar Modern](docs/screenshots/03-radar-modern.jpg) | ![Terminal](docs/screenshots/04-terminal.jpg) |
+
+| Synthwave (80s neon) | Nord (frost on polar night) |
+|---|---|
+| ![Synthwave](docs/screenshots/05-synthwave.jpg) | ![Nord](docs/screenshots/06-nord.jpg) |
+
+### Polar coverage diagram
+
+Tells you exactly which compass bearings your antenna is weakest in. All-time max
+range per integer-degree bearing, updated live.
+
+![Polar coverage chart](docs/screenshots/07-stats-polar.jpg)
+
+### tar1090-style full info labels
+
+Toggle Settings → Map → "Aircraft labels" to switch between **off**, **callsign only**,
+and **full info**. Full mode auto-hides below a configurable zoom so cluttered airspace
+stays readable.
+
+![Full info labels](docs/screenshots/08-labels-full.jpg)
+
+### Mobile / PWA
+
+The topbar wraps onto a second row below 900 px. Install to your phone homescreen via
+the browser's "Add to Home Screen" — it gets a manifest + service worker and behaves
+like a real app.
+
+<img src="docs/screenshots/09-mobile.jpg" alt="Mobile responsive layout" width="320" />
 
 ## Quick install (Raspberry Pi OS / PiAware)
 
