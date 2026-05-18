@@ -1,0 +1,53 @@
+# PiScope Radar — files that should NEVER be committed.
+
+# The SQLite database holds FA + OpenAIP API keys and the user's recorded data.
+# Committing it would leak both. The installer creates a fresh one on first run.
+piscope.db
+piscope.db-wal
+piscope.db-shm
+piscope.db.bak
+# Legacy filenames from earlier SkyWatch-branded installs:
+skywatch.db
+skywatch.db-wal
+skywatch.db-shm
+skywatch.db.bak
+*.db
+*.db-wal
+*.db-shm
+
+# Backup zips produced by /api/export or `piscope backup` — same secrets concern.
+piscope-backup-*.zip
+piscope-*.zip
+skywatch-backup-*.zip
+skywatch-*.zip
+
+# Emergency snapshot JSONs the browser downloads automatically.
+emergency-*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+env/
+.pytest_cache/
+*.egg-info/
+.mypy_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local Claude Code tooling state (the global .claude config still works; this is per-project state).
+.claude/launch.json
+.claude/settings.local.json
+.claude/projects/
+
+# Logs
+*.log

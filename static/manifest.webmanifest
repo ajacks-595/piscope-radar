@@ -1,0 +1,19 @@
+{
+  "name": "PiScope Radar",
+  "short_name": "PiScope Radar",
+  "description": "Self-hosted ADS-B flight tracker for a Raspberry Pi.",
+  "start_url": "/piscope",
+  "scope": "/piscope",
+  "display": "standalone",
+  "background_color": "#050a05",
+  "theme_color": "#00ff40",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/piscope/static/icons/aircraft.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

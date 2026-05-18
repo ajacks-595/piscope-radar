@@ -1,0 +1,335 @@
+/* Theme palettes — ported 1:1 from ADS-B macOS App/source/Models/Theme.swift.
+   Each block sets the variables consumed by app.css and the JS map/radar code. */
+
+:root {
+  --font-mono: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+  --font-system: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-serif: 'Georgia', 'Times New Roman', serif;
+
+  --band-emergency: #ff3030;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+}
+
+/* -------- RADAR CLASSIC -------- */
+[data-theme="radar"] {
+  --bg: rgb(5, 10, 5);
+  --panel-bg: rgb(10, 15, 10);
+  --surface-bg: rgb(15, 25, 15);
+  --primary-text: rgb(0, 255, 64);
+  --secondary-text: rgb(0, 140, 46);
+  --tertiary-text: rgb(0, 51, 20);
+  --accent: rgb(0, 255, 64);
+  --accent-muted: rgb(0, 140, 46);
+  --alert: rgb(255, 51, 51);
+  --success: rgb(0, 255, 64);
+  --warning: rgb(255, 204, 0);
+  --separator: rgb(0, 51, 20);
+  --map-trail: rgba(0, 140, 46, 0.7);
+  --map-range-ring: rgba(0, 51, 20, 0.9);
+  --map-receiver: #ffffff;
+  --aircraft-selected: #ffffff;
+  --band-ground: rgb(102, 102, 102);
+  --band-low: rgb(0, 255, 64);
+  --band-mid: rgb(230, 255, 77);
+  --band-high: rgb(255, 179, 26);
+  --band-very-high: rgb(255, 77, 77);
+  --font-body: var(--font-mono);
+  --font-title: var(--font-mono);
+}
+
+/* -------- RADAR MODERN -------- */
+[data-theme="radarModern"] {
+  --bg: rgb(3, 8, 13);
+  --panel-bg: rgb(5, 13, 20);
+  --surface-bg: rgb(10, 20, 33);
+  --primary-text: rgb(247, 247, 247);
+  --secondary-text: rgb(51, 224, 255);
+  --tertiary-text: rgb(20, 115, 140);
+  --accent: rgb(51, 224, 255);
+  --accent-muted: rgb(20, 115, 140);
+  --alert: rgb(255, 64, 102);
+  --success: rgb(77, 255, 153);
+  --warning: rgb(255, 199, 51);
+  --separator: rgb(10, 46, 61);
+  --map-trail: rgba(51, 224, 255, 0.65);
+  --map-range-ring: rgba(20, 115, 140, 0.7);
+  --map-receiver: #ffffff;
+  --aircraft-selected: rgb(255, 255, 242);
+  --band-ground: rgb(115, 115, 115);
+  --band-low: rgb(77, 255, 153);
+  --band-mid: rgb(51, 224, 255);
+  --band-high: rgb(255, 166, 51);
+  --band-very-high: rgb(255, 77, 115);
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+}
+
+/* -------- TERMINAL (CRT amber) -------- */
+[data-theme="terminal"] {
+  --bg: #000000;
+  --panel-bg: #000000;
+  --surface-bg: rgb(13, 13, 13);
+  --primary-text: rgb(255, 176, 0);
+  --secondary-text: rgb(153, 107, 0);
+  --tertiary-text: rgb(77, 54, 0);
+  --accent: rgb(255, 176, 0);
+  --accent-muted: rgb(153, 107, 0);
+  --alert: rgb(255, 77, 77);
+  --success: rgb(77, 255, 77);
+  --warning: rgb(255, 176, 0);
+  --separator: rgb(77, 54, 0);
+  --map-trail: rgba(153, 107, 0, 0.7);
+  --map-range-ring: rgba(77, 54, 0, 0.8);
+  --map-receiver: #ffffff;
+  --aircraft-selected: #ffffff;
+  --band-ground: rgb(77, 54, 0);
+  --band-low: rgb(255, 176, 0);
+  --band-mid: rgb(255, 176, 0);
+  --band-high: rgb(255, 176, 0);
+  --band-very-high: rgb(255, 176, 0);
+  --font-body: var(--font-mono);
+  --font-title: var(--font-mono);
+}
+
+/* -------- LIGHT -------- */
+[data-theme="light"] {
+  --bg: #fafafa;
+  --panel-bg: #ffffff;
+  --surface-bg: #f2f2f2;
+  --primary-text: #000000;
+  --secondary-text: #595959;
+  --tertiary-text: #999999;
+  --accent: rgb(0, 122, 255);
+  --accent-muted: rgba(0, 122, 255, 0.6);
+  --alert: rgb(230, 51, 51);
+  --success: rgb(51, 179, 77);
+  --warning: rgb(242, 153, 26);
+  --separator: #d9d9d9;
+  --map-trail: rgba(0, 0, 0, 0.4);
+  --map-range-ring: rgba(0, 0, 0, 0.18);
+  --map-receiver: rgb(0, 122, 255);
+  --aircraft-selected: rgb(0, 122, 255);
+  --band-ground: #808080;
+  --band-low: rgb(51, 179, 77);
+  --band-mid: rgb(242, 191, 26);
+  --band-high: rgb(242, 128, 26);
+  --band-very-high: rgb(217, 51, 51);
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+}
+
+/* -------- DARK -------- */
+[data-theme="dark"] {
+  --bg: rgb(20, 20, 20);
+  --panel-bg: rgb(31, 31, 31);
+  --surface-bg: rgb(41, 41, 41);
+  --primary-text: rgb(242, 242, 242);
+  --secondary-text: rgb(179, 179, 179);
+  --tertiary-text: rgb(128, 128, 128);
+  --accent: rgb(0, 181, 217);
+  --accent-muted: rgba(0, 181, 217, 0.6);
+  --alert: rgb(255, 89, 89);
+  --success: rgb(77, 217, 102);
+  --warning: rgb(255, 179, 51);
+  --separator: rgb(64, 64, 64);
+  --map-trail: rgba(255, 255, 255, 0.4);
+  --map-range-ring: rgba(255, 255, 255, 0.18);
+  --map-receiver: rgb(0, 217, 255);
+  --aircraft-selected: rgb(0, 217, 255);
+  --band-ground: rgb(140, 140, 140);
+  --band-low: rgb(102, 217, 128);
+  --band-mid: rgb(255, 217, 77);
+  --band-high: rgb(255, 153, 51);
+  --band-very-high: rgb(255, 102, 102);
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+}
+
+/* -------- TACTICAL -------- */
+[data-theme="tactical"] {
+  --bg: rgb(8, 15, 20);
+  --panel-bg: rgb(13, 23, 31);
+  --surface-bg: rgb(20, 33, 43);
+  --primary-text: rgb(242, 242, 242);
+  --secondary-text: rgb(179, 179, 179);
+  --tertiary-text: rgb(128, 128, 128);
+  --accent: rgb(51, 217, 255);
+  --accent-muted: rgb(26, 128, 166);
+  --alert: rgb(255, 77, 115);
+  --success: rgb(51, 242, 217);
+  --warning: rgb(255, 204, 77);
+  --separator: rgb(51, 51, 51);
+  --map-trail: rgba(51, 217, 255, 0.6);
+  --map-range-ring: rgba(51, 217, 255, 0.4);
+  --map-receiver: rgb(51, 242, 217);
+  --aircraft-selected: rgb(242, 255, 255);
+  --band-ground: rgb(140, 140, 140);
+  --band-low: rgb(51, 242, 217);
+  --band-mid: rgb(51, 217, 255);
+  --band-high: rgb(128, 217, 255);
+  --band-very-high: rgb(255, 128, 217);
+  --font-body: var(--font-system);
+  --font-title: var(--font-mono);
+}
+
+/* -------- SECTIONAL (paper aviation chart) -------- */
+[data-theme="sectional"] {
+  --bg: rgb(247, 237, 209);
+  --panel-bg: rgb(252, 242, 217);
+  --surface-bg: rgb(235, 221, 186);
+  --primary-text: rgb(51, 38, 26);
+  --secondary-text: rgb(115, 89, 64);
+  --tertiary-text: rgb(179, 153, 128);
+  --accent: rgb(165, 51, 115);
+  --accent-muted: rgba(165, 51, 115, 0.6);
+  --alert: rgb(204, 51, 51);
+  --success: rgb(51, 140, 77);
+  --warning: rgb(217, 140, 26);
+  --separator: rgb(179, 153, 128);
+  --map-trail: rgba(51, 38, 26, 0.5);
+  --map-range-ring: rgba(51, 38, 26, 0.25);
+  --map-receiver: rgb(165, 51, 115);
+  --aircraft-selected: rgb(165, 51, 115);
+  --band-ground: rgb(115, 89, 64);
+  --band-low: rgb(77, 140, 77);
+  --band-mid: rgb(217, 153, 38);
+  --band-high: rgb(204, 102, 38);
+  --band-very-high: rgb(191, 51, 51);
+  --font-body: var(--font-system);
+  --font-title: var(--font-serif);
+}
+
+/* -------- SOLARIZED DARK -------- */
+[data-theme="solarizedDark"] {
+  --bg: #002b36;
+  --panel-bg: #073642;
+  --surface-bg: #0a4051;
+  --primary-text: #839496;
+  --secondary-text: #93a1a1;
+  --tertiary-text: #586e75;
+  --accent: #268bd2;
+  --accent-muted: #2aa198;
+  --alert: #dc322f;
+  --success: #859900;
+  --warning: #b58900;
+  --separator: #1a4e5c;
+  --map-trail: rgba(42, 161, 152, 0.7);
+  --map-range-ring: rgba(42, 161, 152, 0.35);
+  --map-receiver: #d33682;
+  --aircraft-selected: #b58900;
+  --band-ground: #586e75;
+  --band-low: #859900;
+  --band-mid: #b58900;
+  --band-high: #cb4b16;
+  --band-very-high: #dc322f;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+}
+
+/* -------- SOLARIZED LIGHT -------- */
+[data-theme="solarizedLight"] {
+  --bg: #fdf6e3;
+  --panel-bg: #f7f0db;
+  --surface-bg: #eee8d5;
+  --primary-text: #073642;
+  --secondary-text: #657b83;
+  --tertiary-text: #93a1a1;
+  --accent: #268bd2;
+  --accent-muted: #2aa198;
+  --alert: #dc322f;
+  --success: #859900;
+  --warning: #cb4b16;
+  --separator: #eee8d5;
+  --map-trail: rgba(88, 110, 117, 0.5);
+  --map-range-ring: rgba(88, 110, 117, 0.3);
+  --map-receiver: #d33682;
+  --aircraft-selected: #d33682;
+  --band-ground: #586e75;
+  --band-low: #859900;
+  --band-mid: #b58900;
+  --band-high: #cb4b16;
+  --band-very-high: #dc322f;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+}
+
+/* -------- NORD -------- */
+[data-theme="nord"] {
+  --bg: #2e3440;
+  --panel-bg: #3b4252;
+  --surface-bg: #434c5e;
+  --primary-text: #eceff4;
+  --secondary-text: #d8dee9;
+  --tertiary-text: #4c566a;
+  --accent: #88c0d0;
+  --accent-muted: #5e81ac;
+  --alert: #bf616a;
+  --success: #a3be8c;
+  --warning: #ebcb8b;
+  --separator: #4c566a;
+  --map-trail: rgba(143, 188, 187, 0.7);
+  --map-range-ring: rgba(94, 129, 172, 0.4);
+  --map-receiver: #b48ead;
+  --aircraft-selected: #e5e9f0;
+  --band-ground: #4c566a;
+  --band-low: #a3be8c;
+  --band-mid: #ebcb8b;
+  --band-high: #d08770;
+  --band-very-high: #bf616a;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+}
+
+/* -------- SYNTHWAVE -------- */
+[data-theme="synthwave"] {
+  --bg: rgb(13, 5, 38);
+  --panel-bg: rgb(23, 10, 56);
+  --surface-bg: rgb(36, 18, 77);
+  --primary-text: rgb(250, 250, 250);
+  --secondary-text: rgb(199, 158, 255);
+  --tertiary-text: rgb(140, 115, 204);
+  --accent: rgb(255, 51, 199);
+  --accent-muted: rgb(255, 115, 217);
+  --alert: rgb(255, 77, 102);
+  --success: rgb(26, 255, 235);
+  --warning: rgb(255, 242, 115);
+  --separator: rgb(64, 26, 115);
+  --map-trail: rgba(255, 51, 199, 0.65);
+  --map-range-ring: rgba(255, 115, 217, 0.35);
+  --map-receiver: rgb(255, 242, 115);
+  --aircraft-selected: rgb(255, 242, 115);
+  --band-ground: rgb(115, 89, 179);
+  --band-low: rgb(26, 255, 235);
+  --band-mid: rgb(199, 158, 255);
+  --band-high: rgb(255, 115, 217);
+  --band-very-high: rgb(255, 51, 199);
+  --font-body: var(--font-system);
+  --font-title: var(--font-mono);
+}
+
+/* -------- Terminal CRT scanline overlay -------- */
+[data-theme="terminal"] #map::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent 0px,
+    transparent 2px,
+    rgba(0, 0, 0, 0.18) 2px,
+    rgba(0, 0, 0, 0.18) 4px
+  );
+  pointer-events: none;
+  z-index: 1000;
+  mix-blend-mode: multiply;
+}
+
+/* Hide map tiles in terminal theme (we render a coordinate grid instead) */
+[data-theme="terminal"] .leaflet-tile-pane {
+  display: none;
+}
+[data-theme="terminal"] .leaflet-container {
+  background: #000000;
+}

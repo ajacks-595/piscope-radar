@@ -1,0 +1,587 @@
+from __future__ import annotations
+
+import asyncio
+import ipaddress
+import json
+import logging
+import time
+from collections import deque
+from datetime import datetime, timezone
+from typing import Any, Optional
+from urllib.parse import urlparse
+
+import httpx
+
+from ..models.aircraft import Aircraft, aircraft_from_wire, haversine_nm
+from . import backups as backups_store
+from . import events as events_store
+from . import hexdb as hexdb_service
+from . import insights as insights_store
+from . import records as records_store
+from . import settings as settings_store
+from . import webhooks as webhooks_service
+
+
+log = logging.getLogger("piscope.feed")
+
+ADSB_LOL_URL = "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{nm}"
+
+# Block link-local + the AWS/cloud instance-metadata addresses as a defense-in-depth measure.
+# Other private ranges are allowed since the user genuinely wants to point at LAN tar1090 hosts.
+_BLOCKED_METADATA_HOSTS = {"169.254.169.254", "fd00:ec2::254", "metadata.google.internal"}
+
+
+def validate_external_url(raw: str) -> str:
+    """Return a sanitised http(s) URL, or raise ValueError. Used wherever user-supplied URLs
+    are about to be fetched by the server (SSRF protection)."""
+    raw = (raw or "").strip()
+    if not raw:
+        raise ValueError("URL is empty")
+    parsed = urlparse(raw)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Unsupported scheme: {parsed.scheme!r}; only http/https are allowed")
+    host = (parsed.hostname or "").strip()
+    if not host:
+        raise ValueError("URL has no host component")
+    if host in _BLOCKED_METADATA_HOSTS:
+        raise ValueError("Refusing to fetch cloud-metadata endpoint")
+    # If the host looks like a literal IP, block link-local + AWS metadata range explicitly.
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_link_local:
+            raise ValueError("Link-local IPs are not allowed")
+    except ValueError:
+        pass  # not an IP literal; that's fine
+    return raw
+
+
+class FeedService:
+    """Polls a tar1090 (or adsb.lol) JSON feed and keeps an in-memory aircraft store.
+
+    Subscribers (e.g. the WebSocket endpoint) receive a snapshot after each successful poll
+    via async queues registered through `subscribe()`.
+    """
+
+    def __init__(self) -> None:
+        self.aircraft: dict[str, Aircraft] = {}
+        self.trails: dict[str, deque[tuple[float, float, float]]] = {}  # hex → deque of (lat, lon, ts)
+        self.receiver: Optional[dict[str, float]] = None
+        self.connection_state: str = "idle"            # idle | polling | error
+        self.last_error: Optional[str] = None
+        self.total_messages: int = 0
+        self.last_poll_at: float = 0.0
+        self.feed_now: float = 0.0
+        # Receiver health counters surfaced through /api/health and the topbar.
+        self.start_time: float = time.time()
+        self.poll_count: int = 0
+        self.error_count: int = 0
+        self.last_poll_duration_ms: float = 0.0
+        # Component-level perf so we can tell HTTP-fetch wait from SQL/CPU work.
+        self.last_fetch_ms: float = 0.0
+        self.last_sql_ms: float = 0.0
+        self.last_process_ms: float = 0.0
+        # Per-feed status (multi-receiver support). Keyed by feed-source name.
+        self.feed_status: dict[str, dict[str, Any]] = {}
+
+        # Daily aggregates. Reset when the date rolls over.
+        self._daily_date: str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self._daily_unique: set[str] = set()
+        self._daily_max_range: float = 0.0
+        self._daily_emergencies: set[str] = set()
+        self._daily_military: set[str] = set()
+
+        # De-dup for event emission. Re-armed when an aircraft leaves coverage.
+        self._notified_military: set[str] = set()
+        self._notified_emergency: set[str] = set()
+        self._notified_watchlist: set[str] = set()
+
+        # Snapshot persistence cadence — every Nth poll write to feed_snapshots. Read from
+        # settings on each poll so it can be retuned without a restart.
+        self._snapshot_counter = 0
+        self._next_prune_at = 0.0
+        # Trail deltas: per-poll map of hex → newest trail point (only set if the position
+        # changed this poll). Frontends append these to their local trail history; the
+        # full history is sent only on initial WS connect (see `snapshot()`).
+        self._last_trail_appends: dict[str, tuple] = {}
+        # Cache of decoded settings + the version that produced it; lets the poll loop
+        # skip the per-cycle JSON merge when nothing changed.
+        self._settings_cached: Optional[dict[str, Any]] = None
+        self._settings_cache_version: int = -1
+
+        self._subscribers: list[asyncio.Queue] = []
+        self._task: Optional[asyncio.Task] = None
+        self._enrich_task: Optional[asyncio.Task] = None
+        self._stop = asyncio.Event()
+        self._client: Optional[httpx.AsyncClient] = None
+
+        # Hex IDs queued for hexdb type-enrichment. Some tar1090 deployments omit `t` for many
+        # aircraft, so we backfill the ICAO type code from hexdb in the background.
+        self._enrich_pending: set[str] = set()
+        self._enriched_hexes: set[str] = set()
+        # Map hex → ICAO type code we've discovered via hexdb. Lets subsequent polls reuse it.
+        self._known_types: dict[str, str] = {}
+        # Types discovered by the enrichment loop but not yet written to seen_types. Drained
+        # into the poll batch so we don't open competing write transactions on SQLite.
+        self._pending_type_records: list[str] = []
+
+    # --- lifecycle -----------------------------------------------------------
+
+    async def start(self) -> None:
+        if self._task is not None:
+            return
+        self._client = httpx.AsyncClient(timeout=8.0)
+        self._stop.clear()
+        self._task = asyncio.create_task(self._run(), name="feed-poll-loop")
+        self._enrich_task = asyncio.create_task(self._enrichment_loop(), name="feed-type-enrich")
+        log.info("FeedService started")
+
+    async def stop(self) -> None:
+        self._stop.set()
+        for t in (self._task, self._enrich_task):
+            if t:
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if self._client:
+            await self._client.aclose()
+        self._task = None
+        self._enrich_task = None
+        self._client = None
+
+    async def _enrichment_loop(self) -> None:
+        """Drain `_enrich_pending` slowly so we don't hammer hexdb. ~one lookup per 0.2 s."""
+        while not self._stop.is_set():
+            try:
+                if self._enrich_pending:
+                    hex_id = self._enrich_pending.pop()
+                    self._enriched_hexes.add(hex_id)
+                    try:
+                        result = await hexdb_service.lookup(hex_id)
+                    except Exception:
+                        result = None
+                    if result:
+                        icao_type = (result.get("icao_type_code") or "").strip().upper()
+                        if icao_type:
+                            self._known_types[hex_id] = icao_type
+                            # Defer the write — the next poll's batch will flush it. This avoids
+                            # opening a competing SQLite write transaction every 0.2 s, which
+                            # was causing the poll loop to block for the busy_timeout (5 s).
+                            self._pending_type_records.append(icao_type)
+                            # Backfill the live record so the next snapshot carries the type.
+                            cur = self.aircraft.get(hex_id)
+                            if cur and not cur.type_code:
+                                cur.type_code = icao_type
+                await asyncio.sleep(0.2)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("enrichment loop error: %s", exc)
+                await asyncio.sleep(1.0)
+
+    # --- pub/sub -------------------------------------------------------------
+
+    def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=4)
+        self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        if q in self._subscribers:
+            self._subscribers.remove(q)
+
+    def _broadcast(self, payload: dict[str, Any]) -> None:
+        for q in list(self._subscribers):
+            try:
+                if q.full():
+                    # Drop the oldest queued snapshot if a client is slow — we don't want unbounded growth.
+                    try:
+                        q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                q.put_nowait(payload)
+            except Exception as exc:
+                log.warning("broadcast to subscriber failed: %s", exc)
+
+    # --- snapshot for new connections ---------------------------------------
+
+    def snapshot(self) -> dict[str, Any]:
+        """Full snapshot — sent on initial WS connect and from the REST fallback. The live
+        broadcast (`broadcast_payload`) is much smaller because it only ships new trail points
+        rather than the full trail history per aircraft."""
+        return {
+            "type": "aircraft_update",
+            "now": self.feed_now,
+            "polled_at": self.last_poll_at,
+            "aircraft": [a.to_json() for a in self.aircraft.values()],
+            "receiver": self.receiver,
+            "connection_state": self.connection_state,
+            "last_error": self.last_error,
+            "total_messages": self.total_messages,
+            "trails": {hex_id: list(pts) for hex_id, pts in self.trails.items()},
+            "trails_full": True,    # tells the client to replace its trail state
+            "feeds": self.feed_status,
+        }
+
+    def broadcast_payload(self) -> dict[str, Any]:
+        """Slim payload for WS broadcasts. Sends just the most recently appended trail
+        point per aircraft as `trail_appends` instead of the full 30-point history — the
+        client merges these into its local trail state. Saves ~70% of WS bandwidth.
+        """
+        return {
+            "type": "aircraft_update",
+            "now": self.feed_now,
+            "polled_at": self.last_poll_at,
+            "aircraft": [a.to_json() for a in self.aircraft.values()],
+            "receiver": self.receiver,
+            "connection_state": self.connection_state,
+            "last_error": self.last_error,
+            "total_messages": self.total_messages,
+            "trail_appends": self._last_trail_appends,
+            "feeds": self.feed_status,
+        }
+
+    def health(self) -> dict[str, Any]:
+        uptime = time.time() - self.start_time
+        return {
+            "uptime_seconds": round(uptime, 1),
+            "polls": self.poll_count,
+            "errors": self.error_count,
+            "last_poll_duration_ms": round(self.last_poll_duration_ms, 1),
+            "last_fetch_ms": round(self.last_fetch_ms, 1),
+            "last_sql_ms": round(self.last_sql_ms, 1),
+            "last_process_ms": round(self.last_process_ms, 1),
+            "polls_per_min": round((self.poll_count / max(1, uptime)) * 60.0, 2),
+            "connection_state": self.connection_state,
+            "last_error": self.last_error,
+            "receiver": self.receiver,
+            "feeds": self.feed_status,
+            "subscriber_count": len(self._subscribers),
+            "aircraft_count": len(self.aircraft),
+            "trails_count": len(self.trails),
+            "daily": {
+                "date": self._daily_date,
+                "unique_aircraft": len(self._daily_unique),
+                "max_range_nm": round(self._daily_max_range, 1),
+                "emergencies": len(self._daily_emergencies),
+                "military_seen": len(self._daily_military),
+            },
+        }
+
+    # --- poll loop -----------------------------------------------------------
+
+    async def _run(self) -> None:
+        # Probe receiver position once at startup (best effort).
+        await self._try_load_receiver()
+        while not self._stop.is_set():
+            try:
+                await self._poll_once()
+            except Exception as exc:
+                log.exception("poll cycle failed: %s", exc)
+                self.connection_state = "error"
+                self.last_error = str(exc)
+                self.error_count += 1
+            interval = max(1, int(settings_store.get("poll_interval") or 2))
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _try_load_receiver(self) -> None:
+        raw = settings_store.get("tar1090_base_url") or ""
+        if not raw:
+            # Use configured receiver lat/lon if present
+            lat = settings_store.get("receiver_lat")
+            lon = settings_store.get("receiver_lon")
+            if lat and lon:
+                self.receiver = {"lat": float(lat), "lon": float(lon)}
+            return
+        try:
+            base = validate_external_url(raw).rstrip("/")
+        except ValueError as exc:
+            log.warning("Refusing to probe receiver.json: %s", exc)
+            return
+        try:
+            r = await self._client.get(f"{base}/data/receiver.json")
+            r.raise_for_status()
+            data = r.json()
+            lat = data.get("lat")
+            lon = data.get("lon")
+            if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+                self.receiver = {"lat": float(lat), "lon": float(lon)}
+                settings_store.set_many({"receiver_lat": float(lat), "receiver_lon": float(lon)})
+        except Exception as exc:
+            log.info("receiver.json probe failed (will rely on configured location): %s", exc)
+
+    async def _fetch_one(self, name: str, url: str, *, kind: str) -> list[dict[str, Any]]:
+        """Fetch a single source. Tracks per-feed status."""
+        started = time.time()
+        try:
+            r = await self._client.get(url, headers={"User-Agent": "PiScope-Radar/1.0"})
+            r.raise_for_status()
+            data = r.json()
+            rows = (data.get("aircraft") if kind == "tar1090" else (data.get("ac") or data.get("aircraft"))) or []
+            self.feed_status[name] = {
+                "kind": kind, "url": url, "ok": True, "rows": len(rows),
+                "duration_ms": round((time.time() - started) * 1000, 1), "last_ok_at": time.time(),
+            }
+            return rows
+        except Exception as exc:
+            self.feed_status[name] = {
+                "kind": kind, "url": url, "ok": False, "error": type(exc).__name__,
+                "duration_ms": round((time.time() - started) * 1000, 1),
+                "last_error_at": time.time(),
+            }
+            log.warning("feed %s fetch failed: %s", name, exc)
+            return []
+
+    async def _poll_once(self) -> None:
+        self.connection_state = "polling"
+        poll_start = time.time()
+        # Reuse the cached settings dict when nothing has been written since the last poll.
+        v = settings_store.cache_version()
+        if v != self._settings_cache_version or self._settings_cached is None:
+            self._settings_cached = settings_store.get_all(redact=False)
+            self._settings_cache_version = v
+        s = self._settings_cached
+        feed_mode = s.get("feed_mode") or "global"
+        tar_base = (s.get("tar1090_base_url") or "").strip()
+
+        # Build the list of feeds to poll this cycle. The primary depends on feed_mode; any
+        # extra feeds from the settings are merged on top (latest poll wins per hex).
+        feeds: list[tuple[str, str, str]] = []   # (name, url, kind)
+        if feed_mode == "local" and tar_base:
+            try:
+                base = validate_external_url(tar_base).rstrip("/")
+            except ValueError as exc:
+                raise RuntimeError(f"Invalid tar1090 URL: {exc}") from exc
+            feeds.append(("primary", f"{base}/data/aircraft.json", "tar1090"))
+        else:
+            lat = float(s.get("global_center_lat") or 0.0)
+            lon = float(s.get("global_center_lon") or 0.0)
+            nm = int(s.get("global_radius_nm") or 250)
+            feeds.append(("primary", ADSB_LOL_URL.format(lat=lat, lon=lon, nm=nm), "adsblol"))
+            if self.receiver is None:
+                self.receiver = {"lat": lat, "lon": lon}
+
+        try:
+            extra = json.loads(s.get("extra_feeds_json") or "[]")
+        except Exception:
+            extra = []
+        for feed in (extra if isinstance(extra, list) else []):
+            try:
+                name = str(feed.get("name") or "extra")
+                raw = feed.get("url") or ""
+                base = validate_external_url(raw).rstrip("/")
+                feeds.append((name, f"{base}/data/aircraft.json", "tar1090"))
+            except Exception as exc:
+                log.info("ignoring invalid extra feed: %s", exc)
+
+        # Poll all feeds in parallel.
+        fetch_started = time.time()
+        results = await asyncio.gather(
+            *[self._fetch_one(name, url, kind=kind) for (name, url, kind) in feeds],
+            return_exceptions=False,
+        )
+        self.last_fetch_ms = (time.time() - fetch_started) * 1000
+
+        now_ts = time.time()
+        self.feed_now = now_ts
+        self.last_poll_at = now_ts
+        # Aggregate row count across feeds for the topbar "total" indicator.
+        all_rows: list[dict[str, Any]] = []
+        for rows in results:
+            all_rows.extend(rows)
+        self.total_messages = len(all_rows)
+
+        new_store: dict[str, Aircraft] = {}
+        receiver_lat = self.receiver["lat"] if self.receiver else None
+        receiver_lon = self.receiver["lon"] if self.receiver else None
+        trail_len = int(s.get("trail_length") or 30)
+
+        watchlist = events_store.parse_watchlist(s.get("watchlist") or "")
+
+        # Open ONE SQLite connection for the whole poll so polar / heatmap / records / types
+        # writes all share a single transaction. Without this we'd commit per aircraft
+        # (potentially thousands of fsyncs per minute on SD storage).
+        poll_aircraft: list[Aircraft] = []
+        new_appends: dict[str, tuple] = {}
+        # Coalesce per-bucket heatmap counts so we issue one UPSERT per distinct bucket
+        # at the end of the loop, not one per aircraft.
+        heatmap_counts: dict[tuple[int, int], int] = {}
+        sql_started = time.time()
+        with settings_store.batch() as poll_conn:
+            for row in all_rows:
+                ac = aircraft_from_wire(row, now_ts)
+                if not ac:
+                    continue
+                poll_aircraft.append(ac)
+                # If two feeds report the same hex, the later one wins. Preserve the position
+                # iff the newer report omits lat/lon (a mode-S–only echo over an ADS-B fix).
+                existing = new_store.get(ac.hex)
+                if existing is not None and ac.lat is None:
+                    ac.lat = existing.lat
+                    ac.lon = existing.lon
+                if ac.distance_nm is None and ac.lat is not None and ac.lon is not None \
+                        and receiver_lat is not None and receiver_lon is not None:
+                    ac.distance_nm = haversine_nm(receiver_lat, receiver_lon, ac.lat, ac.lon)
+                new_store[ac.hex] = ac
+
+                if ac.lat is not None and ac.lon is not None:
+                    trail = self.trails.get(ac.hex)
+                    if trail is None:
+                        trail = deque(maxlen=trail_len)
+                        self.trails[ac.hex] = trail
+                    if not trail or trail[-1][0] != ac.lat or trail[-1][1] != ac.lon:
+                        # 5-tuple: (lat, lon, ts, altitude_baro_or_None, ground_speed_or_None)
+                        point = (ac.lat, ac.lon, now_ts, ac.altitude_baro, ac.ground_speed)
+                        trail.append(point)
+                        # Remember this point so the broadcast can ship it as a delta.
+                        new_appends[ac.hex] = point
+                    if trail.maxlen != trail_len:
+                        self.trails[ac.hex] = deque(trail, maxlen=trail_len)
+
+                # Daily aggregates
+                self._daily_unique.add(ac.hex)
+                if ac.distance_nm is not None and ac.distance_nm > self._daily_max_range:
+                    self._daily_max_range = ac.distance_nm
+
+                # Insights — polar coverage + heatmap + type ledger (rare alerts) + all-time records.
+                # All four share the same SQLite connection so the per-aircraft work is one row
+                # in the eventual single transaction (committed at the end of the poll).
+                if ac.lat is not None and ac.lon is not None and receiver_lat is not None and receiver_lon is not None:
+                    if ac.distance_nm is not None:
+                        insights_store.update_polar(receiver_lat, receiver_lon,
+                                                    hex_id=ac.hex, lat=ac.lat, lon=ac.lon,
+                                                    distance_nm=ac.distance_nm,
+                                                    conn=poll_conn)
+                    bucket = insights_store.heatmap_bucket(ac.lat, ac.lon)
+                    heatmap_counts[bucket] = heatmap_counts.get(bucket, 0) + 1
+                # Records updated in one batch at the end of the loop (O(5) DB ops total).
+                # If the wire data didn't carry a type code, but we previously enriched it via hexdb,
+                # restore that value before the snapshot ships.
+                if not ac.type_code and ac.hex in self._known_types:
+                    ac.type_code = self._known_types[ac.hex]
+
+                is_new_type = False
+                if ac.type_code:
+                    is_new_type = insights_store.record_type_sighting(ac.type_code, conn=poll_conn)
+                elif ac.hex not in self._enriched_hexes:
+                    # Queue this hex for background type enrichment via hexdb.
+                    self._enrich_pending.add(ac.hex)
+
+                ac_dict = ac.to_json()
+
+                # Event emission (de-duped — re-armed when aircraft leaves coverage below).
+                # Critical: pass `conn=poll_conn` so the event write happens inside our batch
+                # transaction. Opening a fresh connection here would deadlock against our own
+                # write lock until busy_timeout (5 s) fires per event.
+                def _fire(kind: str, payload: dict[str, Any]) -> None:
+                    events_store.record_event(
+                        kind, hex=ac.hex, callsign=ac.callsign, registration=ac.registration,
+                        distance_nm=ac.distance_nm, payload=payload, conn=poll_conn,
+                    )
+                    webhooks_service.fan_out(kind, ac_dict)
+
+                if ac.military and ac.hex not in self._notified_military:
+                    self._notified_military.add(ac.hex)
+                    self._daily_military.add(ac.hex)
+                    _fire("military", {"type_code": ac.type_code, "altitude": ac.altitude_baro})
+                if ac.is_emergency_squawk and ac.hex not in self._notified_emergency:
+                    self._notified_emergency.add(ac.hex)
+                    self._daily_emergencies.add(ac.hex)
+                    _fire("emergency", {"squawk": ac.squawk, "altitude": ac.altitude_baro,
+                                         "lat": ac.lat, "lon": ac.lon, "type_code": ac.type_code})
+                if watchlist and ac.hex not in self._notified_watchlist:
+                    tokens = {t.upper() for t in [ac.callsign, ac.registration, ac.hex] if t}
+                    if tokens & set(watchlist):
+                        self._notified_watchlist.add(ac.hex)
+                        _fire("watchlist", {"type_code": ac.type_code, "altitude": ac.altitude_baro})
+                if is_new_type:
+                    # "rare" only fires after the type has had at least a few seconds to settle —
+                    # avoids alerting on the very first poll of every fresh install.
+                    if time.time() - self.start_time > 30:
+                        _fire("rare", {"type_code": ac.type_code, "altitude": ac.altitude_baro})
+
+            # End of for-loop. Push the per-poll bests for records + heatmap in single batches.
+            records_store.update_records_bulk(poll_aircraft, conn=poll_conn)
+            insights_store.flush_heatmap_batch(heatmap_counts, conn=poll_conn)
+            # Drain anything the enrichment loop queued while this poll was building.
+            pending = list(self._pending_type_records)
+            self._pending_type_records.clear()
+            for type_code in pending:
+                insights_store.record_type_sighting(type_code, conn=poll_conn)
+        self.last_sql_ms = (time.time() - sql_started) * 1000
+
+        # Trail GC + re-arm event de-dup once aircraft drop out of coverage for ≥120 s.
+        for hex_id in list(self.trails.keys()):
+            if hex_id not in new_store:
+                last = self.trails[hex_id][-1] if self.trails[hex_id] else None
+                last_ts = last[2] if last else 0
+                if now_ts - last_ts > 120:
+                    del self.trails[hex_id]
+        for s_set in (self._notified_military, self._notified_emergency, self._notified_watchlist):
+            for h in list(s_set):
+                if h not in new_store:
+                    s_set.discard(h)
+
+        # Roll the daily counters when the date changes.
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if today != self._daily_date:
+            self._daily_date = today
+            self._daily_unique.clear()
+            self._daily_max_range = 0.0
+            self._daily_emergencies.clear()
+            self._daily_military.clear()
+
+        self.aircraft = new_store
+        self.connection_state = "polling" if any(f.get("ok") for f in self.feed_status.values()) else "error"
+        self.last_error = None if self.connection_state == "polling" else "all feeds failed"
+        self.poll_count += 1
+        self.last_poll_duration_ms = (time.time() - poll_start) * 1000
+        self.last_process_ms = max(0.0, self.last_poll_duration_ms - self.last_fetch_ms - self.last_sql_ms)
+
+        # Persist & update daily stats every poll (cheap), then broadcast.
+        events_store.update_daily_stats(
+            unique_hexes_today=len(self._daily_unique),
+            max_range_nm_today=self._daily_max_range,
+            emergencies_today=len(self._daily_emergencies),
+            military_today=len(self._daily_military),
+        )
+
+        # Stash the per-poll trail deltas so `broadcast_payload()` can ship them.
+        self._last_trail_appends = new_appends
+
+        snap = self.snapshot()
+        snap_every = max(1, int(s.get("snapshot_every_n_polls") or 5))
+        self._snapshot_counter += 1
+        if self._snapshot_counter >= snap_every:
+            self._snapshot_counter = 0
+            events_store.record_snapshot(now_ts, snap)
+        # Prune old snapshots every 5 minutes to keep DB bounded.
+        if now_ts > self._next_prune_at:
+            self._next_prune_at = now_ts + 300
+            retention_s = float(s.get("replay_retention_minutes") or 60) * 60
+            events_store.prune_old_snapshots(retention_s)
+            # Daily backup check — only writes if the date has rolled over and `daily_backup_dir` is set.
+            backups_store.maybe_run_daily()
+
+        # Broadcast the slim payload (trail deltas only) — full snapshots only ship on initial
+        # WS connect via the WS endpoint, or via the REST `/api/aircraft` fallback.
+        self._broadcast(self.broadcast_payload())
+
+    # --- helpers used by REST endpoints --------------------------------------
+
+    async def test_connection(self, base_url: str) -> dict[str, Any]:
+        base = validate_external_url(base_url).rstrip("/")
+        url = f"{base}/data/aircraft.json"
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            data = r.json()
+            count = len(data.get("aircraft") or [])
+            return {"ok": True, "count": count, "messages": data.get("messages")}
+
+
+feed_service = FeedService()

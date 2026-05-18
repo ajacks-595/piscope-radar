@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en" data-theme="radar">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>PiScope Radar</title>
+  <link rel="icon" type="image/svg+xml" href="/piscope/static/icons/aircraft.svg" />
+  <link rel="manifest" href="/piscope/static/manifest.webmanifest" />
+  <meta name="theme-color" content="#00ff40" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="apple-touch-icon" href="/piscope/static/icons/aircraft.svg" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <link rel="stylesheet" href="/piscope/static/themes.css" />
+  <link rel="stylesheet" href="/piscope/static/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-icon">⊙</span>
+      <span class="brand-name">PISCOPE RADAR</span>
+    </div>
+    <div class="status-line">
+      <span id="connection-pill" class="pill idle">idle</span>
+      <span class="status-divider">·</span>
+      <span><span id="aircraft-count">0</span> contacts</span>
+      <span class="status-divider">·</span>
+      <span id="messages-rate">— msg/s</span>
+      <span class="status-divider">·</span>
+      <span id="receiver-loc">no receiver</span>
+    </div>
+    <div class="topbar-actions">
+      <button id="toggle-audio" class="icon-button" title="Audio alerts (off)" aria-pressed="false">🔇</button>
+      <button id="toggle-follow" class="icon-button" title="Follow selected aircraft" aria-pressed="false">📍</button>
+      <button id="open-events" class="icon-button" title="Event log">⚠<span id="events-badge" class="topbar-badge" hidden>0</span></button>
+      <button id="open-stats" class="icon-button" title="Stats &amp; receiver health">📊</button>
+      <button id="toggle-replay" class="icon-button" title="Replay timeline" aria-pressed="false">⏪</button>
+      <button id="toggle-aero" class="icon-button" title="Aviation overlay (OpenAIP)" aria-pressed="false">✈</button>
+      <button id="toggle-weather" class="icon-button" title="Weather radar overlay" aria-pressed="false">⛅</button>
+      <button id="toggle-heatmap" class="icon-button" title="Traffic heatmap" aria-pressed="false">🔥</button>
+      <button id="toggle-day-night" class="icon-button" title="Day / night terminator" aria-pressed="false">🌓</button>
+      <button id="open-views" class="icon-button" title="Saved views">⭐</button>
+      <button id="fit-data" class="icon-button" title="Fit to data (Z)">⊕</button>
+      <button id="recenter" class="icon-button" title="Recenter on receiver (R)">⌖</button>
+      <label class="theme-picker">
+        <select id="theme-select" aria-label="Theme">
+          <option value="radar">Radar (Classic)</option>
+          <option value="radarModern">Radar (Modern)</option>
+          <option value="terminal">Terminal</option>
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+          <option value="tactical">Tactical</option>
+          <option value="sectional">Sectional</option>
+          <option value="solarizedDark">Solarized Dark</option>
+          <option value="solarizedLight">Solarized Light</option>
+          <option value="nord">Nord</option>
+          <option value="synthwave">Synthwave</option>
+        </select>
+      </label>
+      <button id="open-settings" class="icon-button" title="Settings">⚙</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+      <div class="filter-bar">
+        <input id="filter-search" type="search" placeholder="Search callsign / reg / hex / type" />
+        <div class="filter-row">
+          <select id="filter-category" aria-label="Category">
+            <option value="all">All categories</option>
+            <option value="commercial">Commercial</option>
+            <option value="military">Military</option>
+            <option value="ga">General aviation</option>
+            <option value="heli">Helicopter</option>
+          </select>
+          <select id="filter-sort" aria-label="Sort by">
+            <option value="distance">Distance</option>
+            <option value="callsign">Callsign</option>
+            <option value="altitude">Altitude</option>
+            <option value="speed">Speed</option>
+            <option value="signal">Signal</option>
+          </select>
+        </div>
+        <div class="filter-row range-row">
+          <label>Altitude
+            <span class="range-values"><span id="alt-min-val">0</span> – <span id="alt-max-val">60k</span> ft</span>
+          </label>
+          <div class="dual-slider">
+            <div class="dual-track"></div>
+            <div class="dual-fill" id="alt-fill"></div>
+            <input id="alt-min" type="range" min="0" max="60000" step="500" value="0" />
+            <input id="alt-max" type="range" min="0" max="60000" step="500" value="60000" />
+          </div>
+        </div>
+        <div class="filter-row range-row">
+          <label>Max distance <span class="range-values"><span id="dist-max-val">∞</span> nm</span></label>
+          <input id="dist-max" type="range" min="10" max="500" step="10" value="500" />
+        </div>
+        <label class="checkbox-row">
+          <input id="show-ground" type="checkbox" checked /> Show ground traffic
+        </label>
+      </div>
+
+      <ul class="aircraft-list" id="aircraft-list"></ul>
+    </aside>
+
+    <!-- MAP -->
+    <section class="map-section">
+      <div id="map"></div>
+      <canvas id="radar-canvas" class="radar-canvas"></canvas>
+      <div class="map-legend" id="map-legend">
+        <div><span class="dot ground"></span>GND</div>
+        <div><span class="dot low"></span>&lt;10k</div>
+        <div><span class="dot mid"></span>&lt;25k</div>
+        <div><span class="dot high"></span>&lt;35k</div>
+        <div><span class="dot very-high"></span>35k+</div>
+      </div>
+    </section>
+
+    <!-- REPLAY TIMELINE (hidden by default) -->
+    <div id="replay-bar" class="replay-bar" hidden>
+      <button id="replay-live" class="secondary">⏵ Live</button>
+      <input id="replay-slider" type="range" min="0" max="100" step="0.1" value="100" />
+      <span id="replay-clock" class="hint">—</span>
+    </div>
+
+    <!-- DETAIL -->
+    <aside class="detail" id="detail">
+      <div class="detail-empty" id="detail-empty">
+        <span>Select an aircraft from the list or map.</span>
+      </div>
+      <div class="detail-content" id="detail-content" hidden></div>
+    </aside>
+  </main>
+
+  <!-- EVENTS MODAL -->
+  <div class="modal" id="events-modal" hidden>
+    <div class="modal-shade" data-close-events></div>
+    <div class="modal-panel">
+      <header class="modal-header">
+        <h2>Events</h2>
+        <button class="icon-button" data-close-events>✕</button>
+      </header>
+      <nav class="tabs">
+        <button class="tab active" data-events-tab="all">All</button>
+        <button class="tab" data-events-tab="emergency">Emergency</button>
+        <button class="tab" data-events-tab="military">Military</button>
+        <button class="tab" data-events-tab="watchlist">Watchlist</button>
+      </nav>
+      <div class="tab-body">
+        <ul id="events-list" class="events-list"></ul>
+        <p id="events-empty" class="hint" hidden>No events recorded yet.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATS MODAL -->
+  <div class="modal" id="stats-modal" hidden>
+    <div class="modal-shade" data-close-stats></div>
+    <div class="modal-panel">
+      <header class="modal-header">
+        <h2>Statistics &amp; receiver health</h2>
+        <button class="icon-button" data-close-stats>✕</button>
+      </header>
+      <nav class="tabs">
+        <button class="tab active" data-stats-tab="health">Health</button>
+        <button class="tab" data-stats-tab="daily">Daily</button>
+        <button class="tab" data-stats-tab="coverage">Polar coverage</button>
+        <button class="tab" data-stats-tab="leaderboard">Type leaderboard</button>
+        <button class="tab" data-stats-tab="records">Records</button>
+        <button class="tab" data-stats-tab="bookmarks">Bookmarks</button>
+      </nav>
+      <div class="tab-body">
+        <section class="stats-section active" data-stats-section="health">
+          <dl class="detail-grid" id="health-grid"></dl>
+        </section>
+        <section class="stats-section" data-stats-section="daily">
+          <table class="stats-table"><thead><tr><th>Date</th><th>Polls</th><th>Unique</th><th>Max range (nm)</th><th>Emergencies</th><th>Military</th></tr></thead><tbody id="stats-rows"></tbody></table>
+        </section>
+        <section class="stats-section" data-stats-section="coverage">
+          <p class="hint">Maximum range observed for each compass bearing, all-time. Updated live as aircraft are tracked.</p>
+          <canvas id="polar-canvas" width="480" height="480" style="display:block; margin:0 auto;"></canvas>
+        </section>
+        <section class="stats-section" data-stats-section="leaderboard">
+          <p class="hint">Most-frequently-seen aircraft types since the database was created.</p>
+          <table class="stats-table"><thead><tr><th>Type</th><th>Sightings</th><th>First seen</th><th>Last seen</th></tr></thead><tbody id="leaderboard-rows"></tbody></table>
+        </section>
+        <section class="stats-section" data-stats-section="records">
+          <p class="hint">All-time bests for this receiver. Beaten records are silently replaced.</p>
+          <table class="stats-table"><thead><tr><th>Category</th><th>Value</th><th>Aircraft</th><th>When</th></tr></thead><tbody id="records-rows"></tbody></table>
+        </section>
+        <section class="stats-section" data-stats-section="bookmarks">
+          <p class="hint">Aircraft you've starred. Click ★ in the detail panel to add one.</p>
+          <ul id="bookmarks-list" class="views-list"></ul>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- SAVED VIEWS MODAL -->
+  <div class="modal" id="views-modal" hidden>
+    <div class="modal-shade" data-close-views></div>
+    <div class="modal-panel" style="width:min(520px,96vw)">
+      <header class="modal-header">
+        <h2>Saved views</h2>
+        <button class="icon-button" data-close-views>✕</button>
+      </header>
+      <div class="tab-body">
+        <ul id="views-list" class="views-list"></ul>
+        <div class="field">
+          <label>Save current view as…</label>
+          <input id="new-view-name" type="text" placeholder="Home airport / North sector / …" />
+          <button id="save-view" class="primary">Save current view</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SETTINGS MODAL -->
+  <div class="modal" id="settings-modal" hidden>
+    <div class="modal-shade" data-close></div>
+    <div class="modal-panel">
+      <header class="modal-header">
+        <h2>Settings</h2>
+        <button class="icon-button" data-close>✕</button>
+      </header>
+      <nav class="tabs">
+        <button class="tab active" data-tab="connection">Connection</button>
+        <button class="tab" data-tab="appearance">Appearance</button>
+        <button class="tab" data-tab="map">Map</button>
+        <button class="tab" data-tab="flightaware">FlightAware</button>
+        <button class="tab" data-tab="notifications">Notifications</button>
+        <button class="tab" data-tab="general">General</button>
+      </nav>
+      <div class="tab-body">
+        <section class="tab-section active" data-section="connection">
+          <h3>Feed mode</h3>
+          <label class="radio-row">
+            <input type="radio" name="feed_mode" value="local" />
+            Local tar1090 (on this Pi or another host)
+          </label>
+          <label class="radio-row">
+            <input type="radio" name="feed_mode" value="global" />
+            Global feed (adsb.lol around a chosen point)
+          </label>
+          <div class="field">
+            <label for="setting-tar-url">tar1090 base URL</label>
+            <input id="setting-tar-url" type="url" placeholder="http://localhost/tar1090" />
+            <button id="test-conn" class="secondary">Test connection</button>
+            <span id="test-result" class="hint"></span>
+          </div>
+          <div class="field">
+            <label for="setting-poll">Poll interval (s)</label>
+            <input id="setting-poll" type="number" min="1" max="60" />
+          </div>
+          <div class="field-row">
+            <div class="field"><label>Global centre lat</label><input id="setting-global-lat" type="number" step="0.0001" /></div>
+            <div class="field"><label>Global centre lon</label><input id="setting-global-lon" type="number" step="0.0001" /></div>
+            <div class="field"><label>Radius (nm)</label><input id="setting-global-rad" type="number" min="50" max="2000" /></div>
+          </div>
+          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 8px 0;" />
+          <h3>Extra feeds (multi-receiver)</h3>
+          <p class="hint">Each additional tar1090 base URL will be polled in parallel and merged into the live view by aircraft hex. Format: <code>Name|http://host/tar1090</code>, one per line.</p>
+          <textarea id="setting-extra-feeds" rows="4" placeholder="Garden Pi|http://garden.local/tar1090&#10;Office|http://office.local/tar1090" style="width:100%; min-height:80px; resize: vertical; font-family: var(--font-mono);"></textarea>
+          <div id="extra-feeds-status" class="hint"></div>
+        </section>
+
+        <section class="tab-section" data-section="appearance">
+          <div class="field">
+            <label>Theme</label>
+            <select id="setting-theme"></select>
+          </div>
+        </section>
+
+        <section class="tab-section" data-section="map">
+          <div class="field">
+            <label>Map style</label>
+            <select id="setting-map-style">
+              <option value="automatic">Automatic (follow theme)</option>
+            </select>
+            <span class="hint">Most options are free with no key required. Tactical / radar themes look best on dark or satellite bases.</span>
+          </div>
+          <div class="field">
+            <label>Aircraft labels</label>
+            <select id="setting-label-mode">
+              <option value="off">Off — icon only (default)</option>
+              <option value="callsign">Callsign — just the flight ID beside each aircraft</option>
+              <option value="full">Full info — reg / type / speed / altitude / route (tar1090-style)</option>
+            </select>
+            <span class="hint">Full mode auto-hides labels below the zoom threshold so busy airspace stays readable.</span>
+          </div>
+          <div class="field">
+            <label>Full-label minimum zoom</label>
+            <input id="setting-label-min-zoom" type="number" min="3" max="14" />
+          </div>
+          <div class="field">
+            <label>Range rings (nm, comma-separated)</label>
+            <input id="setting-rings" type="text" placeholder="50,100,150,200" />
+          </div>
+          <label class="checkbox-row">
+            <input id="setting-rings-enabled" type="checkbox" /> Show range rings
+          </label>
+          <div class="field">
+            <label>Antenna coverage range (nm)</label>
+            <input id="setting-antenna-range" type="number" min="10" max="500" />
+          </div>
+          <div class="field">
+            <label>Trail length (samples)</label>
+            <input id="setting-trail" type="number" min="0" max="120" />
+          </div>
+          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 8px 0;" />
+          <h3>Aviation overlay (OpenAIP)</h3>
+          <div class="field">
+            <label>OpenAIP API key</label>
+            <input id="setting-openaip-key" type="password" placeholder="paste key (write-only)" autocomplete="off" />
+            <span id="openaip-key-status" class="hint"></span>
+            <button id="save-openaip-key" class="secondary">Save key</button>
+          </div>
+          <p class="hint">
+            Free for personal use — sign up at <a href="https://www.openaip.net/users/sign-up" target="_blank" rel="noopener">openaip.net</a>,
+            create a "Client API key" in your account dashboard, paste it here. Tiles are proxied through the Pi so the key never leaves your server.
+          </p>
+        </section>
+
+        <section class="tab-section" data-section="flightaware">
+          <div class="field">
+            <label>AeroAPI key</label>
+            <input id="setting-fa-key" type="password" placeholder="paste key (write-only)" autocomplete="off" />
+            <span id="fa-key-status" class="hint"></span>
+            <button id="save-fa-key" class="secondary">Save key</button>
+          </div>
+          <div class="field">
+            <label>Monthly budget (USD)</label>
+            <input id="setting-fa-limit" type="number" min="0" step="0.01" />
+          </div>
+          <div class="fa-budget-box" id="fa-budget-box">
+            <span>This month: <strong id="fa-spent">$0.00</strong> / <strong id="fa-limit-display">$5.00</strong></span>
+            <div class="fa-budget-bar"><div id="fa-budget-bar-fill"></div></div>
+          </div>
+        </section>
+
+        <section class="tab-section" data-section="notifications">
+          <label class="checkbox-row"><input id="setting-notify-military" type="checkbox" /> Military aircraft entering range</label>
+          <label class="checkbox-row"><input id="setting-notify-emergency" type="checkbox" /> Emergency squawks (7500/7600/7700)</label>
+          <label class="checkbox-row"><input id="setting-notify-watchlist" type="checkbox" /> Watchlist matches</label>
+          <label class="checkbox-row"><input id="setting-audio-enabled" type="checkbox" /> Audio chimes when an event fires</label>
+          <label class="checkbox-row"><input id="setting-audio-directional" type="checkbox" /> Stereo-pan the chime by aircraft bearing</label>
+          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 10px 0;" />
+          <h3>Webhooks</h3>
+          <p class="hint">Forward events to Discord, Slack, ntfy.sh, or any generic JSON endpoint. POSTs are fire-and-forget — a failed delivery never stalls the feed loop.</p>
+          <div id="webhook-list"></div>
+          <button id="add-webhook" class="secondary">+ Add webhook</button>
+          <div class="field">
+            <label>Watchlist (callsigns / regs, comma-separated)</label>
+            <input id="setting-watchlist" type="text" placeholder="NATO01, RRR7011, G-EZTJ" />
+          </div>
+          <button id="enable-notifications" class="secondary">Enable browser notifications</button>
+          <span id="notif-status" class="hint"></span>
+        </section>
+
+        <section class="tab-section" data-section="general">
+          <h3>Trails</h3>
+          <div class="field">
+            <label>Trail colouring</label>
+            <select id="setting-trail-colour">
+              <option value="single">Single colour (theme accent)</option>
+              <option value="altitude">Gradient by altitude band</option>
+              <option value="speed">Gradient by ground speed</option>
+            </select>
+          </div>
+          <label class="checkbox-row">
+            <input id="setting-trail-fade" type="checkbox" /> Fade trail toward the tail
+          </label>
+          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 8px 0;" />
+          <h3>Backup &amp; restore</h3>
+          <div class="field">
+            <label>Daily auto-backup directory (server-side path)</label>
+            <input id="setting-backup-dir" type="text" placeholder="e.g. /home/pi/piscope-backups" />
+            <span class="hint">Empty = disabled. Backups run once per day; the most recent 14 are kept.</span>
+          </div>
+          <div class="field">
+            <label>Manual backup &amp; restore</label>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+              <a class="secondary" href="/piscope/api/export" style="text-decoration:none; padding:6px 12px; border:1px solid var(--accent); border-radius:6px; color:var(--accent)" download>Download backup zip</a>
+              <label class="secondary" style="cursor:pointer; padding:6px 12px; border:1px solid var(--accent); border-radius:6px; color:var(--accent)">
+                Restore from zip…<input id="import-db" type="file" accept=".zip" hidden />
+              </label>
+              <span id="import-status" class="hint"></span>
+            </div>
+          </div>
+          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 8px 0;" />
+          <h3>Receiver position</h3>
+          <div class="field">
+            <label>Receiver latitude</label>
+            <input id="setting-receiver-lat" type="number" step="0.0001" />
+          </div>
+          <div class="field">
+            <label>Receiver longitude</label>
+            <input id="setting-receiver-lon" type="number" step="0.0001" />
+          </div>
+          <div class="field">
+            <label>Outbound contact URL or email</label>
+            <input id="setting-contact-url" type="text" placeholder="https://your-site.example/contact" />
+            <span class="hint">
+              Some upstream APIs (e.g. Planespotters) reject server User-Agents that don't include a contact URL or email.
+              This value is embedded in the User-Agent header as <code>PiScope-Radar/1.0 (+&lt;your value&gt;)</code>.
+            </span>
+          </div>
+        </section>
+      </div>
+      <footer class="modal-footer">
+        <button id="save-settings" class="primary">Save</button>
+      </footer>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+  <script src="/piscope/static/radar.js"></script>
+  <script src="/piscope/static/app.js"></script>
+</body>
+</html>

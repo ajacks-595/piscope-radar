@@ -1,0 +1,330 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+# Cap value sizes so a single setting can't blow up memory or the DB.
+_MAX_VALUE_BYTES = 256 * 1024
+
+# In-memory cache of the full settings dict (with defaults merged). Refreshed on every
+# writer (`set_many`/`set_one`) so readers don't hit the DB on every poll cycle.
+_CACHE: Optional[dict[str, Any]] = None
+_CACHE_VERSION = 0   # bumped on every write so callers can invalidate any derived state
+
+
+DB_PATH = Path(__file__).resolve().parent.parent.parent / "piscope.db"
+
+
+DEFAULTS: dict[str, Any] = {
+    "tar1090_base_url": "",                # blank → use adsb.lol global mode
+    "poll_interval": 2,
+    "trail_length": 30,
+    "show_ground": True,
+    "theme": "radar",                      # AppTheme rawValue from Swift app
+    "map_style": "automatic",
+    "range_rings_enabled": True,
+    "range_rings_nm": "50,100,150,200",
+    "antenna_range_nm": 200,
+    "fa_api_key": "",
+    "fa_monthly_limit_cents": 500,
+    "watchlist": "",
+    "notify_military": True,
+    "notify_emergency": True,
+    "notify_watchlist": True,
+    "receiver_lat": None,
+    "receiver_lon": None,
+    "feed_mode": "global",                 # "local" or "global"
+    "global_center_lat": 51.5,             # London — a busy default; user should override.
+    "global_center_lon": -0.1,
+    "global_radius_nm": 250,
+    "always_show_labels": False,
+    "openaip_api_key": "",
+    "openaip_overlay_enabled": False,
+    # Audio alerts
+    "audio_alerts_enabled": False,
+    "audio_directional": True,
+    # Follow mode
+    "follow_selected": False,
+    # Replay
+    "replay_retention_minutes": 60,
+    # Multi-feed: JSON array of {name, url, type} (type = "tar1090" only for now)
+    "extra_feeds_json": "[]",
+    # Some upstream APIs (planespotters at least) now reject User-Agents that don't include a
+    # contact URL or email. The default points at the project page; users should override it
+    # via Settings → General once they have their own deployment so unknown traffic doesn't
+    # get blamed on this repo.
+    "contact_url": "https://github.com/ajacks-595/piscope-radar",
+    # Overlay toggles
+    "weather_overlay_enabled": False,
+    "day_night_enabled": False,
+    # Webhook endpoints: list of {kind: "discord"|"slack"|"ntfy"|"generic", url, types: ["emergency","military","watchlist"]}
+    "webhooks_json": "[]",
+    # Saved views (camera positions): list of {name, lat, lon, zoom}
+    "saved_views_json": "[]",
+    # Trail colouring: "single" (theme accent) | "altitude" (band-colour gradient) | "speed"
+    "trail_colour_mode": "single",
+    # Whether trails should fade towards the tail (CPU-cheap; opacity per segment)
+    "trail_fade": True,
+    # Daily DB snapshot — disk path; empty disables.
+    "daily_backup_dir": "",
+    # Map label rendering: "off" / "callsign" / "full" (tar1090-style block).
+    "map_label_mode": "off",
+    # In "full" mode, labels are hidden below this zoom to reduce clutter.
+    "label_full_min_zoom": 8,
+    # How often to persist a snapshot row to feed_snapshots. 1 = every poll. Higher values
+    # reduce SQLite write pressure on slow storage (SD cards). Default 5 = every 10 s at
+    # the default 2 s poll interval.
+    "snapshot_every_n_polls": 5,
+}
+
+# Settings the user should never read back over the wire.
+SECRET_KEYS = {"fa_api_key", "openaip_api_key"}
+
+
+def _connect() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, isolation_level="DEFERRED", check_same_thread=True)
+    conn.row_factory = sqlite3.Row
+    # PRAGMA tuning for SD-card-friendly write throughput. These are safe defaults for a
+    # local Pi: WAL gives parallel reads + faster writes; NORMAL trades a tiny crash window
+    # (last few seconds of unflushed events) for ~5-10× fewer fsyncs.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA temp_store = MEMORY")
+    conn.execute("PRAGMA mmap_size = 67108864")           # 64 MB memory-mapped pages
+    conn.execute("PRAGMA cache_size = -8192")             # 8 MB page cache
+    conn.execute("PRAGMA busy_timeout = 5000")            # wait 5 s before raising on lock contention
+    return conn
+
+
+SCHEMA_VERSION = 2  # bump and add an `if v < N: …` block below whenever the schema changes
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    cur = conn.execute("PRAGMA user_version").fetchone()
+    v = cur[0] if cur else 0
+    # v0 → v1: initial tables created below in CREATE TABLE IF NOT EXISTS statements.
+    # v1 → v2: add bookmarks + records + close-pass log
+    if v < 2:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS bookmarks ("
+            "hex TEXT PRIMARY KEY, "
+            "label TEXT, "
+            "callsign TEXT, registration TEXT, type_code TEXT, "
+            "added_at REAL NOT NULL)"
+        )
+        # All-time bests for records panel — one row per category, replaced when beaten.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS records ("
+            "category TEXT PRIMARY KEY, "
+            "hex TEXT, callsign TEXT, registration TEXT, type_code TEXT, "
+            "value REAL, lat REAL, lon REAL, altitude INTEGER, "
+            "recorded_at REAL NOT NULL)"
+        )
+        conn.execute("PRAGMA user_version = 2")
+    conn.commit()
+
+
+def init_db() -> None:
+    with _connect() as conn:
+        # Enable incremental auto-vacuum so the DB file shrinks after we prune old snapshots.
+        # `auto_vacuum=INCREMENTAL` only takes effect on a fresh DB; we VACUUM here as a no-op
+        # on already-existing DBs, but new installs will reclaim space automatically.
+        try:
+            current = conn.execute("PRAGMA auto_vacuum").fetchone()[0]
+            if current == 0:
+                conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
+                # The new auto_vacuum mode only sticks after a VACUUM. Run it once per startup if needed.
+                conn.commit()
+                conn.execute("VACUUM")
+        except sqlite3.Error:
+            pass
+        conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS fa_budget ("
+            "month TEXT PRIMARY KEY, spent_cents INTEGER DEFAULT 0)"
+        )
+        # Event log: watchlist matches, military entries, emergency squawks. Searchable by time.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS events ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts REAL NOT NULL, "
+            "kind TEXT NOT NULL, "
+            "hex TEXT, callsign TEXT, registration TEXT, "
+            "distance_nm REAL, payload TEXT)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, ts DESC)")
+        # Per-day aggregates. Updated incrementally by the feed loop.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS daily_stats ("
+            "date TEXT PRIMARY KEY, "
+            "total_polls INTEGER DEFAULT 0, "
+            "unique_aircraft INTEGER DEFAULT 0, "
+            "max_range_nm REAL DEFAULT 0, "
+            "emergencies INTEGER DEFAULT 0, "
+            "military_seen INTEGER DEFAULT 0)"
+        )
+        # Snapshot ring buffer used by replay. The payload is a JSON dump of the WS snapshot.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS feed_snapshots ("
+            "ts REAL PRIMARY KEY, payload TEXT NOT NULL)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON feed_snapshots(ts DESC)")
+        # Per-aircraft personal notes — small free-form text the user can attach to a hex.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS aircraft_notes ("
+            "hex TEXT PRIMARY KEY, note TEXT NOT NULL, updated_at REAL NOT NULL)"
+        )
+        # Type ledger — every unique ICAO type_code we've seen, plus first/last and count.
+        # Powers the "rare type" alert and the type leaderboard.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS seen_types ("
+            "type_code TEXT PRIMARY KEY, "
+            "first_seen REAL, last_seen REAL, sightings INTEGER DEFAULT 0)"
+        )
+        # 360-bin polar coverage diagram: best (max) range observed per integer-degree bearing.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS polar_coverage ("
+            "bearing INTEGER PRIMARY KEY, max_nm REAL NOT NULL DEFAULT 0, "
+            "last_hex TEXT, last_seen REAL)"
+        )
+        # Coarse position heatmap for the activity layer. Lat/lon are bucketed to 0.05° (~3 nm)
+        # and we just keep a hit counter — perfect for Leaflet.heat.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS position_heatmap ("
+            "lat_bucket INTEGER NOT NULL, lon_bucket INTEGER NOT NULL, "
+            "hits INTEGER NOT NULL DEFAULT 0, "
+            "PRIMARY KEY(lat_bucket, lon_bucket))"
+        )
+        # Run migrations after the base CREATE TABLEs so we don't fight CREATE TABLE IF NOT EXISTS.
+        _migrate(conn)
+        conn.commit()
+
+
+def _coerce(key: str, raw: Optional[str]) -> Any:
+    if raw is None:
+        return DEFAULTS.get(key)
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return raw
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def batch():
+    """Open a single SQLite connection for the duration of a poll cycle. Helpers given this
+    connection write without their own commit; the context manager commits once on exit,
+    turning ~thousands of fsyncs/min into ~tens/min on a Pi."""
+    conn = _connect()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _populate_cache() -> dict[str, Any]:
+    """Read every settings row from disk and rebuild the in-memory cache. Holds raw values
+    (no redaction) so writers can compare deltas without hitting disk again."""
+    global _CACHE
+    with _connect() as conn:
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    stored = {r["key"]: _coerce(r["key"], r["value"]) for r in rows}
+    _CACHE = {**DEFAULTS, **stored}
+    return _CACHE
+
+
+def cache_version() -> int:
+    """Monotonic counter — callers (e.g. the feed loop) can stash this and re-read settings
+    only when it changes. Saves a hash map copy per poll."""
+    return _CACHE_VERSION
+
+
+def get(key: str) -> Any:
+    if _CACHE is None:
+        _populate_cache()
+    return _CACHE.get(key, DEFAULTS.get(key))
+
+
+def get_all(redact: bool = True) -> dict[str, Any]:
+    if _CACHE is None:
+        _populate_cache()
+    merged = dict(_CACHE)
+    if redact:
+        for k in SECRET_KEYS:
+            merged[k] = "***" if merged.get(k) else ""
+        # Derived flags the UI uses to know whether secret keys are stored without revealing them.
+        merged["fa_api_key_set"] = bool(_CACHE.get("fa_api_key"))
+        merged["openaip_api_key_set"] = bool(_CACHE.get("openaip_api_key"))
+    return merged
+
+
+def set_many(values: dict[str, Any]) -> None:
+    """Persist a batch of settings updates. Only keys present in DEFAULTS are accepted —
+    this whitelists what callers can write so a hostile (or buggy) client cannot pollute the
+    settings table with arbitrary keys or shadow internal config."""
+    global _CACHE_VERSION
+    with _connect() as conn:
+        for k, v in values.items():
+            if k not in DEFAULTS:
+                continue  # whitelist: silently ignore unknown keys
+            if k in SECRET_KEYS and (v == "***" or v is None):
+                # don't overwrite a stored secret with the redaction placeholder
+                continue
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (k, json.dumps(v)),
+            )
+        conn.commit()
+    # Rebuild the in-memory cache so subsequent reads see the new values without hitting disk.
+    _populate_cache()
+    _CACHE_VERSION += 1
+
+
+def set_one(key: str, value: Any) -> None:
+    set_many({key: value})
+
+
+# --- FlightAware monthly budget bucket ---------------------------------------
+
+
+def _current_month() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def fa_budget_status() -> dict[str, Any]:
+    month = _current_month()
+    with _connect() as conn:
+        row = conn.execute("SELECT spent_cents FROM fa_budget WHERE month = ?", (month,)).fetchone()
+    spent = row["spent_cents"] if row else 0
+    limit = int(get("fa_monthly_limit_cents") or 0)
+    return {
+        "month": month,
+        "spent_cents": spent,
+        "limit_cents": limit,
+        "remaining_cents": max(0, limit - spent) if limit > 0 else None,
+        "over_budget": limit > 0 and spent >= limit,
+    }
+
+
+def fa_record_call(cost_cents: int = 5) -> dict[str, Any]:
+    month = _current_month()
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO fa_budget(month, spent_cents) VALUES(?, ?) "
+            "ON CONFLICT(month) DO UPDATE SET spent_cents = spent_cents + excluded.spent_cents",
+            (month, cost_cents),
+        )
+        conn.commit()
+    return fa_budget_status()
