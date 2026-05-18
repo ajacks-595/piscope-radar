@@ -672,6 +672,13 @@ function setupMap() {
 }
 
 async function setReceiverLocation(lat, lon) {
+  // Sanity check — coords outside [-90,90] / [-180,180] are usually a typo or DMS-vs-decimal
+  // mix-up; reject loudly rather than silently sending nonsense to adsb.lol.
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90 ||
+      !Number.isFinite(lon) || lon < -180 || lon > 180) {
+    toast(`Invalid coords (${lat}, ${lon}) — latitude must be -90..90, longitude -180..180.`);
+    return;
+  }
   state.settings.receiver_lat = lat;
   state.settings.receiver_lon = lon;
   // Keep global feed centre in sync so adsb.lol queries also recentre.
@@ -684,7 +691,41 @@ async function setReceiverLocation(lat, lon) {
   refreshReceiverMarker();
   refreshRangeRings();
   if (radar) radar.setReceiver(state.receiver);
+  // Refresh any open Settings → Connection inputs so they reflect the new values.
+  const latI = document.getElementById('setting-global-lat');
+  const lonI = document.getElementById('setting-global-lon');
+  const rlatI = document.getElementById('setting-receiver-lat');
+  const rlonI = document.getElementById('setting-receiver-lon');
+  if (latI) latI.value = lat;
+  if (lonI) lonI.value = lon;
+  if (rlatI) rlatI.value = lat;
+  if (rlonI) rlonI.value = lon;
   toast(`Receiver set to ${lat.toFixed(3)}, ${lon.toFixed(3)}`);
+}
+
+// "Pick on map" mode — primes the map for a single click that becomes the receiver location.
+// Works on any device (touch or pointer) and is more discoverable than right-click.
+let _pickMode = false;
+function enterPickMode() {
+  if (_pickMode) return;
+  _pickMode = true;
+  closeSettings();
+  // Visual hint
+  const mapEl = document.getElementById('map');
+  mapEl.style.cursor = 'crosshair';
+  toast('Click on the map to set your receiver location. Esc to cancel.');
+  const onClick = (e) => { finish(e.latlng.lat, e.latlng.lng); };
+  const onKey  = (e) => { if (e.key === 'Escape') finish(); };
+  function finish(lat, lon) {
+    if (!_pickMode) return;
+    _pickMode = false;
+    mapEl.style.cursor = '';
+    map.off('click', onClick);
+    document.removeEventListener('keydown', onKey);
+    if (lat != null) setReceiverLocation(lat, lon);
+  }
+  map.on('click', onClick);
+  document.addEventListener('keydown', onKey);
 }
 
 function fitToData() {
@@ -1705,13 +1746,41 @@ function populateSettingsModal() {
   }
 }
 
+// Latitude / longitude validators — returns the parsed number or null. Anything outside the
+// real-world range is rejected (the most common typo is DMS like 550413.5 instead of 55.07).
+function _parseLat(v) {
+  const n = parseFloat(v);
+  return Number.isFinite(n) && n >= -90 && n <= 90 ? n : null;
+}
+function _parseLon(v) {
+  const n = parseFloat(v);
+  return Number.isFinite(n) && n >= -180 && n <= 180 ? n : null;
+}
+
 async function saveSettings() {
+  // Pre-validate any coordinate fields and bail with a useful message if they're out of range,
+  // so a typo doesn't take the global feed offline silently.
+  const fields = {
+    'setting-global-lat':  _parseLat(document.getElementById('setting-global-lat').value),
+    'setting-global-lon':  _parseLon(document.getElementById('setting-global-lon').value),
+    'setting-receiver-lat':_parseLat(document.getElementById('setting-receiver-lat').value),
+    'setting-receiver-lon':_parseLon(document.getElementById('setting-receiver-lon').value),
+  };
+  for (const [id, val] of Object.entries(fields)) {
+    const raw = document.getElementById(id).value;
+    if (raw.trim() !== '' && val === null) {
+      const isLat = id.endsWith('-lat');
+      toast(`${isLat ? 'Latitude' : 'Longitude'} "${raw}" is out of range (${isLat ? '-90..90' : '-180..180'}). Decimal degrees, e.g. 55.07.`);
+      document.getElementById(id).focus();
+      return;
+    }
+  }
   const body = {
     feed_mode: document.querySelector('input[name="feed_mode"]:checked')?.value || 'global',
     tar1090_base_url: document.getElementById('setting-tar-url').value.trim(),
     poll_interval: parseInt(document.getElementById('setting-poll').value, 10) || 2,
-    global_center_lat: parseFloat(document.getElementById('setting-global-lat').value) || null,
-    global_center_lon: parseFloat(document.getElementById('setting-global-lon').value) || null,
+    global_center_lat: fields['setting-global-lat'],
+    global_center_lon: fields['setting-global-lon'],
     global_radius_nm: parseInt(document.getElementById('setting-global-rad').value, 10) || 250,
     theme: document.getElementById('setting-theme').value,
     map_style: document.getElementById('setting-map-style').value,
@@ -1726,8 +1795,8 @@ async function saveSettings() {
     audio_alerts_enabled: document.getElementById('setting-audio-enabled').checked,
     audio_directional: document.getElementById('setting-audio-directional').checked,
     watchlist: document.getElementById('setting-watchlist').value.trim(),
-    receiver_lat: parseFloat(document.getElementById('setting-receiver-lat').value) || null,
-    receiver_lon: parseFloat(document.getElementById('setting-receiver-lon').value) || null,
+    receiver_lat: fields['setting-receiver-lat'],
+    receiver_lon: fields['setting-receiver-lon'],
     extra_feeds_json: parseExtraFeeds(document.getElementById('setting-extra-feeds').value),
     contact_url: document.getElementById('setting-contact-url').value.trim(),
     trail_colour_mode: document.getElementById('setting-trail-colour').value,
@@ -2620,6 +2689,7 @@ function bindUI() {
   document.getElementById('recenter').addEventListener('click', recenterOnReceiver);
   document.getElementById('toggle-aero').addEventListener('click', toggleAeroOverlay);
   document.getElementById('save-openaip-key').addEventListener('click', saveOpenaipKey);
+  document.getElementById('pick-on-map')?.addEventListener('click', enterPickMode);
   document.getElementById('toggle-audio').addEventListener('click', toggleAudio);
   document.getElementById('toggle-follow').addEventListener('click', toggleFollow);
   document.getElementById('toggle-weather').addEventListener('click', toggleWeatherOverlay);
