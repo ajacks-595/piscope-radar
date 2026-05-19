@@ -10,7 +10,7 @@ const SHELL = [
   '/piscope/static/icons/aircraft.svg',
   '/piscope/static/manifest.webmanifest',
 ];
-const CACHE = 'piscope-shell-v1';
+const CACHE = 'piscope-shell-v2';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));

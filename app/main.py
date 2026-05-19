@@ -38,7 +38,16 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
         await close_client()
 
 
-app = FastAPI(title="PiScope Radar", lifespan=lifespan)
+# Version stamp. Bump whenever you ship a notable user-facing change — the frontend reads
+# this via /piscope/api/version and pops a "✨ What's new" toast on first load after a bump.
+VERSION = "1.1.0"
+
+app = FastAPI(title="PiScope Radar", version=VERSION, lifespan=lifespan)
+
+
+@app.get("/piscope/api/version")
+async def version() -> dict[str, str]:
+    return {"version": VERSION}
 
 # Deliberately NO CORS middleware. Browsers enforce same-origin by default; without permissive
 # CORS, a malicious cross-origin page cannot POST to /piscope/api/settings (which has no auth).
@@ -60,6 +69,17 @@ async def root() -> RedirectResponse:
 @app.get("/piscope")
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/piscope/sw.js")
+async def service_worker() -> FileResponse:
+    """Service worker has to be served with `Service-Worker-Allowed: /piscope` so its scope
+    can extend above its own URL path. Without this the PWA install silently fails."""
+    return FileResponse(
+        STATIC_DIR / "sw.js",
+        media_type="application/javascript",
+        headers={"Service-Worker-Allowed": "/piscope", "Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/piscope/health")

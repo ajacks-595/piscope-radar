@@ -47,18 +47,26 @@ const RADAR_VARIANTS = { radar: 'classic', radarModern: 'modern' };
 
 const TILE_PRESETS = {
   // All keyless, free for personal use. The ?{r} is for high-DPI; CartoDB supports it.
-  dark:       { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',  attribution: '© OpenStreetMap, © CartoDB', label: 'Dark (CartoDB)' },
-  light:      { url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Light (CartoDB)' },
-  voyager:    { url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Voyager (CartoDB)' },
-  sat:        { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Satellite (Esri)' },
-  esriDark:   { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Dark Gray (Esri)' },
-  esriLight:  { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Light Gray (Esri)' },
-  esriTopo:   { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Topographic (Esri)' },
-  esriStreet: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Streets (Esri)' },
-  esriOcean:  { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Ocean (Esri)' },
-  natgeo:     { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri / Nat Geo', label: 'NatGeo (Esri)' },
-  osm:        { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: '© OpenStreetMap contributors', label: 'OpenStreetMap' },
-  terrain:    { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', attribution: '© OpenTopoMap (CC-BY-SA)', label: 'Topographic (OTM)' },
+  dark:        { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',  attribution: '© OpenStreetMap, © CartoDB', label: 'Dark (CartoDB)' },
+  darkClean:   { url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Dark — no labels (CartoDB)' },
+  light:       { url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Light (CartoDB)' },
+  lightClean:  { url: 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Light — no labels (CartoDB)' },
+  voyager:     { url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Voyager (CartoDB)' },
+  voyagerClean:{ url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Voyager — no labels (CartoDB)' },
+  sat:         { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Satellite (Esri)' },
+  esriDark:    { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Dark Gray (Esri)' },
+  esriLight:   { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Light Gray (Esri)' },
+  esriTopo:    { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Topographic (Esri)' },
+  esriStreet:  { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Streets (Esri)' },
+  esriOcean:   { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Ocean (Esri)' },
+  esriShaded:  { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Shaded Relief (Esri)' },
+  esriPhysical:{ url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Physical_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Physical (Esri)' },
+  esriTerrain: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Terrain (Esri)' },
+  natgeo:      { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri / Nat Geo', label: 'NatGeo (Esri)' },
+  osm:         { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: '© OpenStreetMap contributors', label: 'OpenStreetMap' },
+  osmHot:      { url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', attribution: '© OpenStreetMap France, © OpenStreetMap', label: 'OSM Humanitarian' },
+  cyclosm:     { url: 'https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png', attribution: '© CyclOSM, © OpenStreetMap', label: 'CyclOSM' },
+  terrain:     { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', attribution: '© OpenTopoMap (CC-BY-SA)', label: 'Topographic (OTM)' },
 };
 
 const THEME_DEFAULT_TILES = {
@@ -1227,8 +1235,8 @@ function renderDetailPanel(ac) {
       <div style="margin-top:6px"><button id="bookmark-toggle" class="secondary" style="font-size:11px; padding:4px 10px">☆ Bookmark</button></div>
     </section>
     <section id="detail-live">${liveSectionHtml(ac)}</section>
-    <section><h3>Photo</h3><div class="detail-photo" id="detail-photo">Loading…</div></section>
-    <section><h3>Route</h3><div id="detail-route">Looking up route…</div></section>
+    <section><h3>Photo</h3><div class="detail-photo skeleton" id="detail-photo"></div></section>
+    <section><h3>Route</h3><div id="detail-route"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div></div></section>
     <section>
       <h3>FlightAware</h3>
       <div class="fa-action-row">
@@ -1892,13 +1900,15 @@ async function syncWeatherOverlay() {
       const data = await res.json();
       const frame = (data.radar?.past || []).slice(-1)[0];
       if (!frame) return;
-      // RainViewer's radar coverage is best between zooms 4–10. Outside those it serves a
-      // "Zoom Level Not Supported" placeholder tile, which looks like garbage on the map.
-      // Using `bounds` plus min/max keeps Leaflet from requesting tiles outside the useful range.
-      const url = `${data.host}${frame.path}/256/{z}/{x}/{y}/4/1_0.png`;
+      // Use RainViewer's 512px tiles — sharper at high zoom than the default 256px.
+      // RainViewer serves data up to z12 reliably; Leaflet upscales beyond that with
+      // `maxNativeZoom`, so the layer stays useful all the way to street level instead
+      // of cutting out at z10 like the old config did.
+      const url = `${data.host}${frame.path}/512/{z}/{x}/{y}/4/1_1.png`;
       weatherOverlayLayer = L.tileLayer(url, {
         opacity: 0.55, attribution: '© RainViewer',
-        minZoom: 3, maxZoom: 10, minNativeZoom: 3, maxNativeZoom: 10,
+        minZoom: 3, maxZoom: 18, minNativeZoom: 3, maxNativeZoom: 12,
+        tileSize: 512, zoomOffset: -1,    // 512px tile, account for it
         pane: 'overlayPane',
       });
       weatherOverlayLayer.addTo(map);
@@ -2786,6 +2796,70 @@ function bindUI() {
 
 // ---------- bootstrap ----------
 
+// Version toast: first load after a bump shows a single "✨ Updated" toast. We compare
+// the server's reported version against the one we last shown to this browser in localStorage.
+async function checkVersionBump() {
+  try {
+    const data = await fetch('/piscope/api/version').then((r) => r.json());
+    const seen = localStorage.getItem('piscope_seen_version') || '';
+    if (data.version && data.version !== seen) {
+      // Skip the toast on the very first install (no previous version stored).
+      if (seen) {
+        toast(`✨ PiScope Radar updated to v${data.version}`);
+      }
+      localStorage.setItem('piscope_seen_version', data.version);
+    }
+  } catch (e) { /* non-fatal */ }
+}
+
+// Drag-and-drop handler — listens at the document level so you can drop the backup zip
+// anywhere on the page, not just on a tiny target. Shows a full-screen overlay during drag.
+function installDropHandler() {
+  let depth = 0;
+  let overlay = null;
+  const showOverlay = () => {
+    if (overlay) return;
+    overlay = document.createElement('div');
+    overlay.className = 'dropzone-overlay';
+    overlay.innerHTML = '<span>Drop a piscope backup .zip to restore</span>';
+    document.body.appendChild(overlay);
+  };
+  const hideOverlay = () => { if (overlay) { overlay.remove(); overlay = null; } };
+  document.addEventListener('dragenter', (e) => {
+    if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+    e.preventDefault();
+    depth++;
+    showOverlay();
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) hideOverlay();
+  });
+  document.addEventListener('dragover', (e) => {
+    if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+    e.preventDefault();
+  });
+  document.addEventListener('drop', async (e) => {
+    if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+    e.preventDefault();
+    depth = 0;
+    hideOverlay();
+    const f = [...(e.dataTransfer?.files || [])][0];
+    if (!f) return;
+    if (!f.name.toLowerCase().endsWith('.zip')) { toast('Drop a piscope backup .zip file.'); return; }
+    toast(`Restoring ${f.name}…`);
+    const fd = new FormData(); fd.append('file', f);
+    try {
+      const res = await fetch(API.importDb, { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) { toast(`Restore failed: ${data.detail || res.statusText}`); return; }
+      toast('Restored! Reloading…');
+      setTimeout(() => location.reload(), 800);
+    } catch (err) { toast(`Restore failed: ${err.message}`); }
+  });
+}
+
 async function init() {
   bindUI();
   await loadSettings();
@@ -2798,10 +2872,15 @@ async function init() {
     const res = await fetch('/piscope/api/aircraft');
     if (res.ok) applyAircraftUpdate(await res.json());
   } catch (e) {}
-  // PWA — register the service worker. Same-origin scope; fire-and-forget.
+  // PWA — register the service worker. We use the `/piscope/sw.js` route (not the static
+  // file) because that response sets `Service-Worker-Allowed: /piscope`, which is required
+  // for the SW to control the whole /piscope tree from a file that lives inside /piscope/static.
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/piscope/static/sw.js', { scope: '/piscope' }).catch(() => {});
+    navigator.serviceWorker.register('/piscope/sw.js', { scope: '/piscope' }).catch(() => {});
   }
+  // Polish add-ons
+  installDropHandler();
+  checkVersionBump();
 }
 
 document.addEventListener('DOMContentLoaded', init);
