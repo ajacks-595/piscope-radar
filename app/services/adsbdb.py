@@ -17,7 +17,10 @@ URL = "https://api.adsbdb.com/v0/callsign/{callsign}"
 async def lookup(callsign: str) -> Optional[dict[str, Any]]:
     callsign = (callsign or "").upper().strip()
     if not _CALLSIGN_RE.match(callsign):
-        return None
+        # Invalid callsign (military stand-ins like "@@@@@@@@", or strings with spaces).
+        # Treat as "no data" rather than an upstream failure so the API returns 200 {} and
+        # the frontend doesn't log a 502 for what is really a client-side classification.
+        return {}
     cached = _CACHE.get(callsign)
     if cached is not None:
         return cached

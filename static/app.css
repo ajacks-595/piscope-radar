@@ -202,6 +202,54 @@ a { color: var(--accent); }
 .webhook-row .types-row label { font-size: 11px; color: var(--secondary-text); display: inline-flex; align-items: center; gap: 4px; }
 .webhook-row .controls-row { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; }
 
+/* Loading skeletons — shown while photo / route lookups are in flight. */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-bg);
+  border-radius: var(--radius-md);
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--primary-text) 8%, transparent) 50%,
+    transparent 100%);
+  animation: skeleton-sweep 1.4s ease-in-out infinite;
+}
+.skeleton-line {
+  height: 12px;
+  margin: 6px 0;
+  width: 60%;
+}
+.skeleton-line.wide { width: 90%; }
+@keyframes skeleton-sweep {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}
+
+/* Drag-and-drop overlay for backup-zip import */
+.dropzone-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 4000;
+  font-size: 18px;
+  color: var(--primary-text);
+  border: 3px dashed var(--accent);
+  pointer-events: none;
+}
+.dropzone-overlay span {
+  background: var(--panel-bg);
+  padding: 16px 32px;
+  border-radius: var(--radius-lg);
+}
+
 /* Photo gallery / carousel */
 .detail-photos {
   position: relative;
