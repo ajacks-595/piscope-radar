@@ -78,6 +78,10 @@ DEFAULTS: dict[str, Any] = {
     # reduce SQLite write pressure on slow storage (SD cards). Default 5 = every 10 s at
     # the default 2 s poll interval.
     "snapshot_every_n_polls": 5,
+    # Receiver-health watchdog: if every feed has been failing continuously for this many
+    # minutes, fire a `feed_down` webhook (and a `feed_recovered` webhook when it comes back).
+    # 0 disables the watchdog entirely. Useful for "is my Pi still alive?" Discord alerts.
+    "watchdog_outage_minutes": 5,
 }
 
 # Settings the user should never read back over the wire.
