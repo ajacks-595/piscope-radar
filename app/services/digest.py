@@ -247,6 +247,7 @@ async def _maybe_add_ai_commentary(digest: dict[str, Any]) -> None:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False, "think": False,
+            "keep_alive": settings_store.get("ollama_keep_alive") or 0,
             "options": {"temperature": 0.5, "top_p": 0.9, "num_predict": 200, "stop": ["\n\n\n"]},
         }
         client = await get_client()

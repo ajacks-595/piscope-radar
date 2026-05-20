@@ -842,7 +842,11 @@ input[type="range"] {
   position: absolute;
   left: 24px;
   top: -2px;
-  pointer-events: none;
+  /* Clickable: the entire label area selects the aircraft, matching the icon's behaviour.
+     Previously pointer-events: none meant only the small SVG was a hit target. `cursor:
+     pointer` makes the affordance obvious. */
+  pointer-events: auto;
+  cursor: pointer;
   white-space: nowrap;
   font-family: var(--font-mono);
   background: rgba(0, 0, 0, 0.55);
@@ -1014,6 +1018,14 @@ input[type="range"] {
   .map-section  { grid-column: 1; }
 }
 
+/* ------------- Dark-filter map variants (iteration 6) -------------
+ * `data-tile-filter="dark"` is set on #map when a `darkFilter: true` preset is active.
+ * The filter inverts brightness then back-rotates hue so blues stay blue and water still
+ * reads as water. Aircraft markers / overlays sit on different panes and are not affected. */
+#map[data-tile-filter="dark"] .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9);
+}
+
 /* ------------- terminal-only coord grid ------------- */
 .coord-grid {
   position: absolute;
@@ -1060,6 +1072,15 @@ input[type="range"] {
 }
 .ai-brief p { margin: 0 0 6px; }
 .ai-brief p:last-child { margin-bottom: 0; }
+.ai-verify {
+  margin-top: 8px;
+  font-size: 11px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.ai-verify a { color: var(--accent); }
 
 /* ------------- Daily digest card (iteration 5) ------------- */
 .digest-headlines {
