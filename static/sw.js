@@ -1,8 +1,10 @@
 /* PiScope Radar service worker. Only caches the app shell so install-to-homescreen works offline-ish;
  * the live data path (WS, API) always hits the network. */
+// IMPORTANT: do NOT pre-cache `/piscope` (the HTML root). Each release stamps a new `?v=…`
+// onto the static asset URLs in that HTML, and if we cache the HTML we keep serving stale
+// asset URLs forever. Network-first for the HTML, cache-first for the static assets — that
+// way deep-links and version bumps just work on the very next navigation.
 const SHELL = [
-  '/piscope',
-  '/piscope/static/index.html',
   '/piscope/static/app.css',
   '/piscope/static/themes.css',
   '/piscope/static/app.js',
@@ -10,7 +12,7 @@ const SHELL = [
   '/piscope/static/icons/aircraft.svg',
   '/piscope/static/manifest.webmanifest',
 ];
-const CACHE = 'piscope-shell-v2';
+const CACHE = 'piscope-shell-v4';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));

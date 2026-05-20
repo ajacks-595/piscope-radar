@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .routers import api as api_router
@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 
 # Version stamp. Bump whenever you ship a notable user-facing change — the frontend reads
 # this via /piscope/api/version and pops a "✨ What's new" toast on first load after a bump.
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 app = FastAPI(title="PiScope Radar", version=VERSION, lifespan=lifespan)
 
@@ -67,8 +67,16 @@ async def root() -> RedirectResponse:
 
 
 @app.get("/piscope")
-async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+async def index() -> HTMLResponse:
+    # Stamp the running VERSION onto every same-origin static asset reference so a release
+    # bump automatically invalidates the browser's HTTP cache. Without this, users have to
+    # hard-reload after upgrades to see new JS/CSS — and most won't bother.
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    for asset in ("themes.css", "app.css", "radar.js", "app.js"):
+        html = html.replace(f'"/piscope/static/{asset}"', f'"/piscope/static/{asset}?v={VERSION}"')
+    # `no-store` is stronger than `no-cache` — the browser won't keep the HTML at all, so an
+    # upgrade always delivers the freshly-versioned asset URLs on the very next navigation.
+    return HTMLResponse(html, headers={"Cache-Control": "no-store, must-revalidate"})
 
 
 @app.get("/piscope/sw.js")
