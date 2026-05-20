@@ -370,6 +370,14 @@ function applyAircraftUpdate(data) {
     fitToData();
   }
 
+  // URL-deeplinked selection — apply once the shared aircraft actually appears in the feed.
+  // Otherwise we'd lose the selection on first paint (the list is empty during init()).
+  if (state._pendingSelect && state.aircraft.has(state._pendingSelect)) {
+    const target = state._pendingSelect;
+    state._pendingSelect = null;
+    selectAircraft(target, { pan: true });
+  }
+
   if (radar) {
     radar.setReceiver(state.receiver);
     radar.setAircraft([...state.aircraft.values()].map((a) => ({
@@ -1207,6 +1215,8 @@ function selectAircraft(hex, { pan }) {
     map.panTo([ac.lat, ac.lon], { animate: true });
   }
   renderDetailPanel(ac);
+  // Reflect the selection in the URL so the share-link round-trips.
+  if (typeof scheduleUrlStateWrite === 'function') scheduleUrlStateWrite();
 }
 
 function refreshRowSelection(hex, on) {
@@ -2467,7 +2477,37 @@ function handleKeyboard(e) {
   if (e.key === 'p' || e.key === 'P') { toggleReplay(); return; }
   if (e.key === 'w' || e.key === 'W') { toggleWeatherOverlay(); return; }
   if (e.key === 'n' || e.key === 'N') { toggleDayNight(); return; }
+  // Sidebar navigation: ↑/↓ cycle through visible aircraft rows; Enter pans to the
+  // current selection. The arrow keys deliberately don't pan (selectAircraft({pan:false}))
+  // so the user can scrub the list quickly without yanking the map around.
+  if (e.key === 'ArrowDown') { e.preventDefault(); moveSidebarFocus(1); return; }
+  if (e.key === 'ArrowUp')   { e.preventDefault(); moveSidebarFocus(-1); return; }
+  if (e.key === 'Enter') {
+    if (state.selectedHex && map) {
+      const ac = state.aircraft.get(state.selectedHex);
+      if (ac && ac.lat != null) map.panTo([ac.lat, ac.lon], { animate: true });
+    }
+    return;
+  }
   if (e.key === 'Escape') { hideContextMenu(); closeSettings(); closeEvents(); closeStats(); closeViews(); closeKeyboardHelp(); }
+}
+
+// Move the sidebar selection by `delta` rows (1 = down, -1 = up). Reads order directly
+// from the live DOM rather than re-sorting the aircraft list — guarantees the cursor
+// matches what the user sees, regardless of which sort/filter combo is active.
+function moveSidebarFocus(delta) {
+  const rows = [...document.querySelectorAll('#aircraft-list .aircraft-row')];
+  if (!rows.length) return;
+  const currentIdx = rows.findIndex((r) => r.dataset.hex === state.selectedHex);
+  let nextIdx;
+  if (currentIdx === -1) {
+    nextIdx = delta > 0 ? 0 : rows.length - 1;
+  } else {
+    nextIdx = (currentIdx + delta + rows.length) % rows.length;
+  }
+  const target = rows[nextIdx];
+  selectAircraft(target.dataset.hex, { pan: false });
+  target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 function showKeyboardHelp() {
   let m = document.getElementById('kb-help-modal');
@@ -2481,6 +2521,8 @@ function showKeyboardHelp() {
       <div class="tab-body">
         <table class="help-table">
           <tr><td><kbd>/</kbd></td><td>Focus search</td></tr>
+          <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Cycle aircraft list</td></tr>
+          <tr><td><kbd>Enter</kbd></td><td>Pan map to selected aircraft</td></tr>
           <tr><td><kbd>F</kbd></td><td>Toggle follow mode</td></tr>
           <tr><td><kbd>R</kbd></td><td>Recenter on receiver</td></tr>
           <tr><td><kbd>Z</kbd></td><td>Zoom to fit data</td></tr>
@@ -2745,6 +2787,7 @@ function bindUI() {
     refreshMapMarkers();
     refreshTrails();
     refreshRangeRings();
+    if (typeof scheduleUrlStateWrite === 'function') scheduleUrlStateWrite();
     fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ theme: e.target.value }) });
   });
 
@@ -2860,11 +2903,97 @@ function installDropHandler() {
   });
 }
 
+// ---------- Shareable state in URL hash ----------
+// Mirror the user-visible view into `location.hash` so a copied URL reproduces
+// the same map centre/zoom/theme/selection on someone else's machine. We use the hash
+// (not the query string) because hash changes don't trigger a server round-trip, and
+// we use `history.replaceState` so map panning doesn't pollute the back/forward stack.
+
+function readUrlState() {
+  try {
+    const hash = location.hash.replace(/^#/, '');
+    if (!hash) return null;
+    const params = new URLSearchParams(hash);
+    const out = {};
+    const c = params.get('center');
+    if (c) {
+      const [lat, lon] = c.split(',').map(Number);
+      // Same validation as setReceiverLocation — silently ignore obviously bad coords.
+      if (Number.isFinite(lat) && Number.isFinite(lon) &&
+          lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+        out.center = { lat, lon };
+      }
+    }
+    const z = parseInt(params.get('zoom') || '', 10);
+    if (Number.isFinite(z) && z >= 2 && z <= 18) out.zoom = z;
+    const t = params.get('theme');
+    if (t) out.theme = t;
+    const sel = params.get('select');
+    if (sel) out.select = sel.toLowerCase();
+    return out;
+  } catch (e) { return null; }
+}
+
+// Apply URL state on first load — runs after setupMap so `map` is ready. Theme is applied
+// before the map move so the basemap doesn't flash to the default first. Selection is
+// stashed in `state._pendingSelect` and consumed by applyAircraftUpdate once that hex appears
+// (since on first load the aircraft list is still empty).
+function applyUrlState() {
+  const u = readUrlState();
+  if (!u) return;
+  if (u.theme) {
+    const sel = document.getElementById('theme-select');
+    if (sel && [...sel.options].some((o) => o.value === u.theme)) {
+      sel.value = u.theme;
+      // Reuse the existing change-handler in bindUI — keeps tile + radar + persist logic in one place.
+      sel.dispatchEvent(new Event('change'));
+    }
+  }
+  if (u.center && map) {
+    map.setView([u.center.lat, u.center.lon], u.zoom ?? map.getZoom());
+    // If the URL told us where to look, skip the auto fit-to-data that would otherwise
+    // snap the viewport away from the shared view on first WS message.
+    state.didInitialFit = true;
+  } else if (u.zoom && map) {
+    map.setZoom(u.zoom);
+  }
+  if (u.select) state._pendingSelect = u.select;
+}
+
+// Coalesce frequent writes (a pan-and-zoom can fire dozens of moveend events) into one
+// replaceState call so we don't spam the history API or the URL bar.
+let _urlStateWriteTimer = null;
+function scheduleUrlStateWrite() {
+  clearTimeout(_urlStateWriteTimer);
+  _urlStateWriteTimer = setTimeout(writeUrlState, 350);
+}
+
+function writeUrlState() {
+  if (!map) return;
+  const center = map.getCenter();
+  const zoom = map.getZoom();
+  const params = new URLSearchParams();
+  params.set('center', `${center.lat.toFixed(4)},${center.lng.toFixed(4)}`);
+  params.set('zoom', String(zoom));
+  if (state.settings?.theme) params.set('theme', state.settings.theme);
+  if (state.selectedHex) params.set('select', state.selectedHex);
+  const newHash = `#${params.toString()}`;
+  // Avoid no-op writes — replaceState still fires hashchange, and we don't want loops.
+  if (location.hash !== newHash) {
+    history.replaceState(null, '', `${location.pathname}${location.search}${newHash}`);
+  }
+}
+
 async function init() {
   bindUI();
   await loadSettings();
   setupMap();
   applySettingsToUI();   // re-apply after radar is created
+  // Re-hydrate from URL before the first WS frame — theme + map view + selection.
+  applyUrlState();
+  // Persist map view + selection into the URL as the user pans/zooms/selects.
+  map.on('moveend', scheduleUrlStateWrite);
+  map.on('zoomend', scheduleUrlStateWrite);
   const client = new PiScopeClient();
   client.connect();
   // Best-effort initial REST fetch in case WS hasn't connected yet
