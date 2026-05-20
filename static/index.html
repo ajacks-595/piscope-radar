@@ -37,6 +37,7 @@
       <button id="open-stats" class="icon-button" title="Stats &amp; receiver health">📊</button>
       <button id="toggle-replay" class="icon-button" title="Replay timeline" aria-pressed="false">⏪</button>
       <button id="toggle-aero" class="icon-button" title="Aviation overlay (OpenAIP)" aria-pressed="false">✈</button>
+      <button id="toggle-airports" class="icon-button" title="Airport overlay (large + medium)" aria-pressed="false">🛫</button>
       <button id="toggle-weather" class="icon-button" title="Weather radar overlay" aria-pressed="false">⛅</button>
       <button id="toggle-heatmap" class="icon-button" title="Traffic heatmap" aria-pressed="false">🔥</button>
       <button id="toggle-day-night" class="icon-button" title="Day / night terminator" aria-pressed="false">🌓</button>
@@ -56,6 +57,9 @@
           <option value="solarizedLight">Solarized Light</option>
           <option value="nord">Nord</option>
           <option value="synthwave">Synthwave</option>
+          <option value="dracula">Dracula</option>
+          <option value="tokyoNight">Tokyo Night</option>
+          <option value="catppuccinMocha">Catppuccin Mocha</option>
         </select>
       </label>
       <button id="open-settings" class="icon-button" title="Settings">⚙</button>
@@ -166,6 +170,7 @@
       </header>
       <nav class="tabs">
         <button class="tab active" data-stats-tab="health">Health</button>
+        <button class="tab" data-stats-tab="today">Today</button>
         <button class="tab" data-stats-tab="daily">Daily</button>
         <button class="tab" data-stats-tab="coverage">Polar coverage</button>
         <button class="tab" data-stats-tab="leaderboard">Type leaderboard</button>
@@ -175,6 +180,13 @@
       <div class="tab-body">
         <section class="stats-section active" data-stats-section="health">
           <dl class="detail-grid" id="health-grid"></dl>
+        </section>
+        <section class="stats-section" data-stats-section="today">
+          <div class="today-toolbar" style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <span class="hint" id="today-generated">Loading…</span>
+            <button class="secondary" id="today-refresh">Generate now</button>
+          </div>
+          <div id="today-card"><p class="hint">No digest yet — click Generate now or wait until the configured time.</p></div>
         </section>
         <section class="stats-section" data-stats-section="daily">
           <table class="stats-table"><thead><tr><th>Date</th><th>Polls</th><th>Unique</th><th>Max range (nm)</th><th>Emergencies</th><th>Military</th></tr></thead><tbody id="stats-rows"></tbody></table>
@@ -306,7 +318,9 @@
         <button class="tab" data-tab="appearance">Appearance</button>
         <button class="tab" data-tab="map">Map</button>
         <button class="tab" data-tab="flightaware">FlightAware</button>
+        <button class="tab" data-tab="ai">AI</button>
         <button class="tab" data-tab="notifications">Notifications</button>
+        <button class="tab" data-tab="digest">Digest</button>
         <button class="tab" data-tab="general">General</button>
       </nav>
       <div class="tab-body">
@@ -426,6 +440,26 @@
           </div>
         </section>
 
+        <section class="tab-section" data-section="ai">
+          <h3>Local AI explanations</h3>
+          <p class="hint">PiScope will POST to an Ollama-compatible endpoint (e.g. Ollama running on your Mac/NAS on the LAN) to generate a short natural-language brief for any selected aircraft. Disabled by default; the "Explain this aircraft" button only appears when this is configured and enabled.</p>
+          <div class="field">
+            <label for="setting-ollama-url">Ollama URL</label>
+            <input id="setting-ollama-url" type="url" placeholder="http://10.0.0.x:11434" autocomplete="off" />
+            <span class="hint">Must be reachable from the Pi. Typical setup: <code>OLLAMA_HOST=0.0.0.0:11434 ollama serve</code> on the host.</span>
+          </div>
+          <div class="field">
+            <label for="setting-ollama-model">Model</label>
+            <input id="setting-ollama-model" type="text" placeholder="gemma4:latest" autocomplete="off" />
+            <span class="hint">Model tag as <code>ollama list</code> reports it. The Test connection button below will tell you whether your tag is currently loaded.</span>
+          </div>
+          <label class="checkbox-row"><input id="setting-ollama-enabled" type="checkbox" /> Enable AI explanations</label>
+          <div class="fa-action-row" style="margin-top:8px">
+            <button id="test-ollama-btn" class="secondary">Test connection</button>
+            <span class="hint" id="test-ollama-result"></span>
+          </div>
+        </section>
+
         <section class="tab-section" data-section="notifications">
           <label class="checkbox-row"><input id="setting-notify-military" type="checkbox" /> Military aircraft entering range</label>
           <label class="checkbox-row"><input id="setting-notify-emergency" type="checkbox" /> Emergency squawks (7500/7600/7700)</label>
@@ -448,6 +482,29 @@
           </div>
           <button id="enable-notifications" class="secondary">Enable browser notifications</button>
           <span id="notif-status" class="hint"></span>
+        </section>
+
+        <section class="tab-section" data-section="digest">
+          <h3>Daily digest</h3>
+          <p class="hint">Once a day at a configurable local time, PiScope rolls up the last 24 hours into a digest (event totals, top types, rare callouts) and delivers it via the channels you enable below. AI commentary is auto-added if the AI tab above is configured.</p>
+          <label class="checkbox-row"><input id="setting-digest-enabled" type="checkbox" /> Enable daily digest</label>
+          <div class="field">
+            <label for="setting-digest-time">Delivery time (HH:MM, 24h, local)</label>
+            <input id="setting-digest-time" type="text" placeholder="07:30" pattern="^[0-2][0-9]:[0-5][0-9]$" />
+          </div>
+          <h4>Deliver to</h4>
+          <label class="checkbox-row"><input id="setting-digest-inapp" type="checkbox" /> In-app card (under Stats → Today)</label>
+          <label class="checkbox-row"><input id="setting-digest-webhook" type="checkbox" /> Webhook (subscribe to <code>digest</code> on a webhook above)</label>
+          <label class="checkbox-row"><input id="setting-digest-email" type="checkbox" /> Email via SMTP</label>
+          <hr style="border:0;border-top:1px solid var(--separator);margin:10px 0;" />
+          <h4>SMTP (used only if email delivery is enabled)</h4>
+          <div class="field"><label for="setting-smtp-host">SMTP host</label><input id="setting-smtp-host" type="text" placeholder="smtp.example.com" autocomplete="off" /></div>
+          <div class="field"><label for="setting-smtp-port">SMTP port</label><input id="setting-smtp-port" type="number" min="1" max="65535" placeholder="587" /></div>
+          <div class="field"><label for="setting-smtp-user">Username</label><input id="setting-smtp-user" type="text" autocomplete="off" /></div>
+          <div class="field"><label for="setting-smtp-pass">Password</label><input id="setting-smtp-pass" type="password" placeholder="paste password (write-only)" autocomplete="off" /></div>
+          <div class="field"><label for="setting-smtp-from">From</label><input id="setting-smtp-from" type="email" placeholder="piscope@yourdomain" /></div>
+          <div class="field"><label for="setting-smtp-to">To</label><input id="setting-smtp-to" type="email" placeholder="you@yourdomain" /></div>
+          <label class="checkbox-row"><input id="setting-smtp-starttls" type="checkbox" /> Use STARTTLS (recommended)</label>
         </section>
 
         <section class="tab-section" data-section="general">

@@ -1022,3 +1022,104 @@ input[type="range"] {
   pointer-events: none;
   opacity: 0.4;
 }
+
+/* ------------- Airport overlay (iteration 5) ------------- */
+.airport-marker { pointer-events: auto; }
+.airport-marker .ap-dot {
+  display: block;
+  width: 100%; height: 100%;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 60%, white);
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+.airport-marker.ap-large .ap-dot {
+  background: var(--accent);
+}
+.airport-marker .ap-label {
+  position: absolute;
+  left: 110%;
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--primary-text);
+  text-shadow: 0 0 3px var(--panel-bg), 0 0 3px var(--panel-bg);
+  pointer-events: none;
+}
+
+/* ------------- AI brief (iteration 5) ------------- */
+.ai-brief {
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-bg));
+  border-left: 3px solid var(--accent);
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ai-brief p { margin: 0 0 6px; }
+.ai-brief p:last-child { margin-bottom: 0; }
+
+/* ------------- Daily digest card (iteration 5) ------------- */
+.digest-headlines {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.digest-stat {
+  background: var(--surface-bg);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  text-align: center;
+}
+.digest-stat-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1.1;
+}
+.digest-breakdown { display: flex; flex-wrap: wrap; gap: 6px; }
+.digest-pill {
+  background: color-mix(in srgb, var(--primary-text) 10%, transparent);
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+.digest-callouts {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+}
+.digest-callouts li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  padding: 4px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--primary-text) 8%, transparent);
+}
+.digest-callouts li:last-child { border-bottom: none; }
+.digest-kind {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--primary-text) 12%, transparent);
+}
+.digest-kind-emergency { background: color-mix(in srgb, var(--alert) 35%, transparent); color: var(--alert); }
+.digest-kind-military  { background: color-mix(in srgb, var(--accent) 25%, transparent); color: var(--accent); }
+.digest-kind-watchlist { background: color-mix(in srgb, var(--accent-muted) 35%, transparent); }
+.digest-kind-rare      { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.digest-ai {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface-bg));
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+}
+.digest-ai h4 { margin: 0 0 4px; }
+.digest-ai p  { margin: 0; font-size: 13px; line-height: 1.5; }

@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from .routers import api as api_router
 from .routers import ws as ws_router
 from .services import settings as settings_store
+from .services import digest as digest_svc
 from .services._http import close_client
 from .services.feed import feed_service
 
@@ -30,17 +31,19 @@ STATIC_DIR = BASE_DIR / "static"
 async def lifespan(app: FastAPI):  # noqa: ARG001
     settings_store.init_db()
     await feed_service.start()
+    digest_svc.start_scheduler()
     log.info("PiScope Radar started — open http://127.0.0.1:8765/piscope")
     try:
         yield
     finally:
+        await digest_svc.stop_scheduler()
         await feed_service.stop()
         await close_client()
 
 
 # Version stamp. Bump whenever you ship a notable user-facing change — the frontend reads
 # this via /piscope/api/version and pops a "✨ What's new" toast on first load after a bump.
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 
 app = FastAPI(title="PiScope Radar", version=VERSION, lifespan=lifespan)
 

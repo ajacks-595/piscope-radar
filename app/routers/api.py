@@ -20,6 +20,8 @@ from fastapi import UploadFile, File
 from ..services import adsbdb, events as events_store, flightaware, hexdb, insights as insights_store, planespotters
 from ..services import records as records_store
 from ..services import settings as settings_store
+from ..services import ollama as ollama_svc
+from ..services import digest as digest_svc
 from ..services._http import LRUCache, get_client, reset_client
 from ..services.feed import feed_service
 
@@ -493,3 +495,71 @@ async def import_db(file: UploadFile = File(...)) -> dict[str, Any]:
     finally:
         await feed_service.start()
     return {"ok": True, "message": "Database restored; please refresh the page."}
+
+
+# --- AI explain (iteration 5) -----------------------------------------------
+
+# Strict allow-list of payload fields. Anything else in the body is dropped before the
+# call into ollama_svc.explain — we never let raw user keys flow into the prompt builder.
+_EXPLAIN_ALLOWED_FIELDS = {
+    "hex", "callsign", "type_code", "registration", "airline_name",
+    "operator", "origin_name", "origin_municipality", "origin_iata", "origin_icao",
+    "destination_name", "destination_municipality", "destination_iata", "destination_icao",
+    "military",
+}
+
+
+@router.get("/explain/status")
+async def explain_status() -> dict[str, Any]:
+    """Cheap predicate the frontend uses to decide whether to show the "Explain" button.
+    Doesn't actually call Ollama — only reports the configured-ness of the feature."""
+    return {
+        "configured": ollama_svc.is_configured(),
+        "model": settings_store.get("ollama_model") or "",
+        "url_set": bool((settings_store.get("ollama_url") or "").strip()),
+    }
+
+
+@router.post("/explain")
+async def explain(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Generate a short natural-language brief for one aircraft."""
+    if not ollama_svc.is_configured():
+        raise HTTPException(status_code=503, detail="AI explanations not configured")
+    payload = {k: body[k] for k in body.keys() if k in _EXPLAIN_ALLOWED_FIELDS}
+    if not payload.get("hex"):
+        raise HTTPException(status_code=400, detail="hex required")
+    result = await ollama_svc.explain(payload)
+    if result.get("source") == "unavailable":
+        # 200 with an envelope rather than 5xx — the frontend renders an inline error
+        # instead of a console-spew red 500.
+        return result
+    return result
+
+
+@router.post("/ollama/test")
+async def ollama_test() -> dict[str, Any]:
+    """Settings → AI test-connection button. Returns reachability + a list of models so
+    the user can confirm their configured model exists."""
+    return await ollama_svc.ping()
+
+
+# --- Daily digest (iteration 5) ---------------------------------------------
+
+
+@router.get("/digest")
+async def digest_latest() -> dict[str, Any]:
+    """Return the most-recently-persisted digest. The frontend uses this to render the
+    Stats → Today card. If nothing has been generated yet, returns `null`."""
+    latest = digest_svc.get_latest()
+    return {"digest": latest}
+
+
+@router.post("/digest/run")
+async def digest_run() -> dict[str, Any]:
+    """Build and deliver a digest right now — used by the "Send test digest" button."""
+    try:
+        d = await digest_svc.run_digest(with_ai=True)
+        return {"ok": True, "digest": d}
+    except Exception as exc:
+        log.exception("digest run failed")
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")

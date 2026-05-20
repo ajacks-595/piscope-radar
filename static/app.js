@@ -74,6 +74,8 @@ const THEME_DEFAULT_TILES = {
   light: 'esriLight', dark: 'esriDark', tactical: 'sat',
   sectional: 'voyager', solarizedDark: 'esriDark', solarizedLight: 'esriLight',
   nord: 'esriDark', synthwave: 'esriDark',
+  // iteration 5 dark themes
+  dracula: 'esriDark', tokyoNight: 'esriDark', catppuccinMocha: 'esriDark',
 };
 
 const AIRCRAFT_SVG = '<svg viewBox="0 0 20 22"><path d="M10,0 L13,6 L20,8 L20,10 L13,10 L12,18 L15,20 L15,21 L10,19.5 L5,21 L5,20 L8,18 L7,10 L0,10 L0,8 L7,6 Z"/></svg>';
@@ -854,6 +856,99 @@ async function saveOpenaipKey() {
   syncAeroOverlay();
 }
 
+/* ---------- Airport overlay (iteration 5) -------------------------------- */
+// Bundled large + medium airports. The JSON is loaded lazily on first toggle so an unused
+// overlay doesn't cost anyone 460 KB of bandwidth. Layer rendering is zoom-aware:
+//   • large airports (type "L") render at all zooms ≥ 4
+//   • medium airports (type "M") only appear at zoom ≥ 8
+//   • IATA labels appear at zoom ≥ 9
+// We bypass Leaflet's vector layer for performance: each airport is a tiny divIcon marker
+// rather than a circleMarker so it doesn't redraw on every pan.
+let airportLayer = null;        // Leaflet layerGroup
+let airportData = null;         // parsed JSON
+let _airportFetchPromise = null;
+let _airportZoomHandler = null;
+
+async function loadAirportData() {
+  if (airportData) return airportData;
+  if (_airportFetchPromise) return _airportFetchPromise;
+  _airportFetchPromise = fetch('/piscope/static/data/airports.json')
+    .then((r) => r.ok ? r.json() : [])
+    .then((data) => { airportData = data; return data; })
+    .catch((e) => { console.warn('airport data load failed', e); return []; });
+  return _airportFetchPromise;
+}
+
+function makeAirportIcon(ap, withLabel) {
+  const large = ap.t === 'L';
+  const size = large ? 12 : 8;
+  const label = withLabel && (ap.iata || ap.icao) ? `<span class="ap-label">${ap.iata || ap.icao}</span>` : '';
+  return L.divIcon({
+    className: `airport-marker ${large ? 'ap-large' : 'ap-medium'}`,
+    html: `<span class="ap-dot"></span>${label}`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  });
+}
+
+async function syncAirportOverlay() {
+  if (!map) return;
+  const want = !!state.settings.airport_overlay_enabled;
+  const btn = document.getElementById('toggle-airports');
+  if (btn) {
+    btn.setAttribute('aria-pressed', want ? 'true' : 'false');
+    btn.classList.toggle('active', want);
+    btn.title = want ? 'Hide airport overlay' : 'Show airport overlay (large + medium)';
+  }
+  if (!want) {
+    if (airportLayer) { map.removeLayer(airportLayer); airportLayer = null; }
+    if (_airportZoomHandler) { map.off('zoomend', _airportZoomHandler); _airportZoomHandler = null; }
+    return;
+  }
+  const data = await loadAirportData();
+  if (!data.length) return;
+  if (!airportLayer) {
+    airportLayer = L.layerGroup();
+  }
+  // Re-render the layer based on current zoom. Marker creation is cheap (~3000 divIcons)
+  // and only happens on overlay toggle + zoom change, not on every map pan.
+  const drawForZoom = () => {
+    const zoom = map.getZoom();
+    const showMedium = zoom >= 8;
+    const withLabel = zoom >= 9;
+    airportLayer.clearLayers();
+    for (const ap of data) {
+      if (ap.t === 'M' && !showMedium) continue;
+      const marker = L.marker([ap.lat, ap.lon], {
+        icon: makeAirportIcon(ap, withLabel),
+        interactive: true,
+        keyboard: false,
+        // Behind aircraft markers — markersLayer is added later in setupMap.
+        zIndexOffset: -1000,
+      });
+      marker.bindTooltip(`<strong>${escapeHtml(ap.iata || ap.icao || ap.i)}</strong> · ${escapeHtml(ap.n)}${ap.mun ? '<br>' + escapeHtml(ap.mun) : ''}`,
+        { direction: 'top', offset: [0, -6] });
+      airportLayer.addLayer(marker);
+    }
+  };
+  drawForZoom();
+  if (!_airportZoomHandler) {
+    _airportZoomHandler = drawForZoom;
+    map.on('zoomend', _airportZoomHandler);
+  }
+  airportLayer.addTo(map);
+}
+
+async function toggleAirportOverlay() {
+  const newEnabled = !state.settings.airport_overlay_enabled;
+  state.settings.airport_overlay_enabled = newEnabled;
+  await syncAirportOverlay();
+  try {
+    await fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ airport_overlay_enabled: newEnabled }) });
+  } catch (e) { console.warn('failed to persist airport toggle', e); }
+}
+
 function drawCoordinateGrid() {
   removeCoordinateGrid();
   coordGridEl = document.createElement('canvas');
@@ -1247,6 +1342,14 @@ function renderDetailPanel(ac) {
     <section id="detail-live">${liveSectionHtml(ac)}</section>
     <section><h3>Photo</h3><div class="detail-photo skeleton" id="detail-photo"></div></section>
     <section><h3>Route</h3><div id="detail-route"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div></div></section>
+    <section id="ai-section" hidden>
+      <h3>AI brief</h3>
+      <div class="fa-action-row">
+        <button class="secondary" id="ai-explain-btn">✨ Explain this aircraft</button>
+        <span class="hint" id="ai-explain-hint"></span>
+      </div>
+      <div id="ai-result"></div>
+    </section>
     <section>
       <h3>FlightAware</h3>
       <div class="fa-action-row">
@@ -1262,6 +1365,9 @@ function renderDetailPanel(ac) {
   `;
   document.getElementById('fa-fetch-btn').addEventListener('click', () => fetchFlightAware(ac));
   document.getElementById('bookmark-toggle').addEventListener('click', toggleBookmarkSelected);
+  // Show the AI section only when /api/explain/status reports the backend is configured.
+  // Status is fetched once per detail render so toggling the setting takes effect immediately.
+  syncAiSection(ac);
   updateBookmarkStar();
   fetchEnrichment(ac);
 }
@@ -1512,6 +1618,127 @@ function drawRouteLineOnMap(route, ac) {
   }
 }
 
+// ---------- AI explain (Ollama) -------------------------------------------
+// The Explain section in the detail panel hides itself when Ollama isn't configured,
+// so the feature is invisible to anyone who hasn't opted in. Status comes from a
+// single REST call per render — the result is intentionally not cached client-side
+// so a fresh settings change is reflected on the very next selection.
+
+async function syncAiSection(ac) {
+  const sec = document.getElementById('ai-section');
+  if (!sec) return;
+  try {
+    const status = await fetch('/piscope/api/explain/status').then((r) => r.json());
+    if (!status.configured) { sec.hidden = true; return; }
+    sec.hidden = false;
+    const btn = document.getElementById('ai-explain-btn');
+    const hint = document.getElementById('ai-explain-hint');
+    if (hint) hint.textContent = status.model ? `via ${status.model}` : '';
+    // Replace the click handler each render so it always targets the current aircraft.
+    btn.onclick = () => fetchExplain(ac);
+  } catch (e) {
+    sec.hidden = true;
+  }
+}
+
+// Settings → AI "Test connection" button. Saves the user's typed values first so the
+// test reflects what they'd actually be saving (you don't want to confuse "I changed
+// the URL but didn't save" with "the URL doesn't work").
+async function testOllamaConnection() {
+  const out = document.getElementById('test-ollama-result');
+  if (!out) return;
+  out.textContent = 'Testing…';
+  out.style.color = '';
+  const url = document.getElementById('setting-ollama-url')?.value.trim();
+  const model = document.getElementById('setting-ollama-model')?.value.trim();
+  try {
+    // Persist URL+model first so /api/ollama/test reads the right values.
+    await fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ollama_url: url, ollama_model: model }) });
+    const res = await fetch('/piscope/api/ollama/test', { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      const m = data.configured_model;
+      if (m && !data.model_present) {
+        out.textContent = `✓ reachable, but model "${m}" not found (have: ${(data.models || []).slice(0,5).join(', ') || 'none'})`;
+        out.style.color = 'var(--alert)';
+      } else {
+        out.textContent = `✓ reachable — ${data.models?.length || 0} models available`;
+        out.style.color = 'var(--accent)';
+      }
+    } else {
+      out.textContent = `✗ ${data.error || 'unreachable'}`;
+      out.style.color = 'var(--alert)';
+    }
+  } catch (e) {
+    out.textContent = `✗ ${e.message}`;
+    out.style.color = 'var(--alert)';
+  }
+}
+
+async function fetchExplain(ac) {
+  const btn = document.getElementById('ai-explain-btn');
+  const result = document.getElementById('ai-result');
+  if (!btn || !result) return;
+  // Guard against double-fire — the backend de-dups concurrent requests, but the user
+  // still sees a frozen button if we don't reflect it visually.
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = 'Generating…';
+  result.innerHTML = '<div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div>';
+  try {
+    // Only send the structured enrichment fields the backend allow-lists; anything else
+    // is dropped server-side anyway, but keeping the payload small saves bytes. Route info
+    // comes from the adsbdb cache (keyed by callsign), which the existing detail flow has
+    // already warmed by the time the user clicks Explain.
+    const enr = (ac.callsign && state.enrichmentCache.adsbdb.get(ac.callsign)) || {};
+    const payload = {
+      hex: ac.hex,
+      callsign: ac.callsign,
+      type_code: ac.type_code,
+      registration: ac.registration,
+      airline_name: enr.airline_name,
+      origin_name: enr.origin_name,
+      origin_municipality: enr.origin_municipality,
+      origin_iata: enr.origin_iata,
+      origin_icao: enr.origin_icao,
+      destination_name: enr.destination_name,
+      destination_municipality: enr.destination_municipality,
+      destination_iata: enr.destination_iata,
+      destination_icao: enr.destination_icao,
+      military: ac.military,
+    };
+    const res = await fetch('/piscope/api/explain', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      result.innerHTML = `<p class="hint" style="color:var(--alert)">Explain failed: ${escapeHtml(err.detail || res.statusText)}</p>`;
+      return;
+    }
+    const data = await res.json();
+    if (data.source === 'unavailable') {
+      result.innerHTML = `<p class="hint" style="color:var(--alert)">AI unavailable: ${escapeHtml(data.error || 'unknown')}</p>`;
+      return;
+    }
+    // Render with paragraph breaks. The brief is plain prose; we escape it and replace
+    // double-newlines with <p> tags. No raw HTML from the model ever reaches the DOM.
+    const safe = escapeHtml(data.text || '');
+    const paragraphs = safe.split(/\n\n+/).map((p) => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
+    const badge = data.source === 'cache'
+      ? '<span class="hint" style="font-size:10px; margin-left:6px">(cached)</span>'
+      : '';
+    result.innerHTML = `<div class="ai-brief">${paragraphs}</div><div style="margin-top:6px"><span class="hint">${data.source === 'cache' ? 'Cached response' : 'Fresh AI response'}</span>${badge}</div>`;
+  } catch (e) {
+    result.innerHTML = `<p class="hint" style="color:var(--alert)">Network error: ${escapeHtml(e.message)}</p>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
 // ---------- FlightAware ----------
 
 async function fetchFlightAware(ac) {
@@ -1677,6 +1904,7 @@ function applySettingsToUI() {
   if (map) applyTileLayerForTheme();
   if (map && state.receiver) refreshRangeRings();
   if (map) syncAeroOverlay();
+  if (map) syncAirportOverlay();
   if (map) {
     syncLabelPaneAttrs();
     refreshMapMarkers();   // re-render labels in the new mode
@@ -1772,6 +2000,26 @@ function populateSettingsModal() {
   } catch (e) {
     document.getElementById('setting-extra-feeds').value = '';
   }
+
+  // AI / digest / SMTP (iteration 5). Password inputs intentionally stay blank — the
+  // backend returns `***` for SECRET_KEYS so we don't echo them; submitting `***`
+  // keeps the stored value as-is.
+  const el = (id) => document.getElementById(id);
+  if (el('setting-ollama-url'))      el('setting-ollama-url').value = s.ollama_url || '';
+  if (el('setting-ollama-model'))    el('setting-ollama-model').value = s.ollama_model || 'gemma4:latest';
+  if (el('setting-ollama-enabled'))  el('setting-ollama-enabled').checked = !!s.ollama_enabled;
+  if (el('setting-digest-enabled'))  el('setting-digest-enabled').checked = s.digest_enabled !== false;
+  if (el('setting-digest-time'))     el('setting-digest-time').value = s.digest_local_time || '07:30';
+  if (el('setting-digest-inapp'))    el('setting-digest-inapp').checked = s.digest_deliver_in_app !== false;
+  if (el('setting-digest-webhook'))  el('setting-digest-webhook').checked = !!s.digest_deliver_webhook;
+  if (el('setting-digest-email'))    el('setting-digest-email').checked = !!s.digest_deliver_email;
+  if (el('setting-smtp-host'))       el('setting-smtp-host').value = s.smtp_host || '';
+  if (el('setting-smtp-port'))       el('setting-smtp-port').value = s.smtp_port || 587;
+  if (el('setting-smtp-user'))       el('setting-smtp-user').value = s.smtp_user || '';
+  if (el('setting-smtp-pass'))       el('setting-smtp-pass').value = '';
+  if (el('setting-smtp-from'))       el('setting-smtp-from').value = s.smtp_from || '';
+  if (el('setting-smtp-to'))         el('setting-smtp-to').value = s.smtp_to || '';
+  if (el('setting-smtp-starttls'))   el('setting-smtp-starttls').checked = s.smtp_use_starttls !== false;
 }
 
 // Latitude / longitude validators — returns the parsed number or null. Anything outside the
@@ -1833,7 +2081,26 @@ async function saveSettings() {
     daily_backup_dir: document.getElementById('setting-backup-dir').value.trim(),
     map_label_mode: document.getElementById('setting-label-mode').value,
     label_full_min_zoom: parseInt(document.getElementById('setting-label-min-zoom').value, 10) || 8,
+    // AI / digest / SMTP — iteration 5.
+    ollama_url:      document.getElementById('setting-ollama-url')?.value.trim() || '',
+    ollama_model:    document.getElementById('setting-ollama-model')?.value.trim() || 'gemma4:latest',
+    ollama_enabled:  !!document.getElementById('setting-ollama-enabled')?.checked,
+    digest_enabled:  !!document.getElementById('setting-digest-enabled')?.checked,
+    digest_local_time:       document.getElementById('setting-digest-time')?.value.trim() || '07:30',
+    digest_deliver_in_app:   !!document.getElementById('setting-digest-inapp')?.checked,
+    digest_deliver_webhook:  !!document.getElementById('setting-digest-webhook')?.checked,
+    digest_deliver_email:    !!document.getElementById('setting-digest-email')?.checked,
+    smtp_host:    document.getElementById('setting-smtp-host')?.value.trim() || '',
+    smtp_port:    parseInt(document.getElementById('setting-smtp-port')?.value, 10) || 587,
+    smtp_user:    document.getElementById('setting-smtp-user')?.value.trim() || '',
+    smtp_from:    document.getElementById('setting-smtp-from')?.value.trim() || '',
+    smtp_to:      document.getElementById('setting-smtp-to')?.value.trim() || '',
+    smtp_use_starttls: !!document.getElementById('setting-smtp-starttls')?.checked,
   };
+  // SMTP password — only send if the user typed something. Blank means "leave the stored value alone";
+  // backend treats `***` the same way (it's the redacted sentinel returned from get_all).
+  const pw = document.getElementById('setting-smtp-pass')?.value;
+  if (pw && pw !== '***') body.smtp_pass = pw;
   const res = await fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   state.settings = await res.json();
   await saveWebhooks();  // persist whatever's in the settings modal's webhook editor
@@ -2330,6 +2597,7 @@ function renderWebhookList() {
         <label><input type="checkbox" class="wh-t-rare"> Rare type</label>
         <label><input type="checkbox" class="wh-t-feed_down" title="Watchdog: receiver offline"> Feed down</label>
         <label><input type="checkbox" class="wh-t-feed_recovered" title="Watchdog: receiver back online"> Recovered</label>
+        <label><input type="checkbox" class="wh-t-digest" title="Daily digest"> Digest</label>
       </div>
       <div class="controls-row">
         <button class="secondary wh-test">Test</button>
@@ -2344,6 +2612,7 @@ function renderWebhookList() {
     row.querySelector('.wh-t-rare').checked      = types.includes('rare');
     row.querySelector('.wh-t-feed_down').checked      = types.includes('feed_down');
     row.querySelector('.wh-t-feed_recovered').checked = types.includes('feed_recovered');
+    row.querySelector('.wh-t-digest').checked         = types.includes('digest');
     row.querySelector('.wh-remove').onclick = () => { webhooksCache.splice(idx, 1); renderWebhookList(); };
     row.querySelector('.wh-test').onclick = async () => {
       const url = row.querySelector('.wh-url').value.trim();
@@ -2374,6 +2643,7 @@ function collectWebhooks() {
         row.querySelector('.wh-t-rare').checked      ? 'rare'      : null,
         row.querySelector('.wh-t-feed_down').checked      ? 'feed_down'      : null,
         row.querySelector('.wh-t-feed_recovered').checked ? 'feed_recovered' : null,
+        row.querySelector('.wh-t-digest').checked         ? 'digest'         : null,
       ].filter(Boolean),
     });
   });
@@ -2485,10 +2755,97 @@ async function renderLeaderboard() {
 function switchStatsTab(name) {
   for (const t of document.querySelectorAll('.tab[data-stats-tab]')) t.classList.toggle('active', t.dataset.statsTab === name);
   for (const s of document.querySelectorAll('.stats-section')) s.classList.toggle('active', s.dataset.statsSection === name);
+  if (name === 'today') renderTodayDigest();
   if (name === 'coverage') renderPolarCoverage();
   if (name === 'leaderboard') renderLeaderboard();
   if (name === 'records') renderRecords();
   if (name === 'bookmarks') renderBookmarksPanel();
+}
+
+/* ---------- Today digest card (iteration 5) ------------------------------- */
+// Pulls the most-recent persisted digest from /api/digest. Either pre-baked by the
+// daily scheduler, or fresh via the "Generate now" button (calls /api/digest/run).
+async function renderTodayDigest() {
+  const card = document.getElementById('today-card');
+  const stamp = document.getElementById('today-generated');
+  if (!card || !stamp) return;
+  card.innerHTML = '<div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div>';
+  stamp.textContent = 'Loading…';
+  try {
+    const data = await fetch('/piscope/api/digest').then((r) => r.json());
+    paintDigestCard(data.digest);
+  } catch (e) {
+    card.innerHTML = `<p class="hint" style="color:var(--alert)">Failed to load digest: ${escapeHtml(e.message)}</p>`;
+    stamp.textContent = '';
+  }
+}
+
+function paintDigestCard(digest) {
+  const card = document.getElementById('today-card');
+  const stamp = document.getElementById('today-generated');
+  if (!card || !stamp) return;
+  if (!digest) {
+    card.innerHTML = '<p class="hint">No digest yet — click Generate now or wait until the configured time.</p>';
+    stamp.textContent = '';
+    return;
+  }
+  const gen = new Date((digest.generated_at || 0) * 1000);
+  stamp.textContent = `Generated ${gen.toLocaleString()} · window ${digest.window_hours || 24}h`;
+  const t = digest.totals || {};
+  const by = t.by_kind || {};
+  const byBits = Object.entries(by).sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `<span class="digest-pill">${escapeHtml(k)} ×${v}</span>`).join('');
+  const topTypes = (digest.top_types || []).slice(0, 8)
+    .map((r) => `<tr><td>${escapeHtml(r.type_code)}</td><td>${r.sightings}</td></tr>`).join('');
+  const newTypes = (digest.new_types_in_window || []).map((t) => `<code>${escapeHtml(t)}</code>`).join(' ');
+  const callouts = (digest.callouts || []).slice(0, 10).map((c) => {
+    const when = new Date((c.ts || 0) * 1000).toLocaleTimeString();
+    const name = escapeHtml(c.display_name || c.callsign || c.hex || '—');
+    const type = c.type_code ? ` <span class="hint">(${escapeHtml(c.type_code)})</span>` : '';
+    const dist = (typeof c.distance_nm === 'number') ? ` · ${c.distance_nm.toFixed(0)}nm` : '';
+    return `<li><span class="digest-kind digest-kind-${escapeHtml(c.kind)}">${escapeHtml(c.kind)}</span> <strong>${name}</strong>${type}<span class="hint">${dist} · ${when}</span></li>`;
+  }).join('');
+  const ai = digest.ai_commentary
+    ? `<section class="digest-ai"><h4>✨ AI commentary</h4><p>${escapeHtml(digest.ai_commentary)}</p></section>`
+    : '';
+  card.innerHTML = `
+    <section class="digest-headlines">
+      <div class="digest-stat"><div class="digest-stat-value">${t.events || 0}</div><div class="hint">alerts</div></div>
+      <div class="digest-stat"><div class="digest-stat-value">${t.unique_aircraft_today || 0}</div><div class="hint">unique today</div></div>
+      <div class="digest-stat"><div class="digest-stat-value">${t.peak_concurrent_aircraft || 0}</div><div class="hint">peak concurrent</div></div>
+      <div class="digest-stat"><div class="digest-stat-value">${Math.round(t.max_range_nm_today || 0)}</div><div class="hint">max range nm</div></div>
+    </section>
+    ${byBits ? `<div class="digest-breakdown" style="margin:8px 0">${byBits}</div>` : ''}
+    ${topTypes ? `<section><h4>Top types in window</h4><table class="stats-table"><thead><tr><th>Type</th><th>Sightings</th></tr></thead><tbody>${topTypes}</tbody></table></section>` : ''}
+    ${newTypes ? `<section><h4>New types in window</h4><p>${newTypes}</p></section>` : ''}
+    ${callouts ? `<section><h4>Notable sightings</h4><ul class="digest-callouts">${callouts}</ul></section>` : ''}
+    ${ai}
+  `;
+}
+
+async function runDigestNow() {
+  const btn = document.getElementById('today-refresh');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = 'Generating…';
+  try {
+    const res = await fetch('/piscope/api/digest/run', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok && data.digest) {
+      paintDigestCard(data.digest);
+      const delivery = data.digest.delivery || {};
+      const summary = Object.entries(delivery).map(([k, v]) => `${k}: ${v}`).join(' · ');
+      toast(`Digest generated · ${summary}`);
+    } else {
+      toast(`Digest failed: ${escapeHtml(data.detail || res.statusText)}`);
+    }
+  } catch (e) {
+    toast(`Digest failed: ${escapeHtml(e.message)}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
 }
 
 /* ---------- Records panel ------------------------------------------------- */
@@ -2929,6 +3286,7 @@ function bindUI() {
   document.getElementById('fit-data').addEventListener('click', fitToData);
   document.getElementById('recenter').addEventListener('click', recenterOnReceiver);
   document.getElementById('toggle-aero').addEventListener('click', toggleAeroOverlay);
+  document.getElementById('toggle-airports')?.addEventListener('click', toggleAirportOverlay);
   document.getElementById('save-openaip-key').addEventListener('click', saveOpenaipKey);
   document.getElementById('pick-on-map')?.addEventListener('click', enterPickMode);
   document.getElementById('toggle-audio').addEventListener('click', toggleAudio);
@@ -2947,6 +3305,8 @@ function bindUI() {
   for (const el of document.querySelectorAll('[data-close-views]')) el.addEventListener('click', closeViews);
   for (const el of document.querySelectorAll('[data-close-operator]')) el.addEventListener('click', closeOperatorProfile);
   for (const t of document.querySelectorAll('.tab[data-stats-tab]')) t.addEventListener('click', () => switchStatsTab(t.dataset.statsTab));
+  document.getElementById('today-refresh')?.addEventListener('click', runDigestNow);
+  document.getElementById('test-ollama-btn')?.addEventListener('click', testOllamaConnection);
   document.getElementById('import-db').addEventListener('change', handleDbImport);
   document.addEventListener('keydown', handleKeyboard);
   // Bookmark right-click on aircraft markers
