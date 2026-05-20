@@ -90,11 +90,39 @@ def _route_signature(payload: dict[str, Any]) -> str:
     return h.hexdigest()[:12]
 
 
+# Bump whenever the prompt template changes meaningfully — old cached responses for the
+# same aircraft are otherwise served forever even though they were generated from a
+# different prompt. v2 = iteration 6 (two paragraphs + live state + notable fact).
+_PROMPT_VERSION = "v2"
+
+
 def _cache_key(payload: dict[str, Any]) -> str:
     hex_id = _sanitize(payload.get("hex"), _HEX_RE)
     callsign = _sanitize(payload.get("callsign"), _CALLSIGN_RE)
     type_code = _sanitize(payload.get("type_code"), _TYPE_RE)
-    return f"{hex_id}|{callsign}|{type_code}|{_route_signature(payload)}"
+    return f"{_PROMPT_VERSION}|{hex_id}|{callsign}|{type_code}|{_route_signature(payload)}"
+
+
+def _bounded_int(value: Any, lo: int, hi: int) -> Optional[int]:
+    """Clamp + reject NaN/strings/extremes. Used for numerical fields so the prompt can't
+    contain "altitude: 999999999" or other malformed inputs."""
+    try:
+        n = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    if not (lo <= n <= hi):
+        return None
+    return n
+
+
+def _bounded_float(value: Any, lo: float, hi: float) -> Optional[float]:
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not (lo <= n <= hi):
+        return None
+    return n
 
 
 def _build_prompt(payload: dict[str, Any]) -> str:
@@ -108,31 +136,76 @@ def _build_prompt(payload: dict[str, Any]) -> str:
     origin = _safe_text(payload.get("origin_name"), 60)
     origin_mun = _safe_text(payload.get("origin_municipality"), 60)
     origin_iata = _safe_text(payload.get("origin_iata"), 8)
+    origin_country = _safe_text(payload.get("origin_country_iso"), 4)
     dest = _safe_text(payload.get("destination_name"), 60)
     dest_mun = _safe_text(payload.get("destination_municipality"), 60)
     dest_iata = _safe_text(payload.get("destination_iata"), 8)
+    dest_country = _safe_text(payload.get("destination_country_iso"), 4)
     operator = _safe_text(payload.get("operator"), 60)
     military = bool(payload.get("military"))
+    on_ground = bool(payload.get("on_ground"))
+    watchlist = bool(payload.get("watchlist_match"))
+    squawk = _safe_text(payload.get("squawk"), 4)
+    altitude = _bounded_int(payload.get("altitude_baro"), -2000, 65000)
+    speed = _bounded_int(payload.get("ground_speed"), 0, 1500)
+    vert_rate = _bounded_int(payload.get("vertical_rate"), -8000, 8000)
+    distance_nm = _bounded_float(payload.get("distance_nm"), 0.0, 500.0)
+    heading = _bounded_int(payload.get("heading"), 0, 360)
+    is_emergency = bool(payload.get("is_emergency_squawk"))
 
     lines = [
-        "You are an aviation enthusiast assistant. Write a SHORT (3-4 sentences, max 90 words) factual brief about the following aircraft.",
-        "Use only the information given. If a field is missing or unknown, do NOT invent details — just skip them. Plain prose, no bullet lists, no markdown.",
+        # Stronger prompt: two short paragraphs, the second with a 'notable fact' framing.
+        # `factual` framing keeps the model from over-generating (gemma4 8B is prone to it).
+        "You are a friendly aviation enthusiast writing for someone with a real-time ADS-B radar.",
+        "Write TWO short paragraphs about the aircraft below, totalling under 110 words.",
+        "Paragraph 1: state what the aircraft is, who operates it, and what it's doing right now (use ONLY the live fields provided — altitude/heading/speed/origin/destination). Don't invent.",
+        "Paragraph 2: a single interesting historical or technical fact about this aircraft TYPE that the reader is likely not to know — first flight year, engine variant, design quirk, role. ONE sentence.",
+        "Plain prose, no bullets, no markdown, no headers. If a field is missing, skip it silently.",
         "",
+        "── Identifiers ──",
         f"ICAO24 hex: {hex_id}",
         f"Callsign: {callsign}",
         f"Type code: {type_code}",
         f"Registration: {reg}",
     ]
-    if airline:
-        lines.append(f"Operator: {airline}")
-    elif operator:
-        lines.append(f"Operator: {operator}")
+    if airline or operator:
+        lines.append(f"Operator: {airline or operator}")
     if origin or origin_iata:
-        lines.append(f"Origin: {origin} ({origin_mun}{', ' if origin_mun and origin_iata else ''}{origin_iata})".strip())
+        bits = []
+        if origin_iata: bits.append(origin_iata)
+        if origin: bits.append(origin)
+        if origin_mun: bits.append(origin_mun)
+        if origin_country: bits.append(origin_country)
+        lines.append(f"Origin: {', '.join(bits)}")
     if dest or dest_iata:
-        lines.append(f"Destination: {dest} ({dest_mun}{', ' if dest_mun and dest_iata else ''}{dest_iata})".strip())
+        bits = []
+        if dest_iata: bits.append(dest_iata)
+        if dest: bits.append(dest)
+        if dest_mun: bits.append(dest_mun)
+        if dest_country: bits.append(dest_country)
+        lines.append(f"Destination: {', '.join(bits)}")
+    lines.append("")
+    lines.append("── Live state ──")
+    if on_ground:
+        lines.append("On ground: yes")
+    if altitude is not None:
+        lines.append(f"Altitude: {altitude} ft")
+    if speed is not None:
+        lines.append(f"Ground speed: {speed} knots")
+    if heading is not None:
+        lines.append(f"Heading: {heading}°")
+    if vert_rate is not None:
+        lines.append(f"Vertical rate: {vert_rate} ft/min ({'climbing' if vert_rate > 64 else 'descending' if vert_rate < -64 else 'level'})")
+    if distance_nm is not None:
+        lines.append(f"Distance from receiver: {distance_nm:.0f} nm")
+    if squawk:
+        lines.append(f"Transponder squawk: {squawk}")
     if military:
         lines.append("Military aircraft: yes")
+    if is_emergency:
+        lines.append("Emergency squawk active: yes (7500/7600/7700)")
+    if watchlist:
+        lines.append("This aircraft is on the user's watchlist.")
     lines.append("")
     lines.append("Brief:")
     return "\n".join(lines)
@@ -231,10 +304,16 @@ async def _generate(payload: dict[str, Any]) -> Optional[str]:
         # `think: false` keeps reasoning models from burning the predict budget on
         # internal monologue. Older models that don't understand this key ignore it.
         "think": False,
+        # Match the spin-up/spin-down pattern most CLI users expect. Default Ollama keeps
+        # the model resident for 5 min after the last call, which on a shared Mac/NAS hogs
+        # 5+ GB of RAM unnecessarily. `0` (or "0s") forces an unload as soon as the response
+        # is delivered. The setting is overridable for users who'd rather pay the steady
+        # RAM cost in exchange for ~1-second cold-load latency on subsequent calls.
+        "keep_alive": settings_store.get("ollama_keep_alive") or 0,
         "options": {
-            "temperature": 0.4,
+            "temperature": 0.5,   # slightly looser — the "notable fact" sentence is helped by it
             "top_p": 0.9,
-            "num_predict": 260,   # ~190 words upper bound — matches our 90-word prompt ask with headroom
+            "num_predict": 360,   # ~270 words upper bound, matches 110-word target with headroom
             "stop": ["\n\n\n"],
         },
     }

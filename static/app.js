@@ -45,28 +45,46 @@ const API = {
 const RADAR_THEMES = new Set(['radar', 'radarModern']);
 const RADAR_VARIANTS = { radar: 'classic', radarModern: 'modern' };
 
+// `maxZoom` is per-provider — applied when the tile layer is built, otherwise Leaflet
+//  defaults to 18 and providers that don't reach that (notably OpenTopoMap @ 17) serve
+//  blank tiles when the user zooms past their limit.
+// `darkFilter: true` flags presets that should have a CSS invert+hue-rotate filter
+//  applied, giving us "dark mode" variants of light maps (OSM Humanitarian etc.) without
+//  adding new tile providers. The filter target is the .leaflet-tile-pane via a body
+//  data-attribute toggled by applyTileLayerForTheme().
 const TILE_PRESETS = {
-  // All keyless, free for personal use. The ?{r} is for high-DPI; CartoDB supports it.
-  dark:        { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',  attribution: '© OpenStreetMap, © CartoDB', label: 'Dark (CartoDB)' },
-  darkClean:   { url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Dark — no labels (CartoDB)' },
-  light:       { url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Light (CartoDB)' },
-  lightClean:  { url: 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Light — no labels (CartoDB)' },
-  voyager:     { url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Voyager (CartoDB)' },
-  voyagerClean:{ url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Voyager — no labels (CartoDB)' },
-  sat:         { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Satellite (Esri)' },
-  esriDark:    { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Dark Gray (Esri)' },
-  esriLight:   { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Light Gray (Esri)' },
-  esriTopo:    { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Topographic (Esri)' },
-  esriStreet:  { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Streets (Esri)' },
-  esriOcean:   { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Ocean (Esri)' },
-  esriShaded:  { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Shaded Relief (Esri)' },
-  esriPhysical:{ url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Physical_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Physical (Esri)' },
-  esriTerrain: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Terrain (Esri)' },
-  natgeo:      { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri / Nat Geo', label: 'NatGeo (Esri)' },
-  osm:         { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: '© OpenStreetMap contributors', label: 'OpenStreetMap' },
-  osmHot:      { url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', attribution: '© OpenStreetMap France, © OpenStreetMap', label: 'OSM Humanitarian' },
-  cyclosm:     { url: 'https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png', attribution: '© CyclOSM, © OpenStreetMap', label: 'CyclOSM' },
-  terrain:     { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', attribution: '© OpenTopoMap (CC-BY-SA)', label: 'Topographic (OTM)' },
+  // ----- CartoDB (free for non-commercial use, no API key) -----
+  dark:        { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',  attribution: '© OpenStreetMap, © CartoDB', label: 'Dark (CartoDB)', maxZoom: 20 },
+  darkClean:   { url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Dark — no labels (CartoDB)', maxZoom: 20 },
+  light:       { url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Light (CartoDB)', maxZoom: 20 },
+  lightClean:  { url: 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Light — no labels (CartoDB)', maxZoom: 20 },
+  voyager:     { url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Voyager (CartoDB)', maxZoom: 20 },
+  voyagerClean:{ url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Voyager — no labels (CartoDB)', maxZoom: 20 },
+  // ----- Esri ArcGIS Online (free for non-commercial; light attribution) -----
+  sat:         { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Satellite (Esri)', maxZoom: 19 },
+  esriDark:    { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Dark Gray (Esri)', maxZoom: 16 },
+  esriLight:   { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Light Gray (Esri)', maxZoom: 16 },
+  esriTopo:    { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Topographic (Esri)', maxZoom: 19 },
+  esriStreet:  { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Streets (Esri)', maxZoom: 19 },
+  esriOcean:   { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Ocean (Esri)', maxZoom: 13 },
+  esriShaded:  { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Shaded Relief (Esri)', maxZoom: 13 },
+  esriPhysical:{ url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Physical_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Physical (Esri)', maxZoom: 8 },
+  esriTerrain: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Terrain (Esri)', maxZoom: 13 },
+  natgeo:      { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri / Nat Geo', label: 'NatGeo (Esri)', maxZoom: 16 },
+  // ----- OSM and community tile servers -----
+  osm:         { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: '© OpenStreetMap contributors', label: 'OpenStreetMap', maxZoom: 19 },
+  osmHot:      { url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', attribution: '© OpenStreetMap France, © OpenStreetMap', label: 'OSM Humanitarian', maxZoom: 20 },
+  cyclosm:     { url: 'https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png', attribution: '© CyclOSM, © OpenStreetMap', label: 'CyclOSM', maxZoom: 20 },
+  terrain:     { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', attribution: '© OpenTopoMap (CC-BY-SA)', label: 'Topographic (OTM)', maxZoom: 17 },
+  // ----- Dark-filter variants of the most popular light maps (iteration 6) -----
+  // Same tile URL, but the .leaflet-tile-pane gets a CSS invert + hue-rotate when this is
+  // active. Gives us "dark OSM" / "dark OSM Humanitarian" without depending on a different
+  // provider's uptime.
+  osmDark:     { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: '© OpenStreetMap contributors', label: 'OpenStreetMap (Dark)', maxZoom: 19, darkFilter: true },
+  osmHotDark:  { url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', attribution: '© OpenStreetMap France, © OpenStreetMap', label: 'OSM Humanitarian (Dark)', maxZoom: 20, darkFilter: true },
+  cyclosmDark: { url: 'https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png', attribution: '© CyclOSM, © OpenStreetMap', label: 'CyclOSM (Dark)', maxZoom: 20, darkFilter: true },
+  terrainDark: { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', attribution: '© OpenTopoMap (CC-BY-SA)', label: 'Topographic OTM (Dark)', maxZoom: 17, darkFilter: true },
+  esriStreetDark: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Streets Esri (Dark)', maxZoom: 19, darkFilter: true },
 };
 
 const THEME_DEFAULT_TILES = {
@@ -781,7 +799,15 @@ function applyTileLayerForTheme() {
     presetKey = requested;
   }
   const preset = TILE_PRESETS[presetKey] || TILE_PRESETS.esriDark;
-  tileLayer = L.tileLayer(preset.url, { attribution: preset.attribution, maxZoom: 18 }).addTo(map);
+  // Honour per-provider maxZoom — many providers (notably OpenTopoMap @ 17) serve blank
+  // tiles past their max, which manifested as "the map disappears when I zoom in". Setting
+  // the layer's maxZoom makes Leaflet show the previous level's tiles scaled up instead.
+  const layerMax = preset.maxZoom || 18;
+  tileLayer = L.tileLayer(preset.url, { attribution: preset.attribution, maxZoom: layerMax }).addTo(map);
+  // Toggle the map root's "dark filter" attribute so the CSS rule for inverting light
+  // tiles applies (or doesn't). Cleaner than swapping classes per preset.
+  const mapEl = document.getElementById('map');
+  if (mapEl) mapEl.dataset.tileFilter = preset.darkFilter ? 'dark' : '';
   // Keep the aviation overlay rendering above whichever base tiles are active.
   syncAeroOverlay();
 }
@@ -1040,6 +1066,16 @@ function createMarker(ac) {
     iconAnchor: [11, 11],
   });
   const marker = L.marker([ac.lat, ac.lon], { icon, riseOnHover: true });
+  // Belt-and-braces label click: the label sits outside the 22×22 icon bounding box,
+  // and although standard DOM event bubbling makes Leaflet's marker click fire either
+  // way, browser quirks around absolutely-positioned overflow have caught us before.
+  // Attaching an explicit handler on the marker's DOM after first render guarantees
+  // the label is a proper click target across all browsers.
+  marker.on('add', () => {
+    const el = marker.getElement();
+    const label = el?.querySelector('.ac-label');
+    if (label) label.onclick = (e) => { e.stopPropagation(); selectAircraft(ac.hex, { pan: false }); };
+  });
   marker.on('click', () => selectAircraft(ac.hex, { pan: false }));
   marker.on('contextmenu', (ev) => {
     const me = ev.originalEvent;
@@ -1694,6 +1730,7 @@ async function fetchExplain(ac) {
     // already warmed by the time the user clicks Explain.
     const enr = (ac.callsign && state.enrichmentCache.adsbdb.get(ac.callsign)) || {};
     const payload = {
+      // Identifiers + enrichment
       hex: ac.hex,
       callsign: ac.callsign,
       type_code: ac.type_code,
@@ -1703,11 +1740,23 @@ async function fetchExplain(ac) {
       origin_municipality: enr.origin_municipality,
       origin_iata: enr.origin_iata,
       origin_icao: enr.origin_icao,
+      origin_country_iso: enr.origin_country_iso,
       destination_name: enr.destination_name,
       destination_municipality: enr.destination_municipality,
       destination_iata: enr.destination_iata,
       destination_icao: enr.destination_icao,
+      destination_country_iso: enr.destination_country_iso,
+      // Live state — gives the model real context to ground paragraph 1 in.
+      altitude_baro: ac.altitude_baro,
+      ground_speed: ac.ground_speed,
+      heading: ac.heading,
+      vertical_rate: ac.vertical_rate,
+      distance_nm: ac.distance_nm,
+      on_ground: ac.on_ground,
+      squawk: ac.squawk,
+      is_emergency_squawk: ac.is_emergency_squawk,
       military: ac.military,
+      watchlist_match: isWatchlisted(ac),
     };
     const res = await fetch('/piscope/api/explain', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1727,10 +1776,20 @@ async function fetchExplain(ac) {
     // double-newlines with <p> tags. No raw HTML from the model ever reaches the DOM.
     const safe = escapeHtml(data.text || '');
     const paragraphs = safe.split(/\n\n+/).map((p) => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
-    const badge = data.source === 'cache'
-      ? '<span class="hint" style="font-size:10px; margin-left:6px">(cached)</span>'
+    // Verify-the-claim links: Wikipedia for the type, Skybrary as a more rigorous backup.
+    // Static URLs — no server-side outbound calls, just user-facing affordances.
+    const typeForLink = (ac.type_code || '').toUpperCase();
+    const wikipediaLink = typeForLink
+      ? `<a target="_blank" rel="noopener noreferrer" href="https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(typeForLink + ' aircraft')}">Wikipedia</a>`
       : '';
-    result.innerHTML = `<div class="ai-brief">${paragraphs}</div><div style="margin-top:6px"><span class="hint">${data.source === 'cache' ? 'Cached response' : 'Fresh AI response'}</span>${badge}</div>`;
+    const skybraryLink = typeForLink
+      ? `<a target="_blank" rel="noopener noreferrer" href="https://skybrary.aero/aircraft/${encodeURIComponent(typeForLink.toLowerCase())}">Skybrary</a>`
+      : '';
+    const verifyRow = typeForLink
+      ? `<div class="ai-verify"><span class="hint">Cross-check:</span> ${wikipediaLink}${wikipediaLink && skybraryLink ? ' · ' : ''}${skybraryLink}</div>`
+      : '';
+    const sourceLabel = data.source === 'cache' ? 'Cached response' : 'Fresh AI response';
+    result.innerHTML = `<div class="ai-brief">${paragraphs}</div>${verifyRow}<div style="margin-top:6px"><span class="hint">${sourceLabel}</span></div>`;
   } catch (e) {
     result.innerHTML = `<p class="hint" style="color:var(--alert)">Network error: ${escapeHtml(e.message)}</p>`;
   } finally {
@@ -1877,10 +1936,41 @@ async function loadSettings() {
   await refreshBudget();
 }
 
+// Single source of truth for theme application — both the topbar select and the
+// Appearance dropdown route through this. `persist: true` POSTs the change so it
+// survives reload; we use it for user-initiated changes but NOT for the "load from
+// server" pass (which would create a no-op POST race on every page load).
+function applyTheme(theme, { persist } = {}) {
+  if (!theme) return;
+  state.settings.theme = theme;
+  document.documentElement.dataset.theme = theme;
+  syncThemeSelects(theme);
+  refreshThemeColorCache();
+  radar?.setVariant(RADAR_VARIANTS[theme] || null);
+  if (map) applyTileLayerForTheme();
+  // Re-render dependent visuals so the new accent/band colours take effect immediately.
+  refreshMapMarkers();
+  refreshTrails();
+  refreshRangeRings();
+  if (typeof scheduleUrlStateWrite === 'function') scheduleUrlStateWrite();
+  if (persist) {
+    fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ theme }) }).catch(() => {});
+  }
+}
+
+function syncThemeSelects(theme) {
+  const top = document.getElementById('theme-select');
+  const setting = document.getElementById('setting-theme');
+  if (top && top.value !== theme) top.value = theme;
+  if (setting && setting.value !== theme) setting.value = theme;
+}
+
 function applySettingsToUI() {
   const theme = state.settings.theme || 'radar';
+  // Sync both theme selects without re-POSTing (server just told us this value).
   document.documentElement.dataset.theme = theme;
-  document.getElementById('theme-select').value = theme;
+  syncThemeSelects(theme);
   refreshThemeColorCache();
   state.filters.showGround = !!state.settings.show_ground;
   document.getElementById('show-ground').checked = state.filters.showGround;
@@ -2058,7 +2148,11 @@ async function saveSettings() {
     global_center_lat: fields['setting-global-lat'],
     global_center_lon: fields['setting-global-lon'],
     global_radius_nm: parseInt(document.getElementById('setting-global-rad').value, 10) || 250,
-    theme: document.getElementById('setting-theme').value,
+    // Read theme from the TOPBAR control, not the Appearance-tab dropdown. The topbar is
+    // the canonical source of truth (it POSTs on its own change), and reading from the
+    // Settings dropdown was overwriting an in-session topbar choice with whatever stale
+    // value the modal happened to have. Both stay in sync via syncThemeSelects().
+    theme: document.getElementById('theme-select').value,
     map_style: document.getElementById('setting-map-style').value,
     range_rings_nm: document.getElementById('setting-rings').value.trim(),
     range_rings_enabled: document.getElementById('setting-rings-enabled').checked,
@@ -3325,20 +3419,15 @@ function bindUI() {
     document.getElementById('notif-status').textContent = `Permission: ${r}`;
   });
 
-  // Theme picker (topbar)
-  document.getElementById('theme-select').addEventListener('change', (e) => {
-    state.settings.theme = e.target.value;
-    document.documentElement.dataset.theme = e.target.value;
-    refreshThemeColorCache();
-    radar?.setVariant(RADAR_VARIANTS[e.target.value] || null);
-    if (map) applyTileLayerForTheme();
-    // Refresh markers immediately — switching out of a radar theme must drop snapshot positions and
-    // restore live ones without waiting for the next WS tick. Trails/rings re-tint to the new accent.
-    refreshMapMarkers();
-    refreshTrails();
-    refreshRangeRings();
-    if (typeof scheduleUrlStateWrite === 'function') scheduleUrlStateWrite();
-    fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ theme: e.target.value }) });
+  // Theme picker (topbar). Both this and the Settings → Appearance dropdown drive the
+  // same `applyTheme()`; they stay in sync via syncThemeSelects() so saving settings
+  // never overwrites an in-session topbar change with a stale modal value.
+  document.getElementById('theme-select').addEventListener('change', (e) => applyTheme(e.target.value, { persist: true }));
+  // The Settings → Appearance dropdown gets its handler wired here (populateSettingsModal
+  // clones the options on first open). Use a delegated listener so it works regardless
+  // of when the modal is populated.
+  document.body.addEventListener('change', (e) => {
+    if (e.target?.id === 'setting-theme') applyTheme(e.target.value, { persist: true });
   });
 
   // Tabs

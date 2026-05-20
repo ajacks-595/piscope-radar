@@ -361,24 +361,26 @@
   --font-title: var(--font-system);
 }
 
-/* -------- TOKYO NIGHT (iteration 5) -------- */
+/* -------- TOKYO NIGHT (iteration 5, retuned iter6) --------
+ * Cool palette — purple + cyan accent, blue-tinted panels. Differentiated from Catppuccin
+ * Mocha (which leans pink/peach) by leading with #bb9af7 as the accent instead of #7aa2f7. */
 [data-theme="tokyoNight"] {
-  --bg: #1a1b26;
-  --panel-bg: #16161e;
-  --surface-bg: #24283b;
+  --bg: #16161e;
+  --panel-bg: #1a1b26;
+  --surface-bg: #1f2335;
   --primary-text: #c0caf5;
   --secondary-text: #9aa5ce;
   --tertiary-text: #565f89;
-  --accent: #7aa2f7;
-  --accent-muted: #3d59a1;
+  --accent: #bb9af7;
+  --accent-muted: #7aa2f7;
   --alert: #f7768e;
   --success: #9ece6a;
   --warning: #e0af68;
   --separator: #292e42;
-  --map-trail: rgba(122, 162, 247, 0.7);
-  --map-range-ring: rgba(61, 89, 161, 0.4);
-  --map-receiver: #bb9af7;
-  --aircraft-selected: #c0caf5;
+  --map-trail: rgba(187, 154, 247, 0.7);
+  --map-range-ring: rgba(122, 162, 247, 0.35);
+  --map-receiver: #7dcfff;
+  --aircraft-selected: #7dcfff;
   --band-ground: #565f89;
   --band-low: #9ece6a;
   --band-mid: #e0af68;
@@ -388,7 +390,10 @@
   --font-title: var(--font-system);
 }
 
-/* -------- CATPPUCCIN MOCHA (iteration 5) -------- */
+/* -------- CATPPUCCIN MOCHA (iteration 5, retuned iter6) --------
+ * Warm palette — pink/mauve accent, peach receiver, more colourful overall. The accent
+ * is now the signature Catppuccin pink #f5c2e7 rather than blue, which previously made
+ * it indistinguishable from Tokyo Night. */
 [data-theme="catppuccinMocha"] {
   --bg: #1e1e2e;
   --panel-bg: #181825;
@@ -396,16 +401,16 @@
   --primary-text: #cdd6f4;
   --secondary-text: #bac2de;
   --tertiary-text: #6c7086;
-  --accent: #89b4fa;
-  --accent-muted: #585b70;
+  --accent: #f5c2e7;
+  --accent-muted: #cba6f7;
   --alert: #f38ba8;
   --success: #a6e3a1;
   --warning: #f9e2af;
-  --separator: #313244;
-  --map-trail: rgba(137, 180, 250, 0.7);
-  --map-range-ring: rgba(116, 199, 236, 0.4);
-  --map-receiver: #f5c2e7;
-  --aircraft-selected: #cdd6f4;
+  --separator: #45475a;
+  --map-trail: rgba(245, 194, 231, 0.75);
+  --map-range-ring: rgba(203, 166, 247, 0.4);
+  --map-receiver: #fab387;
+  --aircraft-selected: #fab387;
   --band-ground: #6c7086;
   --band-low: #a6e3a1;
   --band-mid: #f9e2af;

@@ -93,6 +93,11 @@ DEFAULTS: dict[str, Any] = {
     # Master enable switch — separate from `ollama_url` so a user can pause AI calls without
     # losing their URL config.
     "ollama_enabled": False,
+    # How long Ollama keeps the model resident after a request. Default `0` releases it
+    # immediately (matches what most third-party tools do). Override to e.g. "5m" to keep
+    # the model warm if you expect many requests in a short window — accepts Ollama's usual
+    # duration string format ("30s", "5m", "1h") or a number of seconds.
+    "ollama_keep_alive": 0,
     # ---- Daily digest (iteration 5) ----
     "digest_enabled": True,
     # 24h "HH:MM" string. Cron fires once per local day at this time. Default 07:30 lands

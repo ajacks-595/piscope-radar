@@ -502,10 +502,13 @@ async def import_db(file: UploadFile = File(...)) -> dict[str, Any]:
 # Strict allow-list of payload fields. Anything else in the body is dropped before the
 # call into ollama_svc.explain — we never let raw user keys flow into the prompt builder.
 _EXPLAIN_ALLOWED_FIELDS = {
-    "hex", "callsign", "type_code", "registration", "airline_name",
-    "operator", "origin_name", "origin_municipality", "origin_iata", "origin_icao",
-    "destination_name", "destination_municipality", "destination_iata", "destination_icao",
-    "military",
+    # Identifiers / enrichment
+    "hex", "callsign", "type_code", "registration", "airline_name", "operator",
+    "origin_name", "origin_municipality", "origin_iata", "origin_icao", "origin_country_iso",
+    "destination_name", "destination_municipality", "destination_iata", "destination_icao", "destination_country_iso",
+    # Live state — added in iteration 6 so the brief can reference current flight phase
+    "altitude_baro", "ground_speed", "heading", "vertical_rate", "distance_nm",
+    "on_ground", "squawk", "is_emergency_squawk", "military", "watchlist_match",
 }
 
 
