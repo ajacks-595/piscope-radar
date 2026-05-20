@@ -199,6 +199,64 @@
     </div>
   </div>
 
+  <!-- FIRST-RUN ONBOARDING WIZARD -->
+  <!-- Shown on first visit only (gated by localStorage `piscope_onboarded_v1`). Four steps:
+       welcome → set receiver location → contact URL → done. Skip dismisses + stores the flag. -->
+  <div class="modal" id="wizard-modal" hidden>
+    <div class="modal-shade"></div>
+    <div class="modal-panel" style="width:min(520px,96vw)">
+      <header class="modal-header">
+        <h2 id="wizard-title">Welcome to PiScope Radar</h2>
+        <button class="icon-button" id="wizard-skip" title="Skip onboarding">✕</button>
+      </header>
+      <div class="tab-body">
+        <section class="wizard-step" data-step="1">
+          <p>This dashboard pulls ADS-B traffic from your PiAware (or adsb.lol) and renders it as a live radar map, sidebar, and per-aircraft detail panel.</p>
+          <p>A quick 30-second tour to point it at your location:</p>
+          <ul class="hint" style="margin-top:8px">
+            <li><strong>Step 1:</strong> Tell PiScope where your receiver is. The distance ring, polar coverage, and the global-feed centre all depend on this.</li>
+            <li><strong>Step 2:</strong> Pick a contact URL for outbound HTTP requests. Some upstream APIs reject anonymous traffic.</li>
+            <li><strong>Step 3:</strong> Done — you can change anything later in Settings.</li>
+          </ul>
+        </section>
+        <section class="wizard-step" data-step="2" hidden>
+          <p>Where's your receiver? Either type the coordinates or click on the map.</p>
+          <div class="field">
+            <label for="wizard-lat">Latitude</label>
+            <input id="wizard-lat" type="number" step="0.0001" min="-90" max="90" placeholder="e.g. 55.07" />
+          </div>
+          <div class="field">
+            <label for="wizard-lon">Longitude</label>
+            <input id="wizard-lon" type="number" step="0.0001" min="-180" max="180" placeholder="e.g. -3.59" />
+          </div>
+          <button id="wizard-pick-map" class="secondary">📍 Pick on map instead</button>
+          <p class="hint" id="wizard-loc-status" style="margin-top:8px"></p>
+        </section>
+        <section class="wizard-step" data-step="3" hidden>
+          <p>Some upstream APIs (notably <code>planespotters.net</code>) now require a contact URL or email in the User-Agent header. PiScope uses this one for every outbound request.</p>
+          <div class="field">
+            <label for="wizard-contact">Contact URL or email</label>
+            <input id="wizard-contact" type="text" placeholder="https://github.com/you/your-pi or me@example.com" />
+            <span class="hint">Default points at this repo — fine for a personal install. Change it to your own URL once you're up and running.</span>
+          </div>
+        </section>
+        <section class="wizard-step" data-step="4" hidden>
+          <p>✅ You're set up.</p>
+          <ul class="hint" style="margin-top:8px">
+            <li>Press <kbd>?</kbd> any time for the keyboard shortcut list.</li>
+            <li>Right-click anywhere on the map to set receiver coords, copy lat/lon, or follow an aircraft.</li>
+            <li>Share a URL like <code>/piscope#center=55,-3&amp;zoom=8&amp;select=HEX</code> — the recipient lands on the exact same view.</li>
+          </ul>
+        </section>
+        <div class="controls-row" style="display:flex; justify-content:space-between; align-items:center; margin-top:16px">
+          <button id="wizard-back" class="secondary" disabled>← Back</button>
+          <span class="hint" id="wizard-progress">1 / 4</span>
+          <button id="wizard-next" class="primary">Next →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- OPERATOR PROFILE MODAL -->
   <!-- Click an airline name in the detail panel → list of every currently-tracked aircraft
        belonging to the same operator (matched by callsign ICAO prefix). -->
