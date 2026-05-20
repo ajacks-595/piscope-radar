@@ -1467,8 +1467,16 @@ async function fetchEnrichment(ac) {
               <div class="name">${escapeHtml(data.destination_name || '')}</div>
             </div>
           </div>
-          ${data.airline_name ? `<div class="hint" style="margin-top:6px">${escapeHtml(data.airline_name)}</div>` : ''}
+          ${data.airline_name ? `<div class="hint operator-link" data-operator-icao="${escapeHtml(data.airline_icao || '')}" data-operator-name="${escapeHtml(data.airline_name)}" style="margin-top:6px; cursor:pointer; text-decoration:underline" title="Show fleet currently in view">${escapeHtml(data.airline_name)} →</div>` : ''}
         `;
+        // The link only does something useful when we know the operator's ICAO prefix to match against.
+        if (data.airline_icao) {
+          routeEl.querySelector('.operator-link')?.addEventListener('click', (e) => {
+            const icao = e.currentTarget.dataset.operatorIcao;
+            const name = e.currentTarget.dataset.operatorName;
+            openOperatorProfile(icao, name);
+          });
+        }
         drawRouteLineOnMap(data, ac);
       } else {
         routeEl.innerHTML = '<span class="hint">No route found</span>';
@@ -1744,6 +1752,8 @@ function populateSettingsModal() {
   document.getElementById('setting-audio-enabled').checked = !!s.audio_alerts_enabled;
   document.getElementById('setting-audio-directional').checked = !!s.audio_directional;
   document.getElementById('setting-watchlist').value = s.watchlist || '';
+  const wdEl = document.getElementById('setting-watchdog');
+  if (wdEl) wdEl.value = s.watchdog_outage_minutes ?? 5;
 
   document.getElementById('setting-receiver-lat').value = s.receiver_lat ?? '';
   document.getElementById('setting-receiver-lon').value = s.receiver_lon ?? '';
@@ -1813,6 +1823,7 @@ async function saveSettings() {
     audio_alerts_enabled: document.getElementById('setting-audio-enabled').checked,
     audio_directional: document.getElementById('setting-audio-directional').checked,
     watchlist: document.getElementById('setting-watchlist').value.trim(),
+    watchdog_outage_minutes: Math.max(0, parseInt(document.getElementById('setting-watchdog')?.value, 10) || 0),
     receiver_lat: fields['setting-receiver-lat'],
     receiver_lon: fields['setting-receiver-lon'],
     extra_feeds_json: parseExtraFeeds(document.getElementById('setting-extra-feeds').value),
@@ -2075,6 +2086,54 @@ function rotatePhoto(delta) {
   if (counter) counter.textContent = `${detailPhotoIndex + 1} / ${detailPhotos.length}`;
 }
 
+/* ---------- Operator profile (click airline name in detail panel) --------- */
+// Match aircraft to an operator by the 3-letter ICAO callsign prefix (e.g. BAW = British
+// Airways). It's not perfect — some carriers don't follow the convention — but it's good
+// enough for the 95% case and needs zero extra API calls.
+function openOperatorProfile(icao, name) {
+  const modal = document.getElementById('operator-modal');
+  if (!modal) return;
+  icao = (icao || '').toUpperCase().trim();
+  const title = document.getElementById('operator-title');
+  const list = document.getElementById('operator-list');
+  const summary = document.getElementById('operator-summary');
+  title.textContent = name || icao || 'Operator';
+  list.innerHTML = '';
+
+  // Filter the current feed by callsign prefix. Skip aircraft without a callsign — they can't be matched.
+  const fleet = [...state.aircraft.values()]
+    .filter((a) => a.callsign && a.callsign.toUpperCase().startsWith(icao))
+    .sort((a, b) => (a.distance_nm ?? Infinity) - (b.distance_nm ?? Infinity));
+
+  if (!fleet.length) {
+    summary.textContent = `No other ${name || icao} flights currently in view.`;
+  } else {
+    summary.textContent = `${fleet.length} ${name || icao} aircraft in the current feed, sorted by distance.`;
+    for (const ac of fleet) {
+      const li = document.createElement('li');
+      const dist = ac.distance_nm != null ? `${ac.distance_nm.toFixed(0)} nm` : '—';
+      const alt = ac.altitude_baro != null ? `FL${Math.round(ac.altitude_baro / 100)}` : '—';
+      li.innerHTML = `
+        <span>
+          <div class="vname">${escapeHtml(ac.display_name || ac.hex)}</div>
+          <div class="vmeta">${escapeHtml([ac.type_code, ac.registration].filter(Boolean).join(' · ') || '—')} · ${alt} · ${dist}</div>
+        </span>
+        <button class="secondary">Select</button>
+      `;
+      li.querySelector('button').onclick = () => {
+        closeOperatorProfile();
+        selectAircraft(ac.hex, { pan: true });
+      };
+      list.appendChild(li);
+    }
+  }
+  modal.hidden = false;
+}
+function closeOperatorProfile() {
+  const m = document.getElementById('operator-modal');
+  if (m) m.hidden = true;
+}
+
 /* ---------- Saved views --------------------------------------------------- */
 async function openViews() { document.getElementById('views-modal').hidden = false; await loadViews(); }
 function closeViews() { document.getElementById('views-modal').hidden = true; }
@@ -2145,6 +2204,8 @@ function renderWebhookList() {
         <label><input type="checkbox" class="wh-t-military"> Military</label>
         <label><input type="checkbox" class="wh-t-watchlist"> Watchlist</label>
         <label><input type="checkbox" class="wh-t-rare"> Rare type</label>
+        <label><input type="checkbox" class="wh-t-feed_down" title="Watchdog: receiver offline"> Feed down</label>
+        <label><input type="checkbox" class="wh-t-feed_recovered" title="Watchdog: receiver back online"> Recovered</label>
       </div>
       <div class="controls-row">
         <button class="secondary wh-test">Test</button>
@@ -2157,6 +2218,8 @@ function renderWebhookList() {
     row.querySelector('.wh-t-military').checked  = types.includes('military');
     row.querySelector('.wh-t-watchlist').checked = types.includes('watchlist');
     row.querySelector('.wh-t-rare').checked      = types.includes('rare');
+    row.querySelector('.wh-t-feed_down').checked      = types.includes('feed_down');
+    row.querySelector('.wh-t-feed_recovered').checked = types.includes('feed_recovered');
     row.querySelector('.wh-remove').onclick = () => { webhooksCache.splice(idx, 1); renderWebhookList(); };
     row.querySelector('.wh-test').onclick = async () => {
       const url = row.querySelector('.wh-url').value.trim();
@@ -2185,6 +2248,8 @@ function collectWebhooks() {
         row.querySelector('.wh-t-military').checked  ? 'military'  : null,
         row.querySelector('.wh-t-watchlist').checked ? 'watchlist' : null,
         row.querySelector('.wh-t-rare').checked      ? 'rare'      : null,
+        row.querySelector('.wh-t-feed_down').checked      ? 'feed_down'      : null,
+        row.querySelector('.wh-t-feed_recovered').checked ? 'feed_recovered' : null,
       ].filter(Boolean),
     });
   });
@@ -2489,7 +2554,7 @@ function handleKeyboard(e) {
     }
     return;
   }
-  if (e.key === 'Escape') { hideContextMenu(); closeSettings(); closeEvents(); closeStats(); closeViews(); closeKeyboardHelp(); }
+  if (e.key === 'Escape') { hideContextMenu(); closeSettings(); closeEvents(); closeStats(); closeViews(); closeKeyboardHelp(); closeOperatorProfile(); }
 }
 
 // Move the sidebar selection by `delta` rows (1 = down, -1 = up). Reads order directly
@@ -2756,6 +2821,7 @@ function bindUI() {
   document.getElementById('replay-live').addEventListener('click', exitReplay);
   document.getElementById('replay-slider').addEventListener('input', onReplayScrub);
   for (const el of document.querySelectorAll('[data-close-views]')) el.addEventListener('click', closeViews);
+  for (const el of document.querySelectorAll('[data-close-operator]')) el.addEventListener('click', closeOperatorProfile);
   for (const t of document.querySelectorAll('.tab[data-stats-tab]')) t.addEventListener('click', () => switchStatsTab(t.dataset.statsTab));
   document.getElementById('import-db').addEventListener('change', handleDbImport);
   document.addEventListener('keydown', handleKeyboard);

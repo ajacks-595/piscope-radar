@@ -1,9 +1,10 @@
-"""Outbound webhook fan-out for events (military / emergency / watchlist / rare).
+"""Outbound webhook fan-out for events (military / emergency / watchlist / rare) plus
+the receiver-health system events (feed_down / feed_recovered).
 
 Configured by the user as a JSON list in the `webhooks_json` setting. Each entry:
     { "kind": "discord" | "slack" | "ntfy" | "generic",
       "url": "https://...",
-      "types": ["emergency", "military", "watchlist", "rare"] }
+      "types": ["emergency", "military", "watchlist", "rare", "feed_down", "feed_recovered"] }
 
 Posts run via `fire_and_forget` so the feed loop never blocks waiting on a third party.
 """
@@ -23,10 +24,15 @@ log = logging.getLogger("piscope.webhooks")
 
 
 def _format_text(kind: str, ac: dict[str, Any]) -> str:
+    when = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    # System events (watchdog) don't have aircraft metadata — render the supplied message verbatim
+    # rather than the aircraft template.
+    if kind in ("feed_down", "feed_recovered"):
+        label = "📡 Receiver offline" if kind == "feed_down" else "✅ Receiver back online"
+        return f"{label}: {ac.get('message', '(no detail)')} at {when}"
     name = ac.get("display_name") or ac.get("hex", "?")
     type_code = ac.get("type_code") or "?"
     dist = ac.get("distance_nm")
-    when = datetime.now(timezone.utc).strftime("%H:%M UTC")
     label = {
         "emergency": "🚨 Emergency squawk",
         "military":  "🛡️ Military aircraft",

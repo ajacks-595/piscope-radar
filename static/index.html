@@ -199,6 +199,23 @@
     </div>
   </div>
 
+  <!-- OPERATOR PROFILE MODAL -->
+  <!-- Click an airline name in the detail panel → list of every currently-tracked aircraft
+       belonging to the same operator (matched by callsign ICAO prefix). -->
+  <div class="modal" id="operator-modal" hidden>
+    <div class="modal-shade" data-close-operator></div>
+    <div class="modal-panel" style="width:min(540px,96vw)">
+      <header class="modal-header">
+        <h2 id="operator-title">Operator</h2>
+        <button class="icon-button" data-close-operator>✕</button>
+      </header>
+      <div class="tab-body">
+        <p class="hint" id="operator-summary"></p>
+        <ul id="operator-list" class="views-list"></ul>
+      </div>
+    </div>
+  </div>
+
   <!-- SAVED VIEWS MODAL -->
   <div class="modal" id="views-modal" hidden>
     <div class="modal-shade" data-close-views></div>
@@ -362,6 +379,11 @@
           <p class="hint">Forward events to Discord, Slack, ntfy.sh, or any generic JSON endpoint. POSTs are fire-and-forget — a failed delivery never stalls the feed loop.</p>
           <div id="webhook-list"></div>
           <button id="add-webhook" class="secondary">+ Add webhook</button>
+          <div class="field" style="margin-top:14px">
+            <label for="setting-watchdog">Receiver watchdog — alert after feed has been down (minutes; 0 = off)</label>
+            <input id="setting-watchdog" type="number" min="0" max="120" step="1" />
+            <span class="hint">Fires a <code>feed_down</code> webhook to subscribed endpoints, then a <code>feed_recovered</code> webhook when polls succeed again. Add those event types to a webhook above to receive them.</span>
+          </div>
           <div class="field">
             <label>Watchlist (callsigns / regs, comma-separated)</label>
             <input id="setting-watchlist" type="text" placeholder="NATO01, RRR7011, G-EZTJ" />

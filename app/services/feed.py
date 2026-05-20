@@ -76,6 +76,12 @@ class FeedService:
         self.poll_count: int = 0
         self.error_count: int = 0
         self.last_poll_duration_ms: float = 0.0
+        # Watchdog: track the most recent successful-feed timestamp so we can detect an outage
+        # and fire a `feed_down` webhook once (then re-arm + fire `feed_recovered` when polls succeed).
+        # `_watchdog_armed=True` means "ready to fire feed_down on the next sustained outage".
+        self._last_any_feed_ok_at: float = time.time()
+        self._watchdog_armed: bool = True
+        self._outage_notified: bool = False
         # Component-level perf so we can tell HTTP-fetch wait from SQL/CPU work.
         self.last_fetch_ms: float = 0.0
         self.last_sql_ms: float = 0.0
@@ -549,6 +555,7 @@ class FeedService:
         self.poll_count += 1
         self.last_poll_duration_ms = (time.time() - poll_start) * 1000
         self.last_process_ms = max(0.0, self.last_poll_duration_ms - self.last_fetch_ms - self.last_sql_ms)
+        self._check_watchdog(now_ts)
 
         # Persist & update daily stats every poll (cheap), then broadcast.
         events_store.update_daily_stats(
@@ -578,6 +585,46 @@ class FeedService:
         # Broadcast the slim payload (trail deltas only) — full snapshots only ship on initial
         # WS connect via the WS endpoint, or via the REST `/api/aircraft` fallback.
         self._broadcast(self.broadcast_payload())
+
+    # --- watchdog ------------------------------------------------------------
+
+    def _check_watchdog(self, now_ts: float) -> None:
+        """Fire `feed_down` once after the configured outage threshold; fire `feed_recovered`
+        once when feeds come back. Re-arms automatically. Failure to emit a webhook never
+        affects the feed loop."""
+        threshold_min = settings_store.get("watchdog_outage_minutes") or 0
+        try:
+            threshold_sec = max(0, int(threshold_min)) * 60
+        except (TypeError, ValueError):
+            threshold_sec = 0
+        if threshold_sec <= 0:
+            return  # watchdog disabled
+        any_ok = any(f.get("ok") for f in self.feed_status.values())
+        if any_ok:
+            self._last_any_feed_ok_at = now_ts
+            if self._outage_notified:
+                # Recovery — fire once, then re-arm for the next outage.
+                self._outage_notified = False
+                self._watchdog_armed = True
+                webhooks_service.fan_out("feed_recovered", {
+                    "message": f"PiScope Radar feeds recovered after outage.",
+                    "now": now_ts,
+                })
+            return
+        outage_sec = now_ts - self._last_any_feed_ok_at
+        if outage_sec >= threshold_sec and self._watchdog_armed:
+            # First time crossing the threshold this outage — alert once, then disarm so
+            # we don't spam every poll for the whole duration.
+            self._watchdog_armed = False
+            self._outage_notified = True
+            minutes = int(outage_sec // 60)
+            webhooks_service.fan_out("feed_down", {
+                "message": f"PiScope Radar feeds down for ~{minutes} min. "
+                           f"Last successful poll: {int(outage_sec)}s ago.",
+                "outage_sec": int(outage_sec),
+                "last_error": self.last_error,
+                "now": now_ts,
+            })
 
     # --- helpers used by REST endpoints --------------------------------------
 

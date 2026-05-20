@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 
 # Version stamp. Bump whenever you ship a notable user-facing change — the frontend reads
 # this via /piscope/api/version and pops a "✨ What's new" toast on first load after a bump.
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 app = FastAPI(title="PiScope Radar", version=VERSION, lifespan=lifespan)
 
