@@ -2086,6 +2086,130 @@ function rotatePhoto(delta) {
   if (counter) counter.textContent = `${detailPhotoIndex + 1} / ${detailPhotos.length}`;
 }
 
+/* ---------- First-run onboarding wizard ----------------------------------- */
+// Shows on first visit only — localStorage key `piscope_onboarded_v1`. The version suffix
+// lets us re-trigger the wizard on a future release that introduces a new mandatory setting.
+const ONBOARDING_KEY = 'piscope_onboarded_v1';
+const WIZARD_TOTAL_STEPS = 4;
+let _wizardStep = 1;
+
+function maybeShowOnboarding() {
+  if (localStorage.getItem(ONBOARDING_KEY)) return;
+  // Skip the wizard if the user already configured receiver coords (e.g. they backed up + restored).
+  if (state.settings?.receiver_lat != null && state.settings?.receiver_lon != null) {
+    localStorage.setItem(ONBOARDING_KEY, '1');
+    return;
+  }
+  showWizard();
+}
+
+function showWizard() {
+  const m = document.getElementById('wizard-modal');
+  if (!m) return;
+  // Pre-fill any existing values so the user can just confirm.
+  const latEl = document.getElementById('wizard-lat');
+  const lonEl = document.getElementById('wizard-lon');
+  const contactEl = document.getElementById('wizard-contact');
+  if (latEl) latEl.value = state.settings?.receiver_lat ?? '';
+  if (lonEl) lonEl.value = state.settings?.receiver_lon ?? '';
+  if (contactEl) contactEl.value = state.settings?.contact_url ?? '';
+  _wizardStep = 1;
+  renderWizardStep();
+  m.hidden = false;
+}
+
+function closeWizard(markDone) {
+  const m = document.getElementById('wizard-modal');
+  if (m) m.hidden = true;
+  if (markDone) localStorage.setItem(ONBOARDING_KEY, '1');
+}
+
+function renderWizardStep() {
+  for (const sec of document.querySelectorAll('.wizard-step')) {
+    sec.hidden = String(_wizardStep) !== sec.dataset.step;
+  }
+  document.getElementById('wizard-back').disabled = _wizardStep === 1;
+  document.getElementById('wizard-next').textContent =
+    _wizardStep === WIZARD_TOTAL_STEPS ? 'Finish' : 'Next →';
+  document.getElementById('wizard-progress').textContent = `${_wizardStep} / ${WIZARD_TOTAL_STEPS}`;
+}
+
+// Returns true if the step accepted; false if validation failed (e.g. out-of-range lat).
+async function wizardAdvance() {
+  if (_wizardStep === 2) {
+    // Apply receiver coords. Blank fields → skip (user might just want defaults).
+    const latRaw = document.getElementById('wizard-lat').value.trim();
+    const lonRaw = document.getElementById('wizard-lon').value.trim();
+    if (latRaw || lonRaw) {
+      const lat = _parseLat(latRaw);
+      const lon = _parseLon(lonRaw);
+      const status = document.getElementById('wizard-loc-status');
+      if (lat === null || lon === null) {
+        status.textContent = 'Invalid coords — lat is -90..90, lon is -180..180.';
+        status.style.color = 'var(--alert)';
+        return false;
+      }
+      await setReceiverLocation(lat, lon);
+      status.textContent = 'Saved.';
+      status.style.color = 'var(--accent)';
+    }
+  } else if (_wizardStep === 3) {
+    const contact = document.getElementById('wizard-contact').value.trim();
+    if (contact) {
+      state.settings.contact_url = contact;
+      try {
+        await fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contact_url: contact }) });
+      } catch (e) { /* non-fatal */ }
+    }
+  }
+  return true;
+}
+
+function bindWizard() {
+  const nextBtn = document.getElementById('wizard-next');
+  const backBtn = document.getElementById('wizard-back');
+  const skipBtn = document.getElementById('wizard-skip');
+  const pickBtn = document.getElementById('wizard-pick-map');
+  if (!nextBtn) return;
+  nextBtn.addEventListener('click', async () => {
+    const ok = await wizardAdvance();
+    if (!ok) return;
+    if (_wizardStep === WIZARD_TOTAL_STEPS) {
+      closeWizard(true);
+      toast('Setup complete — press ? for the keyboard shortcut help.');
+    } else {
+      _wizardStep++;
+      renderWizardStep();
+    }
+  });
+  backBtn.addEventListener('click', () => {
+    if (_wizardStep > 1) { _wizardStep--; renderWizardStep(); }
+  });
+  skipBtn.addEventListener('click', () => closeWizard(true));
+  pickBtn.addEventListener('click', () => {
+    // Hide the modal, hand off to the existing pick-on-map flow, and re-open the wizard
+    // once the user clicks the map (or hits Esc). The lat/lon inputs will be pre-filled
+    // from the freshly-saved settings.
+    closeWizard(false);
+    enterPickMode();
+    // Watch for the next setReceiverLocation completion via a one-shot polling check.
+    const start = state.settings?.receiver_lat;
+    const check = setInterval(() => {
+      if (state.settings?.receiver_lat !== start && state.settings?.receiver_lat != null) {
+        clearInterval(check);
+        showWizard();
+        _wizardStep = 2;
+        renderWizardStep();
+        document.getElementById('wizard-lat').value = state.settings.receiver_lat;
+        document.getElementById('wizard-lon').value = state.settings.receiver_lon;
+      }
+    }, 400);
+    // Give up after 60 s so we don't leak an interval if the user navigates away.
+    setTimeout(() => clearInterval(check), 60_000);
+  });
+}
+
 /* ---------- Operator profile (click airline name in detail panel) --------- */
 // Match aircraft to an operator by the 3-letter ICAO callsign prefix (e.g. BAW = British
 // Airways). It's not perfect — some carriers don't follow the convention — but it's good
@@ -3076,6 +3200,9 @@ async function init() {
   // Polish add-ons
   installDropHandler();
   checkVersionBump();
+  bindWizard();
+  // Wait a beat so the toast doesn't collide with a fresh-load version-bump toast.
+  setTimeout(maybeShowOnboarding, 400);
 }
 
 document.addEventListener('DOMContentLoaded', init);
