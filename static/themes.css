@@ -333,3 +333,84 @@
 [data-theme="terminal"] .leaflet-container {
   background: #000000;
 }
+
+/* -------- DRACULA (iteration 5) -------- */
+[data-theme="dracula"] {
+  --bg: #282a36;
+  --panel-bg: #1e1f29;
+  --surface-bg: #343746;
+  --primary-text: #f8f8f2;
+  --secondary-text: #bdc1d4;
+  --tertiary-text: #6272a4;
+  --accent: #bd93f9;
+  --accent-muted: #6272a4;
+  --alert: #ff5555;
+  --success: #50fa7b;
+  --warning: #f1fa8c;
+  --separator: #44475a;
+  --map-trail: rgba(189, 147, 249, 0.7);
+  --map-range-ring: rgba(98, 114, 164, 0.4);
+  --map-receiver: #ff79c6;
+  --aircraft-selected: #ff79c6;
+  --band-ground: #6272a4;
+  --band-low: #50fa7b;
+  --band-mid: #f1fa8c;
+  --band-high: #ffb86c;
+  --band-very-high: #ff5555;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+}
+
+/* -------- TOKYO NIGHT (iteration 5) -------- */
+[data-theme="tokyoNight"] {
+  --bg: #1a1b26;
+  --panel-bg: #16161e;
+  --surface-bg: #24283b;
+  --primary-text: #c0caf5;
+  --secondary-text: #9aa5ce;
+  --tertiary-text: #565f89;
+  --accent: #7aa2f7;
+  --accent-muted: #3d59a1;
+  --alert: #f7768e;
+  --success: #9ece6a;
+  --warning: #e0af68;
+  --separator: #292e42;
+  --map-trail: rgba(122, 162, 247, 0.7);
+  --map-range-ring: rgba(61, 89, 161, 0.4);
+  --map-receiver: #bb9af7;
+  --aircraft-selected: #c0caf5;
+  --band-ground: #565f89;
+  --band-low: #9ece6a;
+  --band-mid: #e0af68;
+  --band-high: #ff9e64;
+  --band-very-high: #f7768e;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+}
+
+/* -------- CATPPUCCIN MOCHA (iteration 5) -------- */
+[data-theme="catppuccinMocha"] {
+  --bg: #1e1e2e;
+  --panel-bg: #181825;
+  --surface-bg: #313244;
+  --primary-text: #cdd6f4;
+  --secondary-text: #bac2de;
+  --tertiary-text: #6c7086;
+  --accent: #89b4fa;
+  --accent-muted: #585b70;
+  --alert: #f38ba8;
+  --success: #a6e3a1;
+  --warning: #f9e2af;
+  --separator: #313244;
+  --map-trail: rgba(137, 180, 250, 0.7);
+  --map-range-ring: rgba(116, 199, 236, 0.4);
+  --map-receiver: #f5c2e7;
+  --aircraft-selected: #cdd6f4;
+  --band-ground: #6c7086;
+  --band-low: #a6e3a1;
+  --band-mid: #f9e2af;
+  --band-high: #fab387;
+  --band-very-high: #f38ba8;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+}

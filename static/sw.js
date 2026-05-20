@@ -11,8 +11,11 @@ const SHELL = [
   '/piscope/static/radar.js',
   '/piscope/static/icons/aircraft.svg',
   '/piscope/static/manifest.webmanifest',
+  // Iteration 5: airport overlay data — 464 KB, pre-cached so the overlay toggles instantly
+  // and works offline. Refreshed by the same version-eviction logic when the cache bumps.
+  '/piscope/static/data/airports.json',
 ];
-const CACHE = 'piscope-shell-v6';
+const CACHE = 'piscope-shell-v7';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));

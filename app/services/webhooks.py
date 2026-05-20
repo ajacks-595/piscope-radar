@@ -30,6 +30,9 @@ def _format_text(kind: str, ac: dict[str, Any]) -> str:
     if kind in ("feed_down", "feed_recovered"):
         label = "📡 Receiver offline" if kind == "feed_down" else "✅ Receiver back online"
         return f"{label}: {ac.get('message', '(no detail)')} at {when}"
+    # Daily digest — payload's `message` is the already-rendered text body.
+    if kind == "digest":
+        return f"📋 PiScope Daily Digest ({when})\n\n{ac.get('message', '(empty digest)')}"
     name = ac.get("display_name") or ac.get("hex", "?")
     type_code = ac.get("type_code") or "?"
     dist = ac.get("distance_nm")

@@ -82,10 +82,49 @@ DEFAULTS: dict[str, Any] = {
     # minutes, fire a `feed_down` webhook (and a `feed_recovered` webhook when it comes back).
     # 0 disables the watchdog entirely. Useful for "is my Pi still alive?" Discord alerts.
     "watchdog_outage_minutes": 5,
+    # ---- AI explain (iteration 5) ----
+    # Ollama (or any compatible) server URL. Empty disables AI explanations entirely; the
+    # frontend's "Explain this aircraft" button hides itself when this is blank. The Pi must
+    # be able to reach this URL — typical setup is `http://10.0.0.x:11434` on a LAN host
+    # with Ollama bound to 0.0.0.0.
+    "ollama_url": "",
+    # Model name as known to Ollama, e.g. `gemma4:latest`, `llama3.1:8b`, `qwen2.5:7b`.
+    "ollama_model": "gemma4:latest",
+    # Master enable switch — separate from `ollama_url` so a user can pause AI calls without
+    # losing their URL config.
+    "ollama_enabled": False,
+    # ---- Daily digest (iteration 5) ----
+    "digest_enabled": True,
+    # 24h "HH:MM" string. Cron fires once per local day at this time. Default 07:30 lands
+    # in time for morning coffee on most schedules.
+    "digest_local_time": "07:30",
+    # Where to deliver. In-app is the no-setup baseline (renders under Stats → Today).
+    # Webhooks reuse the existing fan-out subscribed to type "digest".
+    # Email requires the SMTP_* settings below.
+    "digest_deliver_in_app": True,
+    "digest_deliver_webhook": False,
+    "digest_deliver_email": False,
+    # SMTP — only used when digest_deliver_email is on. Password lives in SECRET_KEYS so
+    # it's never returned to the wire after being set.
+    "smtp_host": "",
+    "smtp_port": 587,
+    "smtp_user": "",
+    "smtp_pass": "",
+    "smtp_from": "",
+    "smtp_to": "",
+    "smtp_use_starttls": True,
+    # ---- Airport overlay (iteration 5) ----
+    # Bundled large+medium airports rendered as a Leaflet layer. Zoom-aware: large always,
+    # medium at zoom ≥ 8, IATA labels at ≥ 9. Default off so we don't add visual noise unsolicited.
+    "airport_overlay_enabled": False,
+    # Internal storage slot for the most-recent digest JSON — written by the digest service
+    # and read by /api/digest. Keyed in DEFAULTS so set_many's whitelist accepts it; the value
+    # is intentionally public (same data exposed via /api/digest), so no SECRET_KEYS entry.
+    "digest_latest_json": None,
 }
 
 # Settings the user should never read back over the wire.
-SECRET_KEYS = {"fa_api_key", "openaip_api_key"}
+SECRET_KEYS = {"fa_api_key", "openaip_api_key", "smtp_pass"}
 
 
 def _connect() -> sqlite3.Connection:
@@ -270,6 +309,10 @@ def get_all(redact: bool = True) -> dict[str, Any]:
         # Derived flags the UI uses to know whether secret keys are stored without revealing them.
         merged["fa_api_key_set"] = bool(_CACHE.get("fa_api_key"))
         merged["openaip_api_key_set"] = bool(_CACHE.get("openaip_api_key"))
+        # The digest blob is large (~10 KB) and the frontend pulls it from /api/digest
+        # when it actually needs it — strip it from the generic settings response to keep
+        # the payload lean.
+        merged.pop("digest_latest_json", None)
     return merged
 
 
