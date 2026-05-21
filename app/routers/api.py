@@ -22,6 +22,7 @@ from ..services import records as records_store
 from ..services import settings as settings_store
 from ..services import ai as ai_svc
 from ..services.ai import ollama as _ollama_provider
+from ..services.ai import cloud_api as _cloud_api_provider
 from ..services import digest as digest_svc
 from ..services._http import LRUCache, get_client, reset_client
 from ..services.feed import feed_service
@@ -546,6 +547,13 @@ async def ollama_test() -> dict[str, Any]:
     the user can confirm their configured model exists. Explicitly pings the Ollama
     provider regardless of the active provider — this is the per-provider Ollama test."""
     return await _ollama_provider.ping()
+
+
+@router.post("/cloud-api/test")
+async def cloud_api_test() -> dict[str, Any]:
+    """Settings → Cloud API test-connection button. Pings the cloud_api provider with
+    the currently-configured vendor + key, returns the vendor's models list."""
+    return await _cloud_api_provider.ping()
 
 
 # --- Daily digest (iteration 5) ---------------------------------------------
