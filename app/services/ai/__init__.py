@@ -24,6 +24,7 @@ from typing import Any, Optional
 from . import _common
 from . import ollama as _ollama
 from . import cloud_api as _cloud_api
+from . import claude_cli as _claude_cli
 from .. import settings as settings_store
 
 
@@ -37,6 +38,7 @@ log = logging.getLogger("piscope.ai")
 _PROVIDERS: dict[str, Any] = {
     "ollama": _ollama,
     "cloud_api": _cloud_api,
+    "claude_cli": _claude_cli,
 }
 
 

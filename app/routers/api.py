@@ -23,6 +23,7 @@ from ..services import settings as settings_store
 from ..services import ai as ai_svc
 from ..services.ai import ollama as _ollama_provider
 from ..services.ai import cloud_api as _cloud_api_provider
+from ..services.ai import claude_cli as _claude_cli_provider
 from ..services import digest as digest_svc
 from ..services._http import LRUCache, get_client, reset_client
 from ..services.feed import feed_service
@@ -554,6 +555,13 @@ async def cloud_api_test() -> dict[str, Any]:
     """Settings → Cloud API test-connection button. Pings the cloud_api provider with
     the currently-configured vendor + key, returns the vendor's models list."""
     return await _cloud_api_provider.ping()
+
+
+@router.post("/claude-cli/test")
+async def claude_cli_test() -> dict[str, Any]:
+    """Settings → Claude CLI test-connection button. Hits the shim's /health endpoint
+    so the user can confirm the shim is reachable and the bearer token (if any) matches."""
+    return await _claude_cli_provider.ping()
 
 
 # --- Daily digest (iteration 5) ---------------------------------------------
