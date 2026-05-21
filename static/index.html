@@ -441,22 +441,79 @@
         </section>
 
         <section class="tab-section" data-section="ai">
-          <h3>Local AI explanations</h3>
-          <p class="hint">PiScope will POST to an Ollama-compatible endpoint (e.g. Ollama running on your Mac/NAS on the LAN) to generate a short natural-language brief for any selected aircraft. Disabled by default; the "Explain this aircraft" button only appears when this is configured and enabled.</p>
+          <h3>AI explanations</h3>
+          <p class="hint">Pick a backend for the "Explain this aircraft" button and the daily digest commentary. Three options: a local LLM via Ollama, a cloud API (your own Anthropic / OpenAI / Google key), or a Claude CLI shim that uses an existing Claude Code subscription. The Explain button hides itself when the selected provider isn't configured.</p>
           <div class="field">
-            <label for="setting-ollama-url">Ollama URL</label>
-            <input id="setting-ollama-url" type="url" placeholder="http://10.0.0.x:11434" autocomplete="off" />
-            <span class="hint">Must be reachable from the Pi. Typical setup: <code>OLLAMA_HOST=0.0.0.0:11434 ollama serve</code> on the host.</span>
+            <label for="setting-ai-provider">Provider</label>
+            <select id="setting-ai-provider">
+              <option value="">None (AI disabled)</option>
+              <option value="ollama">Ollama — local LLM</option>
+              <option value="cloud_api">Cloud API — Anthropic / OpenAI / Google</option>
+              <option value="claude_cli">Claude CLI — shim over your Claude Code subscription</option>
+            </select>
+            <span class="hint">Each provider keeps its own config below — switching providers doesn't wipe the others' settings.</span>
           </div>
-          <div class="field">
-            <label for="setting-ollama-model">Model</label>
-            <input id="setting-ollama-model" type="text" placeholder="gemma4:latest" autocomplete="off" />
-            <span class="hint">Model tag as <code>ollama list</code> reports it. The Test connection button below will tell you whether your tag is currently loaded.</span>
+
+          <div class="ai-provider-panel" id="ai-panel-ollama" hidden>
+            <div class="field">
+              <label for="setting-ollama-url">Ollama URL</label>
+              <input id="setting-ollama-url" type="url" placeholder="http://10.0.0.x:11434" autocomplete="off" />
+              <span class="hint">Must be reachable from the Pi. Typical setup: <code>OLLAMA_HOST=0.0.0.0:11434 ollama serve</code> on the host.</span>
+            </div>
+            <div class="field">
+              <label for="setting-ollama-model">Model</label>
+              <input id="setting-ollama-model" type="text" placeholder="gemma4:latest" autocomplete="off" />
+              <span class="hint">Model tag as <code>ollama list</code> reports it.</span>
+            </div>
+            <label class="checkbox-row"><input id="setting-ollama-enabled" type="checkbox" /> Enable Ollama</label>
+            <div class="fa-action-row" style="margin-top:8px">
+              <button id="test-ollama-btn" class="secondary">Test connection</button>
+              <span class="hint" id="test-ollama-result"></span>
+            </div>
           </div>
-          <label class="checkbox-row"><input id="setting-ollama-enabled" type="checkbox" /> Enable AI explanations</label>
-          <div class="fa-action-row" style="margin-top:8px">
-            <button id="test-ollama-btn" class="secondary">Test connection</button>
-            <span class="hint" id="test-ollama-result"></span>
+
+          <div class="ai-provider-panel" id="ai-panel-cloud_api" hidden>
+            <div class="field">
+              <label for="setting-cloud-api-vendor">Vendor</label>
+              <select id="setting-cloud-api-vendor">
+                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="openai">OpenAI (GPT)</option>
+                <option value="google">Google (Gemini)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="setting-cloud-api-key">API key</label>
+              <input id="setting-cloud-api-key" type="password" placeholder="(leave blank to keep stored key)" autocomplete="off" />
+              <span class="hint" id="cloud-api-key-status"></span>
+            </div>
+            <div class="field">
+              <label for="setting-cloud-api-model">Model (optional)</label>
+              <input id="setting-cloud-api-model" type="text" placeholder="(vendor default)" autocomplete="off" />
+              <span class="hint">Empty falls back to a cheap-and-capable default per vendor: <code>claude-haiku-4-5</code>, <code>gpt-4o-mini</code>, or <code>gemini-2.5-flash</code>.</span>
+            </div>
+            <label class="checkbox-row"><input id="setting-cloud-api-enabled" type="checkbox" /> Enable cloud API</label>
+            <div class="fa-action-row" style="margin-top:8px">
+              <button id="test-cloud-api-btn" class="secondary">Test connection</button>
+              <span class="hint" id="test-cloud-api-result"></span>
+            </div>
+          </div>
+
+          <div class="ai-provider-panel" id="ai-panel-claude_cli" hidden>
+            <div class="field">
+              <label for="setting-claude-cli-url">Shim URL</label>
+              <input id="setting-claude-cli-url" type="url" placeholder="http://10.0.0.x:8090" autocomplete="off" />
+              <span class="hint">Points at a <code>claude-shim</code> daemon (see <code>tools/claude-shim/</code> in the repo).</span>
+            </div>
+            <div class="field">
+              <label for="setting-claude-cli-token">Bearer token</label>
+              <input id="setting-claude-cli-token" type="password" placeholder="(leave blank to keep stored token)" autocomplete="off" />
+              <span class="hint" id="claude-cli-token-status"></span>
+            </div>
+            <label class="checkbox-row"><input id="setting-claude-cli-enabled" type="checkbox" /> Enable Claude CLI</label>
+            <div class="fa-action-row" style="margin-top:8px">
+              <button id="test-claude-cli-btn" class="secondary">Test connection</button>
+              <span class="hint" id="test-claude-cli-result"></span>
+            </div>
           </div>
         </section>
 
