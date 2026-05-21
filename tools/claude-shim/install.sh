@@ -20,17 +20,15 @@ fi
 # Resolve the source dir of this script — the repo's tools/claude-shim/.
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "[1/5] Creating ${INSTALL_DIR} owned by ${SERVICE_USER} ..."
+echo "[1/4] Creating ${INSTALL_DIR} owned by ${SERVICE_USER} ..."
 mkdir -p "${INSTALL_DIR}"
 cp "${SRC_DIR}/shim.py" "${INSTALL_DIR}/shim.py"
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
 
-echo "[2/5] Building venv at ${INSTALL_DIR}/venv ..."
-sudo -u "${SERVICE_USER}" python3 -m venv "${INSTALL_DIR}/venv"
-sudo -u "${SERVICE_USER}" "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
-sudo -u "${SERVICE_USER}" "${INSTALL_DIR}/venv/bin/pip" install --quiet fastapi uvicorn pydantic
+# Shim is stdlib-only on purpose — no venv or pip required. We just need a
+# python3 interpreter that the service can invoke.
 
-echo "[3/5] Seeding ${ENV_FILE} (only if absent) ..."
+echo "[2/4] Seeding ${ENV_FILE} (only if absent) ..."
 if [[ ! -f "${ENV_FILE}" ]]; then
   TOKEN="$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | base64 | tr -d '+/=' | head -c 32)"
   cat > "${ENV_FILE}" <<EOF
@@ -66,18 +64,19 @@ else
   echo "    ${ENV_FILE} already exists — not overwriting."
 fi
 
-echo "[4/5] Installing systemd unit ${UNIT_PATH} ..."
+echo "[3/4] Installing systemd unit ${UNIT_PATH} ..."
 cp "${SRC_DIR}/claude-shim.service" "${UNIT_PATH}"
 # Patch the User= and paths in the unit if the install dir / user differs from the defaults.
+PYTHON_BIN="$(command -v python3)"
 sed -i "s|^User=.*|User=${SERVICE_USER}|" "${UNIT_PATH}"
 sed -i "s|^EnvironmentFile=.*|EnvironmentFile=${ENV_FILE}|" "${UNIT_PATH}"
 sed -i "s|^WorkingDirectory=.*|WorkingDirectory=${INSTALL_DIR}|" "${UNIT_PATH}"
-sed -i "s|^ExecStart=.*|ExecStart=${INSTALL_DIR}/venv/bin/python ${INSTALL_DIR}/shim.py|" "${UNIT_PATH}"
+sed -i "s|^ExecStart=.*|ExecStart=${PYTHON_BIN} ${INSTALL_DIR}/shim.py|" "${UNIT_PATH}"
 
 systemctl daemon-reload
 systemctl enable claude-shim.service >/dev/null
 
-echo "[5/5] Done. Next steps:"
+echo "[4/4] Done. Next steps:"
 echo "  1. As ${SERVICE_USER}, run:   claude setup-token"
 echo "     (Interactive — provisions a long-lived auth token in ~/.claude/.)"
 echo "  2. Edit ${ENV_FILE} if you need to tweak port / allow-list / model."

@@ -19,7 +19,8 @@ your existing subscription covers the requests instead of burning API credits.
 
 The shim is intentionally minimal: it doesn't try to be a generic
 multi-tenant API. It's one host, one Claude account, one or a few LAN
-clients.
+clients. Implementation is **Python stdlib only** — no FastAPI, no pip
+dependencies, no venv.
 
 ## Contract
 
@@ -49,10 +50,11 @@ sudo ./install.sh
 
 That:
 
-1. Copies `shim.py` into `/opt/claude-shim/` and builds a venv there.
+1. Copies `shim.py` into `/opt/claude-shim/` (stdlib only — no venv).
 2. Writes `/etc/claude-shim.env` with a freshly generated bearer token
    (only if the file doesn't already exist).
-3. Installs `claude-shim.service` under systemd.
+3. Installs `claude-shim.service` under systemd, pointing at the system
+   `python3` (Python 3.9+).
 
 Then:
 

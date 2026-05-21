@@ -8,7 +8,7 @@ Type=simple
 User=PLACEHOLDER_USER
 WorkingDirectory=/opt/claude-shim
 EnvironmentFile=/etc/claude-shim.env
-ExecStart=/opt/claude-shim/venv/bin/python /opt/claude-shim/shim.py
+ExecStart=/usr/bin/python3 /opt/claude-shim/shim.py
 Restart=on-failure
 RestartSec=3
 
