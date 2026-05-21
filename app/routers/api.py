@@ -20,7 +20,8 @@ from fastapi import UploadFile, File
 from ..services import adsbdb, events as events_store, flightaware, hexdb, insights as insights_store, planespotters
 from ..services import records as records_store
 from ..services import settings as settings_store
-from ..services import ollama as ollama_svc
+from ..services import ai as ai_svc
+from ..services.ai import ollama as _ollama_provider
 from ..services import digest as digest_svc
 from ..services._http import LRUCache, get_client, reset_client
 from ..services.feed import feed_service
@@ -515,9 +516,11 @@ _EXPLAIN_ALLOWED_FIELDS = {
 @router.get("/explain/status")
 async def explain_status() -> dict[str, Any]:
     """Cheap predicate the frontend uses to decide whether to show the "Explain" button.
-    Doesn't actually call Ollama — only reports the configured-ness of the feature."""
+    Doesn't actually call the provider — only reports the configured-ness of the feature.
+    Legacy `model`/`url_set` fields kept for back-compat; new code reads `provider`."""
     return {
-        "configured": ollama_svc.is_configured(),
+        "configured": ai_svc.is_configured(),
+        "provider": ai_svc.active_provider_name(),
         "model": settings_store.get("ollama_model") or "",
         "url_set": bool((settings_store.get("ollama_url") or "").strip()),
     }
@@ -526,24 +529,23 @@ async def explain_status() -> dict[str, Any]:
 @router.post("/explain")
 async def explain(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
     """Generate a short natural-language brief for one aircraft."""
-    if not ollama_svc.is_configured():
+    if not ai_svc.is_configured():
         raise HTTPException(status_code=503, detail="AI explanations not configured")
     payload = {k: body[k] for k in body.keys() if k in _EXPLAIN_ALLOWED_FIELDS}
     if not payload.get("hex"):
         raise HTTPException(status_code=400, detail="hex required")
-    result = await ollama_svc.explain(payload)
-    if result.get("source") == "unavailable":
-        # 200 with an envelope rather than 5xx — the frontend renders an inline error
-        # instead of a console-spew red 500.
-        return result
+    result = await ai_svc.explain(payload)
+    # 200 with an envelope (including "unavailable") rather than 5xx — the frontend renders
+    # an inline error instead of a console-spew red 500.
     return result
 
 
 @router.post("/ollama/test")
 async def ollama_test() -> dict[str, Any]:
     """Settings → AI test-connection button. Returns reachability + a list of models so
-    the user can confirm their configured model exists."""
-    return await ollama_svc.ping()
+    the user can confirm their configured model exists. Explicitly pings the Ollama
+    provider regardless of the active provider — this is the per-provider Ollama test."""
+    return await _ollama_provider.ping()
 
 
 # --- Daily digest (iteration 5) ---------------------------------------------
