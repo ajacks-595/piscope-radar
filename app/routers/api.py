@@ -573,6 +573,70 @@ async def explain(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
     return result
 
 
+@router.post("/explain/followup")
+async def explain_followup(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Follow-up question about an aircraft the user has already seen the brief for.
+
+    Body shape:
+      {
+        "aircraft": {hex, callsign, ...},          # same whitelist as /explain
+        "history":  [{"role": "user"|"assistant", "content": "..."}, ...],
+        "question": "..."
+      }
+
+    Caching deliberately skipped — each conversation is unique and a stale
+    answer to a follow-up would be more confusing than helpful. Token cost is
+    bounded by the `ai_chat_max_turns` setting (default 5 exchanges).
+    """
+    if not ai_svc.is_configured():
+        raise HTTPException(status_code=503, detail="AI explanations not configured")
+
+    raw_ac = body.get("aircraft") or {}
+    if not isinstance(raw_ac, dict):
+        raise HTTPException(status_code=400, detail="aircraft must be an object")
+    payload = {k: raw_ac[k] for k in raw_ac.keys() if k in _EXPLAIN_ALLOWED_FIELDS}
+    if not payload.get("hex"):
+        raise HTTPException(status_code=400, detail="aircraft.hex required")
+
+    question = (body.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question required")
+    # Hard cap question length here too (the prompt builder also enforces this,
+    # but a clear 400 is friendlier than a silently truncated prompt).
+    if len(question) > 500:
+        raise HTTPException(status_code=400, detail="question too long (max 500 chars)")
+
+    raw_history = body.get("history") or []
+    if not isinstance(raw_history, list):
+        raise HTTPException(status_code=400, detail="history must be a list")
+    history: list[dict[str, str]] = []
+    for entry in raw_history:
+        if not isinstance(entry, dict):
+            continue
+        role = (entry.get("role") or "").strip().lower()
+        if role not in ("user", "assistant"):
+            continue
+        content = entry.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        history.append({"role": role, "content": content})
+
+    max_turns = settings_store.get("ai_chat_max_turns") or 5
+    try:
+        max_turns = int(max_turns)
+    except (TypeError, ValueError):
+        max_turns = 5
+    max_turns = max(1, min(max_turns, 20))
+
+    from ..services.ai._common import build_followup_prompt, cap_response
+    prompt = build_followup_prompt(payload, history, question, max_turns=max_turns)
+    text = await ai_svc.generate(prompt, num_predict=240, temperature=0.5)
+    provider = ai_svc.active_provider_name()
+    if not text:
+        return {"source": "unavailable", "error": f"no response from {provider}", "provider": provider}
+    return {"text": cap_response(text), "source": "ai", "provider": provider}
+
+
 @router.post("/ollama/test")
 async def ollama_test() -> dict[str, Any]:
     """Settings → AI test-connection button. Returns reachability + a list of models so

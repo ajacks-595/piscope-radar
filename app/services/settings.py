@@ -117,6 +117,12 @@ DEFAULTS: dict[str, Any] = {
     # Optional bearer token sent as `Authorization: Bearer <token>` to the shim.
     # Recommended even on a LAN — defence in depth against a compromised device.
     "claude_cli_token": "",
+    # ---- AI chat follow-ups (iteration 8) ----
+    # Maximum prior exchanges retained in /api/explain/followup prompts.
+    # Each "turn" is one user message + one assistant reply. Higher values
+    # cost more tokens per follow-up (cloud_api + claude_cli only — Ollama
+    # is free). 5 keeps the prompt small while still feeling chatty.
+    "ai_chat_max_turns": 5,
     # ---- Daily digest (iteration 5) ----
     "digest_enabled": True,
     # 24h "HH:MM" string. Cron fires once per local day at this time. Default 07:30 lands

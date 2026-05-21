@@ -104,6 +104,41 @@ def aircraft_cache_key(payload: dict[str, Any], provider: str) -> str:
 def build_aircraft_prompt(payload: dict[str, Any]) -> str:
     """Assemble the /api/explain prompt. Every field is labelled and validated;
     we deliberately do NOT mix user-provided strings in unstructured ways."""
+    lines: list[str] = [
+        "You are a friendly aviation enthusiast writing for someone with a real-time ADS-B radar.",
+        "Write TWO short paragraphs about the aircraft below, totalling under 110 words.",
+        "Paragraph 1: state what the aircraft is, who operates it, and what it's doing right now (use ONLY the live fields provided — altitude/heading/speed/origin/destination). Don't invent.",
+        "Paragraph 2: a single interesting historical or technical fact about this aircraft TYPE that the reader is likely not to know — first flight year, engine variant, design quirk, role. ONE sentence.",
+        "Plain prose, no bullets, no markdown, no headers. If a field is missing, skip it silently.",
+        "",
+    ]
+    lines.extend(_aircraft_context_block(payload))
+    lines.append("")
+    lines.append("Brief:")
+    return "\n".join(lines)
+
+
+# Hard cap on a single conversation turn we'll stitch into a follow-up prompt.
+# Long assistant turns are normally already capped by `cap_response` on the way
+# back from /api/explain; this is a defence-in-depth ceiling for anything the
+# frontend ever sends us.
+MAX_TURN_CHARS = 2000
+MAX_QUESTION_CHARS = 500
+
+
+def sanitize_turn_text(value: Any) -> str:
+    """Loose sanitiser for chat content — strip control chars, length-cap, no
+    regex match. Used for both prior turns and the new question. Doesn't try
+    to filter the content beyond making it safe to embed in a prompt."""
+    if not isinstance(value, str):
+        return ""
+    return _PRINTABLE_RE.sub("", value).strip()[:MAX_TURN_CHARS]
+
+
+def _aircraft_context_block(payload: dict[str, Any]) -> list[str]:
+    """Return the labelled fact block used by both build_aircraft_prompt and
+    build_followup_prompt. Identifiers + live state. Empty/invalid fields are
+    silently omitted; never inserts raw user-supplied strings."""
     hex_id = _sanitize(payload.get("hex"), _HEX_RE) or "(unknown)"
     callsign = _sanitize(payload.get("callsign"), _CALLSIGN_RE) or "(unknown)"
     type_code = _sanitize(payload.get("type_code"), _TYPE_RE) or "(unknown)"
@@ -129,13 +164,7 @@ def build_aircraft_prompt(payload: dict[str, Any]) -> str:
     heading = _bounded_int(payload.get("heading"), 0, 360)
     is_emergency = bool(payload.get("is_emergency_squawk"))
 
-    lines = [
-        "You are a friendly aviation enthusiast writing for someone with a real-time ADS-B radar.",
-        "Write TWO short paragraphs about the aircraft below, totalling under 110 words.",
-        "Paragraph 1: state what the aircraft is, who operates it, and what it's doing right now (use ONLY the live fields provided — altitude/heading/speed/origin/destination). Don't invent.",
-        "Paragraph 2: a single interesting historical or technical fact about this aircraft TYPE that the reader is likely not to know — first flight year, engine variant, design quirk, role. ONE sentence.",
-        "Plain prose, no bullets, no markdown, no headers. If a field is missing, skip it silently.",
-        "",
+    lines: list[str] = [
         "── Identifiers ──",
         f"ICAO24 hex: {hex_id}",
         f"Callsign: {callsign}",
@@ -180,8 +209,47 @@ def build_aircraft_prompt(payload: dict[str, Any]) -> str:
         lines.append("Emergency squawk active: yes (7500/7600/7700)")
     if watchlist:
         lines.append("This aircraft is on the user's watchlist.")
+    return lines
+
+
+def build_followup_prompt(
+    payload: dict[str, Any],
+    history: list[dict[str, str]],
+    question: str,
+    max_turns: int = 5,
+) -> str:
+    """Assemble a stitched prompt for /api/explain/followup.
+
+    `history` is a list of {"role": "user"|"assistant", "content": "..."}
+    in chronological order — typically the initial brief is the first
+    "assistant" entry, then alternating user/assistant pairs. We keep only
+    the last `max_turns * 2` entries (one turn = user + assistant pair) so
+    the prompt size stays bounded even on long chats.
+    """
+    # Truncate to most-recent `max_turns` exchanges (user+assistant = 2 entries).
+    bounded = history[-max(1, max_turns) * 2:] if history else []
+
+    lines: list[str] = [
+        "You are a friendly aviation enthusiast continuing a conversation about an aircraft visible on a real-time ADS-B radar. The user has already read your initial brief; they are now asking follow-up questions.",
+        "Style: 1-3 sentences per answer. Plain prose, no markdown, no bullets, no headers. Conversational and specific. Stick to facts about the aircraft type, operator, route, or general aviation knowledge.",
+        "Don't restate facts the user already has from the brief. Don't refuse to discuss the aircraft — its identifiers and current state are public ADS-B data. If you genuinely don't know, say so in one sentence.",
+        "",
+    ]
+    lines.extend(_aircraft_context_block(payload))
     lines.append("")
-    lines.append("Brief:")
+    lines.append("── Conversation so far ──")
+    for entry in bounded:
+        role = (entry.get("role") or "").strip().lower()
+        content = sanitize_turn_text(entry.get("content"))
+        if not content:
+            continue
+        if role == "assistant":
+            lines.append(f"Assistant: {content}")
+        elif role == "user":
+            lines.append(f"User: {content}")
+    lines.append("")
+    lines.append(f"User: {sanitize_turn_text(question)[:MAX_QUESTION_CHARS]}")
+    lines.append("Assistant:")
     return "\n".join(lines)
 
 
