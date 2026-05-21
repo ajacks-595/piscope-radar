@@ -1669,7 +1669,12 @@ async function syncAiSection(ac) {
     sec.hidden = false;
     const btn = document.getElementById('ai-explain-btn');
     const hint = document.getElementById('ai-explain-hint');
-    if (hint) hint.textContent = status.model ? `via ${status.model}` : '';
+    if (hint) {
+      // Prefer the iteration-7 structured `provider` block (gives a meaningful label for
+      // any provider). Fall back to legacy `model` for browsers still on the iter-6 shell.
+      const label = status.provider?.model || status.model || '';
+      hint.textContent = label ? `via ${label}` : '';
+    }
     // Replace the click handler each render so it always targets the current aircraft.
     btn.onclick = () => fetchExplain(ac);
   } catch (e) {
@@ -1677,9 +1682,19 @@ async function syncAiSection(ac) {
   }
 }
 
-// Settings → AI "Test connection" button. Saves the user's typed values first so the
-// test reflects what they'd actually be saving (you don't want to confuse "I changed
-// the URL but didn't save" with "the URL doesn't work").
+// Show only the sub-panel that matches the currently-selected AI provider. Called on
+// settings open and when the provider dropdown changes. Iteration-7 multi-provider UI.
+function updateAIProviderPanel() {
+  const selected = document.getElementById('setting-ai-provider')?.value || '';
+  for (const name of ['ollama', 'cloud_api', 'claude_cli']) {
+    const panel = document.getElementById(`ai-panel-${name}`);
+    if (panel) panel.hidden = (selected !== name);
+  }
+}
+
+// Settings → AI "Test connection" buttons. All three save the user's typed values
+// first so the test reflects what they'd actually be saving (you don't want to
+// confuse "I changed the URL but didn't save" with "the URL doesn't work").
 async function testOllamaConnection() {
   const out = document.getElementById('test-ollama-result');
   if (!out) return;
@@ -1702,6 +1717,68 @@ async function testOllamaConnection() {
         out.textContent = `✓ reachable — ${data.models?.length || 0} models available`;
         out.style.color = 'var(--accent)';
       }
+    } else {
+      out.textContent = `✗ ${data.error || 'unreachable'}`;
+      out.style.color = 'var(--alert)';
+    }
+  } catch (e) {
+    out.textContent = `✗ ${e.message}`;
+    out.style.color = 'var(--alert)';
+  }
+}
+
+async function testCloudApiConnection() {
+  const out = document.getElementById('test-cloud-api-result');
+  if (!out) return;
+  out.textContent = 'Testing…';
+  out.style.color = '';
+  const vendor = document.getElementById('setting-cloud-api-vendor')?.value || 'anthropic';
+  const model = document.getElementById('setting-cloud-api-model')?.value.trim() || '';
+  const body = { cloud_api_vendor: vendor, cloud_api_model: model };
+  const key = document.getElementById('setting-cloud-api-key')?.value;
+  if (key && key !== '***') body.cloud_api_key = key;
+  try {
+    await fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const res = await fetch('/piscope/api/cloud-api/test', { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      const m = data.configured_model;
+      if (m && !data.model_present) {
+        out.textContent = `✓ key works, but model "${m}" wasn't in the list (have: ${(data.models || []).slice(0,3).join(', ') || 'none'})`;
+        out.style.color = 'var(--alert)';
+      } else {
+        out.textContent = `✓ ${vendor} key works — ${data.models?.length || 0} models available`;
+        out.style.color = 'var(--accent)';
+      }
+    } else {
+      out.textContent = `✗ ${data.error || 'unreachable'}`;
+      out.style.color = 'var(--alert)';
+    }
+  } catch (e) {
+    out.textContent = `✗ ${e.message}`;
+    out.style.color = 'var(--alert)';
+  }
+}
+
+async function testClaudeCliConnection() {
+  const out = document.getElementById('test-claude-cli-result');
+  if (!out) return;
+  out.textContent = 'Testing…';
+  out.style.color = '';
+  const url = document.getElementById('setting-claude-cli-url')?.value.trim() || '';
+  const body = { claude_cli_url: url };
+  const token = document.getElementById('setting-claude-cli-token')?.value;
+  if (token && token !== '***') body.claude_cli_token = token;
+  try {
+    await fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const res = await fetch('/piscope/api/claude-cli/test', { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      const parts = [];
+      if (data.version) parts.push(data.version);
+      if (data.model && data.model !== '(default)') parts.push(data.model);
+      out.textContent = `✓ shim reachable${parts.length ? ` — ${parts.join(', ')}` : ''}`;
+      out.style.color = 'var(--accent)';
     } else {
       out.textContent = `✗ ${data.error || 'unreachable'}`;
       out.style.color = 'var(--alert)';
@@ -2091,13 +2168,25 @@ function populateSettingsModal() {
     document.getElementById('setting-extra-feeds').value = '';
   }
 
-  // AI / digest / SMTP (iteration 5). Password inputs intentionally stay blank — the
+  // AI / digest / SMTP (iteration 5+7). Password inputs intentionally stay blank — the
   // backend returns `***` for SECRET_KEYS so we don't echo them; submitting `***`
   // keeps the stored value as-is.
   const el = (id) => document.getElementById(id);
+  // Multi-provider AI (iteration 7). Provider dropdown drives which sub-panel is visible.
+  if (el('setting-ai-provider'))     el('setting-ai-provider').value = s.ai_provider || '';
   if (el('setting-ollama-url'))      el('setting-ollama-url').value = s.ollama_url || '';
   if (el('setting-ollama-model'))    el('setting-ollama-model').value = s.ollama_model || 'gemma4:latest';
   if (el('setting-ollama-enabled'))  el('setting-ollama-enabled').checked = !!s.ollama_enabled;
+  if (el('setting-cloud-api-vendor'))   el('setting-cloud-api-vendor').value = s.cloud_api_vendor || 'anthropic';
+  if (el('setting-cloud-api-key'))      el('setting-cloud-api-key').value = '';
+  if (el('cloud-api-key-status'))       el('cloud-api-key-status').textContent = s.cloud_api_key_set ? 'A key is currently stored. Leave blank to keep it.' : 'No key stored yet.';
+  if (el('setting-cloud-api-model'))    el('setting-cloud-api-model').value = s.cloud_api_model || '';
+  if (el('setting-cloud-api-enabled'))  el('setting-cloud-api-enabled').checked = !!s.cloud_api_enabled;
+  if (el('setting-claude-cli-url'))     el('setting-claude-cli-url').value = s.claude_cli_url || '';
+  if (el('setting-claude-cli-token'))   el('setting-claude-cli-token').value = '';
+  if (el('claude-cli-token-status'))    el('claude-cli-token-status').textContent = s.claude_cli_token_set ? 'A token is currently stored. Leave blank to keep it.' : 'No token stored yet.';
+  if (el('setting-claude-cli-enabled')) el('setting-claude-cli-enabled').checked = !!s.claude_cli_enabled;
+  updateAIProviderPanel();
   if (el('setting-digest-enabled'))  el('setting-digest-enabled').checked = s.digest_enabled !== false;
   if (el('setting-digest-time'))     el('setting-digest-time').value = s.digest_local_time || '07:30';
   if (el('setting-digest-inapp'))    el('setting-digest-inapp').checked = s.digest_deliver_in_app !== false;
@@ -2175,10 +2264,17 @@ async function saveSettings() {
     daily_backup_dir: document.getElementById('setting-backup-dir').value.trim(),
     map_label_mode: document.getElementById('setting-label-mode').value,
     label_full_min_zoom: parseInt(document.getElementById('setting-label-min-zoom').value, 10) || 8,
-    // AI / digest / SMTP — iteration 5.
+    // AI / digest / SMTP — iteration 5+7. Multi-provider AI lives in `ai_provider`;
+    // each provider's settings persist independently so switching back doesn't lose config.
+    ai_provider:     document.getElementById('setting-ai-provider')?.value || '',
     ollama_url:      document.getElementById('setting-ollama-url')?.value.trim() || '',
     ollama_model:    document.getElementById('setting-ollama-model')?.value.trim() || 'gemma4:latest',
     ollama_enabled:  !!document.getElementById('setting-ollama-enabled')?.checked,
+    cloud_api_vendor:  document.getElementById('setting-cloud-api-vendor')?.value || 'anthropic',
+    cloud_api_model:   document.getElementById('setting-cloud-api-model')?.value.trim() || '',
+    cloud_api_enabled: !!document.getElementById('setting-cloud-api-enabled')?.checked,
+    claude_cli_url:     document.getElementById('setting-claude-cli-url')?.value.trim() || '',
+    claude_cli_enabled: !!document.getElementById('setting-claude-cli-enabled')?.checked,
     digest_enabled:  !!document.getElementById('setting-digest-enabled')?.checked,
     digest_local_time:       document.getElementById('setting-digest-time')?.value.trim() || '07:30',
     digest_deliver_in_app:   !!document.getElementById('setting-digest-inapp')?.checked,
@@ -2195,6 +2291,13 @@ async function saveSettings() {
   // backend treats `***` the same way (it's the redacted sentinel returned from get_all).
   const pw = document.getElementById('setting-smtp-pass')?.value;
   if (pw && pw !== '***') body.smtp_pass = pw;
+  // Same convention for the iteration-7 cloud API key + Claude CLI bearer token: only
+  // include in the POST body if the user just typed something. An empty value means
+  // "keep what's stored"; this lets the password input safely render as blank on every open.
+  const cloudKey = document.getElementById('setting-cloud-api-key')?.value;
+  if (cloudKey && cloudKey !== '***') body.cloud_api_key = cloudKey;
+  const claudeTok = document.getElementById('setting-claude-cli-token')?.value;
+  if (claudeTok && claudeTok !== '***') body.claude_cli_token = claudeTok;
   const res = await fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   state.settings = await res.json();
   await saveWebhooks();  // persist whatever's in the settings modal's webhook editor
@@ -3401,6 +3504,9 @@ function bindUI() {
   for (const t of document.querySelectorAll('.tab[data-stats-tab]')) t.addEventListener('click', () => switchStatsTab(t.dataset.statsTab));
   document.getElementById('today-refresh')?.addEventListener('click', runDigestNow);
   document.getElementById('test-ollama-btn')?.addEventListener('click', testOllamaConnection);
+  document.getElementById('test-cloud-api-btn')?.addEventListener('click', testCloudApiConnection);
+  document.getElementById('test-claude-cli-btn')?.addEventListener('click', testClaudeCliConnection);
+  document.getElementById('setting-ai-provider')?.addEventListener('change', updateAIProviderPanel);
   document.getElementById('import-db').addEventListener('change', handleDbImport);
   document.addEventListener('keydown', handleKeyboard);
   // Bookmark right-click on aircraft markers
