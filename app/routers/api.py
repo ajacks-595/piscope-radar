@@ -515,14 +515,45 @@ _EXPLAIN_ALLOWED_FIELDS = {
 }
 
 
+def _provider_model_label() -> str:
+    """Best-effort 'what model is this going to call?' string for the UI.
+    Returns a vendor-specific default when the user hasn't set one explicitly,
+    so the status pill always has something to show."""
+    name = ai_svc.active_provider_name()
+    if name == "ollama":
+        return (settings_store.get("ollama_model") or "").strip()
+    if name == "cloud_api":
+        from ..services.ai.cloud_api import DEFAULT_MODELS, _vendor
+        configured = (settings_store.get("cloud_api_model") or "").strip()
+        return configured or DEFAULT_MODELS.get(_vendor(), "")
+    if name == "claude_cli":
+        # The shim picks the model; we have no model name here.
+        return "claude (via shim)"
+    return ""
+
+
 @router.get("/explain/status")
 async def explain_status() -> dict[str, Any]:
     """Cheap predicate the frontend uses to decide whether to show the "Explain" button.
     Doesn't actually call the provider — only reports the configured-ness of the feature.
-    Legacy `model`/`url_set` fields kept for back-compat; new code reads `provider`."""
+
+    Response shape:
+        {
+          "configured": bool,                      # any provider ready?
+          "provider": {"name", "configured", "model"},
+          "model": "...", "url_set": bool          # legacy Ollama fields, kept for back-compat
+        }
+    """
+    name = ai_svc.active_provider_name()
     return {
         "configured": ai_svc.is_configured(),
-        "provider": ai_svc.active_provider_name(),
+        "provider": {
+            "name": name,
+            "configured": ai_svc.is_configured(),
+            "model": _provider_model_label(),
+        },
+        # Legacy fields — pre-iteration-7 clients (cached HTML on a stale browser) read these.
+        # They will be removed once we're confident no one's still on the old shell.
         "model": settings_store.get("ollama_model") or "",
         "url_set": bool((settings_store.get("ollama_url") or "").strip()),
     }

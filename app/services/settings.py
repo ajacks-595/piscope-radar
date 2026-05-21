@@ -195,6 +195,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_ai_provider() -> None:
+    """One-time migration for iteration 7's multi-provider AI:
+    if a deployment had `ollama_enabled=True` but no explicit `ai_provider`
+    set, pin `ai_provider='ollama'` so the new UI dropdown reflects the
+    current behaviour. Default-state installs (Ollama never enabled) keep
+    `ai_provider=''` and stay in the no-AI state."""
+    if (get("ai_provider") or "").strip():
+        return
+    if bool(get("ollama_enabled")):
+        set_one("ai_provider", "ollama")
+
+
 def init_db() -> None:
     with _connect() as conn:
         # Enable incremental auto-vacuum so the DB file shrinks after we prune old snapshots.
@@ -270,6 +282,9 @@ def init_db() -> None:
         # Run migrations after the base CREATE TABLEs so we don't fight CREATE TABLE IF NOT EXISTS.
         _migrate(conn)
         conn.commit()
+    # Settings-level migrations live outside the open connection because they go through
+    # `set_one` (which manages its own connection + cache invalidation).
+    _migrate_ai_provider()
 
 
 def _coerce(key: str, raw: Optional[str]) -> Any:
