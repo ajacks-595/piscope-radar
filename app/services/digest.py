@@ -214,15 +214,12 @@ def render_text(digest: dict[str, Any]) -> str:
 
 
 async def _maybe_add_ai_commentary(digest: dict[str, Any]) -> None:
-    """If Ollama is configured, ask for a short paragraph framing the day's activity.
-    Failure is silent — the templated digest is the source of truth."""
-    from . import ollama  # local import to avoid hard dep cycle
-    if not ollama.is_configured():
+    """If any AI provider is configured, ask for a short paragraph framing the day's
+    activity. Failure is silent — the templated digest is the source of truth."""
+    from . import ai
+    if not ai.is_configured():
         return
     try:
-        # Build a compact factual summary and ask for a 2-sentence narration.
-        url = (settings_store.get("ollama_url") or "").strip().rstrip("/")
-        model = (settings_store.get("ollama_model") or "gemma4:latest").strip()
         t = digest["totals"]
         top = ", ".join(f"{r['type_code']}x{r['sightings']}" for r in digest["top_types"][:3])
         new = ", ".join(digest["new_types_in_window"][:5])
@@ -242,23 +239,9 @@ async def _maybe_add_ai_commentary(digest: dict[str, Any]) -> None:
             "Notable callouts:\n" + ("\n".join(callout_lines) or "- none") + "\n\n"
             "Summary:"
         )
-        from ._http import get_client
-        body = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False, "think": False,
-            "keep_alive": settings_store.get("ollama_keep_alive") or 0,
-            "options": {"temperature": 0.5, "top_p": 0.9, "num_predict": 200, "stop": ["\n\n\n"]},
-        }
-        client = await get_client()
-        r = await client.post(f"{url}/api/chat", json=body, timeout=30.0)
-        if r.status_code == 200:
-            data = r.json()
-            text = ((data.get("message") or {}).get("content") or "").strip()
-            if not text:
-                text = ((data.get("message") or {}).get("thinking") or "").strip()
-            if text:
-                digest["ai_commentary"] = text[:1000]
+        text = await ai.generate(prompt, num_predict=200)
+        if text:
+            digest["ai_commentary"] = text.strip()[:1000]
     except Exception as exc:
         log.info("digest AI commentary skipped: %s", exc)
 
