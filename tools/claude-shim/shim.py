@@ -88,11 +88,16 @@ def _run_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
     bin_path = shutil.which(CLAUDE_BIN)
     if not bin_path:
         return None, f"claude binary not on PATH ({CLAUDE_BIN!r})"
-    # `--bare` skips hooks, MCP, plugin sync, auto-memory — keeps the shim
-    # fast and avoids side effects. `--print` makes it a one-shot non-interactive
-    # call. Prompt comes from stdin so we don't have to worry about argv length
-    # limits or shell escaping.
-    args = [bin_path, "--bare", "--print"]
+    # `--print` makes it a one-shot non-interactive call. Prompt comes from
+    # stdin so we don't have to worry about argv length limits or shell escaping.
+    #
+    # NOTE: do NOT add `--bare`. Per `claude --help`, --bare disables OAuth and
+    # keychain reads — auth becomes ANTHROPIC_API_KEY only. The whole point of
+    # this shim is to piggyback on the operator's OAuth login, so --bare would
+    # defeat the purpose. Side effects from hooks/MCP are mostly harmless for a
+    # headless one-shot prompt; if you need to suppress them, set them off in
+    # ~/.claude/settings.json rather than reaching for --bare.
+    args = [bin_path, "--print"]
     if CLAUDE_MODEL:
         args += ["--model", CLAUDE_MODEL]
     try:
