@@ -453,6 +453,11 @@
             </select>
             <span class="hint">Each provider keeps its own config below — switching providers doesn't wipe the others' settings.</span>
           </div>
+          <div class="field">
+            <label for="setting-ai-chat-max-turns">Follow-up chat history (turns)</label>
+            <input id="setting-ai-chat-max-turns" type="number" min="1" max="20" step="1" />
+            <span class="hint">Most-recent N exchanges are stitched into each follow-up prompt. Higher = more context; ~doubles per-message tokens. Free for Ollama, billed for Cloud API / Claude CLI.</span>
+          </div>
 
           <div class="ai-provider-panel" id="ai-panel-ollama" hidden>
             <div class="field">

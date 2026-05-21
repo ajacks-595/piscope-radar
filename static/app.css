@@ -1082,6 +1082,69 @@ input[type="range"] {
 }
 .ai-verify a { color: var(--accent); }
 
+/* ------------- AI chat follow-ups (iteration 8) ------------- */
+#ai-chat {
+  margin-top: 10px;
+  border-top: 1px solid var(--separator);
+  padding-top: 10px;
+}
+.ai-chat-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+.ai-chat-turn {
+  font-size: 12.5px;
+  line-height: 1.45;
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.ai-chat-turn.user {
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface-bg));
+  align-self: flex-end;
+  max-width: 88%;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.ai-chat-turn.assistant {
+  background: var(--surface-bg);
+  align-self: flex-start;
+  max-width: 88%;
+  border: 1px solid var(--separator);
+}
+.ai-chat-input-row {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+}
+.ai-chat-input-row textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 38px;
+  max-height: 140px;
+  padding: 7px 9px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--separator);
+  background: var(--surface-bg);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+.ai-chat-input-row textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.ai-chat-input-row textarea:disabled {
+  opacity: 0.6;
+}
+.ai-chat-input-row button {
+  white-space: nowrap;
+}
+
 /* ------------- Daily digest card (iteration 5) ------------- */
 .digest-headlines {
   display: grid;
