@@ -98,6 +98,25 @@ DEFAULTS: dict[str, Any] = {
     # the model warm if you expect many requests in a short window — accepts Ollama's usual
     # duration string format ("30s", "5m", "1h") or a number of seconds.
     "ollama_keep_alive": 0,
+    # ---- Multi-provider AI (iteration 7) ----
+    # Active provider name. One of "ollama" | "cloud_api" | "claude_cli" | "" (none).
+    # Empty falls back to the legacy `ollama_enabled` flag so existing deployments
+    # keep working without an explicit migration step.
+    "ai_provider": "",
+    # Cloud LLM provider (Anthropic / OpenAI / Google) — bring-your-own API key.
+    "cloud_api_enabled": False,
+    "cloud_api_vendor": "anthropic",       # "anthropic" | "openai" | "google"
+    "cloud_api_key": "",
+    # Empty model name falls back to a sensible per-vendor default in ai/cloud_api.py.
+    "cloud_api_model": "",
+    # Claude CLI provider — POSTs to a small shim daemon that wraps `claude -p`.
+    # The shim lives on a LAN host that has Claude Code installed and authenticated.
+    # See tools/claude-shim/ in the repo for a turnkey daemon + systemd unit.
+    "claude_cli_enabled": False,
+    "claude_cli_url": "",
+    # Optional bearer token sent as `Authorization: Bearer <token>` to the shim.
+    # Recommended even on a LAN — defence in depth against a compromised device.
+    "claude_cli_token": "",
     # ---- Daily digest (iteration 5) ----
     "digest_enabled": True,
     # 24h "HH:MM" string. Cron fires once per local day at this time. Default 07:30 lands
@@ -129,7 +148,7 @@ DEFAULTS: dict[str, Any] = {
 }
 
 # Settings the user should never read back over the wire.
-SECRET_KEYS = {"fa_api_key", "openaip_api_key", "smtp_pass"}
+SECRET_KEYS = {"fa_api_key", "openaip_api_key", "smtp_pass", "cloud_api_key", "claude_cli_token"}
 
 
 def _connect() -> sqlite3.Connection:
@@ -314,6 +333,8 @@ def get_all(redact: bool = True) -> dict[str, Any]:
         # Derived flags the UI uses to know whether secret keys are stored without revealing them.
         merged["fa_api_key_set"] = bool(_CACHE.get("fa_api_key"))
         merged["openaip_api_key_set"] = bool(_CACHE.get("openaip_api_key"))
+        merged["cloud_api_key_set"] = bool(_CACHE.get("cloud_api_key"))
+        merged["claude_cli_token_set"] = bool(_CACHE.get("claude_cli_token"))
         # The digest blob is large (~10 KB) and the frontend pulls it from /api/digest
         # when it actually needs it — strip it from the generic settings response to keep
         # the payload lean.
