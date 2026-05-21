@@ -1385,6 +1385,13 @@ function renderDetailPanel(ac) {
         <span class="hint" id="ai-explain-hint"></span>
       </div>
       <div id="ai-result"></div>
+      <div id="ai-chat" hidden>
+        <div id="ai-chat-history" class="ai-chat-history"></div>
+        <div class="ai-chat-input-row">
+          <textarea id="ai-chat-input" rows="2" maxlength="500" placeholder="Ask a follow-up… (Shift+Enter for newline)"></textarea>
+          <button id="ai-chat-send" class="secondary">Send</button>
+        </div>
+      </div>
     </section>
     <section>
       <h3>FlightAware</h3>
@@ -1677,6 +1684,26 @@ async function syncAiSection(ac) {
     }
     // Replace the click handler each render so it always targets the current aircraft.
     btn.onclick = () => fetchExplain(ac);
+    // Chat wiring (iteration 8). The detail panel re-renders on live updates, so we
+    // re-bind the send handlers every time. The chat state is anchored to ac.hex: if
+    // the user has just selected a different aircraft, drop the prior thread.
+    if (_aiChatState.hex && _aiChatState.hex !== ac.hex) {
+      _aiChatState.hex = null;
+      _aiChatState.turns = [];
+    }
+    renderAiChat();
+    const sendBtn = document.getElementById('ai-chat-send');
+    const inputEl = document.getElementById('ai-chat-input');
+    if (sendBtn) sendBtn.onclick = () => sendAiChat(ac);
+    if (inputEl) {
+      inputEl.onkeydown = (e) => {
+        // Enter sends; Shift+Enter adds a newline.
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          sendAiChat(ac);
+        }
+      };
+    }
   } catch (e) {
     sec.hidden = true;
   }
@@ -1789,6 +1816,111 @@ async function testClaudeCliConnection() {
   }
 }
 
+// Chat state. Persisted across detail re-renders so the conversation survives
+// live-state updates of the same aircraft. Reset whenever the user selects a
+// different aircraft (hex change) or re-fetches the initial Explain.
+const _aiChatState = { hex: null, turns: [] };
+
+// Build the structured aircraft payload we send to /api/explain and to
+// /api/explain/followup. Extracted from the original inline payload-build in
+// fetchExplain so the chat can reuse it without duplication.
+function _aircraftAiPayload(ac) {
+  const enr = (ac.callsign && state.enrichmentCache.adsbdb.get(ac.callsign)) || {};
+  return {
+    hex: ac.hex,
+    callsign: ac.callsign,
+    type_code: ac.type_code,
+    registration: ac.registration,
+    airline_name: enr.airline_name,
+    origin_name: enr.origin_name,
+    origin_municipality: enr.origin_municipality,
+    origin_iata: enr.origin_iata,
+    origin_icao: enr.origin_icao,
+    origin_country_iso: enr.origin_country_iso,
+    destination_name: enr.destination_name,
+    destination_municipality: enr.destination_municipality,
+    destination_iata: enr.destination_iata,
+    destination_icao: enr.destination_icao,
+    destination_country_iso: enr.destination_country_iso,
+    altitude_baro: ac.altitude_baro,
+    ground_speed: ac.ground_speed,
+    heading: ac.heading,
+    vertical_rate: ac.vertical_rate,
+    distance_nm: ac.distance_nm,
+    on_ground: ac.on_ground,
+    squawk: ac.squawk,
+    is_emergency_squawk: ac.is_emergency_squawk,
+    military: ac.military,
+    watchlist_match: isWatchlisted(ac),
+  };
+}
+
+function renderAiChat() {
+  const wrap = document.getElementById('ai-chat');
+  const history = document.getElementById('ai-chat-history');
+  if (!wrap || !history) return;
+  if (!_aiChatState.turns.length) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  // Skip rendering the very first assistant turn (it's already shown above
+  // as the main brief) so the chat panel only displays the back-and-forth.
+  const turns = _aiChatState.turns.slice(1);
+  history.innerHTML = turns.map((t) => {
+    const cls = t.role === 'user' ? 'ai-chat-turn user' : 'ai-chat-turn assistant';
+    return `<div class="${cls}">${escapeHtml(t.content || '')}</div>`;
+  }).join('');
+  // Auto-scroll to the latest message.
+  history.scrollTop = history.scrollHeight;
+}
+
+async function sendAiChat(ac) {
+  const input = document.getElementById('ai-chat-input');
+  const send = document.getElementById('ai-chat-send');
+  if (!input || !send) return;
+  const question = (input.value || '').trim();
+  if (!question) return;
+  // Snapshot the history *before* we append the user turn — the backend's
+  // `history` field is everything prior; `question` is the new turn.
+  const priorHistory = _aiChatState.turns.slice();
+  _aiChatState.turns.push({ role: 'user', content: question });
+  // Render immediately so the user sees their question while we wait.
+  input.value = '';
+  input.disabled = true;
+  send.disabled = true;
+  send.textContent = '…';
+  renderAiChat();
+  try {
+    const res = await fetch('/piscope/api/explain/followup', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        aircraft: _aircraftAiPayload(ac),
+        history: priorHistory,
+        question,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      _aiChatState.turns.push({ role: 'assistant', content: `(failed: ${err.detail || res.statusText})` });
+      renderAiChat();
+      return;
+    }
+    const data = await res.json();
+    if (data.source === 'unavailable') {
+      _aiChatState.turns.push({ role: 'assistant', content: `(unavailable: ${data.error || 'unknown'})` });
+    } else {
+      _aiChatState.turns.push({ role: 'assistant', content: data.text || '' });
+    }
+    renderAiChat();
+  } catch (e) {
+    _aiChatState.turns.push({ role: 'assistant', content: `(network error: ${e.message})` });
+    renderAiChat();
+  } finally {
+    input.disabled = false;
+    send.disabled = false;
+    send.textContent = 'Send';
+    input.focus();
+  }
+}
+
 async function fetchExplain(ac) {
   const btn = document.getElementById('ai-explain-btn');
   const result = document.getElementById('ai-result');
@@ -1805,36 +1937,7 @@ async function fetchExplain(ac) {
     // is dropped server-side anyway, but keeping the payload small saves bytes. Route info
     // comes from the adsbdb cache (keyed by callsign), which the existing detail flow has
     // already warmed by the time the user clicks Explain.
-    const enr = (ac.callsign && state.enrichmentCache.adsbdb.get(ac.callsign)) || {};
-    const payload = {
-      // Identifiers + enrichment
-      hex: ac.hex,
-      callsign: ac.callsign,
-      type_code: ac.type_code,
-      registration: ac.registration,
-      airline_name: enr.airline_name,
-      origin_name: enr.origin_name,
-      origin_municipality: enr.origin_municipality,
-      origin_iata: enr.origin_iata,
-      origin_icao: enr.origin_icao,
-      origin_country_iso: enr.origin_country_iso,
-      destination_name: enr.destination_name,
-      destination_municipality: enr.destination_municipality,
-      destination_iata: enr.destination_iata,
-      destination_icao: enr.destination_icao,
-      destination_country_iso: enr.destination_country_iso,
-      // Live state — gives the model real context to ground paragraph 1 in.
-      altitude_baro: ac.altitude_baro,
-      ground_speed: ac.ground_speed,
-      heading: ac.heading,
-      vertical_rate: ac.vertical_rate,
-      distance_nm: ac.distance_nm,
-      on_ground: ac.on_ground,
-      squawk: ac.squawk,
-      is_emergency_squawk: ac.is_emergency_squawk,
-      military: ac.military,
-      watchlist_match: isWatchlisted(ac),
-    };
+    const payload = _aircraftAiPayload(ac);
     const res = await fetch('/piscope/api/explain', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -1867,6 +1970,12 @@ async function fetchExplain(ac) {
       : '';
     const sourceLabel = data.source === 'cache' ? 'Cached response' : 'Fresh AI response';
     result.innerHTML = `<div class="ai-brief">${paragraphs}</div>${verifyRow}<div style="margin-top:6px"><span class="hint">${sourceLabel}</span></div>`;
+    // Seed the chat thread with the brief as the first assistant message. Any follow-up
+    // exchange is appended in sendAiChat. Anchor the chat to this aircraft so a later
+    // selection of a different hex resets the conversation.
+    _aiChatState.hex = ac.hex;
+    _aiChatState.turns = [{ role: 'assistant', content: data.text || '' }];
+    renderAiChat();
   } catch (e) {
     result.innerHTML = `<p class="hint" style="color:var(--alert)">Network error: ${escapeHtml(e.message)}</p>`;
   } finally {
@@ -2174,6 +2283,7 @@ function populateSettingsModal() {
   const el = (id) => document.getElementById(id);
   // Multi-provider AI (iteration 7). Provider dropdown drives which sub-panel is visible.
   if (el('setting-ai-provider'))     el('setting-ai-provider').value = s.ai_provider || '';
+  if (el('setting-ai-chat-max-turns')) el('setting-ai-chat-max-turns').value = s.ai_chat_max_turns || 5;
   if (el('setting-ollama-url'))      el('setting-ollama-url').value = s.ollama_url || '';
   if (el('setting-ollama-model'))    el('setting-ollama-model').value = s.ollama_model || 'gemma4:latest';
   if (el('setting-ollama-enabled'))  el('setting-ollama-enabled').checked = !!s.ollama_enabled;
@@ -2267,6 +2377,7 @@ async function saveSettings() {
     // AI / digest / SMTP — iteration 5+7. Multi-provider AI lives in `ai_provider`;
     // each provider's settings persist independently so switching back doesn't lose config.
     ai_provider:     document.getElementById('setting-ai-provider')?.value || '',
+    ai_chat_max_turns: Math.max(1, Math.min(parseInt(document.getElementById('setting-ai-chat-max-turns')?.value, 10) || 5, 20)),
     ollama_url:      document.getElementById('setting-ollama-url')?.value.trim() || '',
     ollama_model:    document.getElementById('setting-ollama-model')?.value.trim() || 'gemma4:latest',
     ollama_enabled:  !!document.getElementById('setting-ollama-enabled')?.checked,
