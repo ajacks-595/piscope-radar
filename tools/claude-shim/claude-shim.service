@@ -1,0 +1,34 @@
+[Unit]
+Description=Claude-CLI HTTP shim for PiScope Radar and similar clients
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=PLACEHOLDER_USER
+WorkingDirectory=/opt/claude-shim
+EnvironmentFile=/etc/claude-shim.env
+ExecStart=/opt/claude-shim/venv/bin/python /opt/claude-shim/shim.py
+Restart=on-failure
+RestartSec=3
+
+# Hardening — the shim has full Claude-account access, so squeeze the blast
+# radius down to the venv + the user's home (claude needs ~/.claude for its
+# token store and config).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/claude-shim
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false   # Node JIT needs W+X
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
