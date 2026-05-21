@@ -15,7 +15,7 @@ const SHELL = [
   // and works offline. Refreshed by the same version-eviction logic when the cache bumps.
   '/piscope/static/data/airports.json',
 ];
-const CACHE = 'piscope-shell-v9';
+const CACHE = 'piscope-shell-v10';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));
