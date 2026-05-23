@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional
 
 import httpx
-from fastapi import APIRouter, Body, HTTPException, Response
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Body, HTTPException, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 
 import io
 import json
@@ -760,4 +761,108 @@ async def dashboard_categorize_stats() -> dict[str, Any]:
     return {
         "table_size": categorize.table_size(),
         "categories": list(categorize.CATEGORIES),
+    }
+
+
+@router.get("/dashboard/events")
+async def dashboard_events(
+    request: Request,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+    radius_km: float = 50.0,
+) -> StreamingResponse:
+    """Server-Sent Events stream of significant aircraft events (iter 9.3).
+
+    Emits: `emergency`, `emergency_resolved`, `military`, `watchlist`, `rare`,
+    and periodic `heartbeat`. If `lat`/`lon` are supplied, events with known
+    coordinates outside `radius_km` are filtered out — events without coords
+    (e.g. emergency_resolved due to coverage loss) always pass through.
+
+    Reconnects via the standard SSE `Last-Event-ID` header replay anything
+    that's still in the ring buffer (~500 most recent events).
+    """
+    from ..services import events_bus
+    from ..services.dashboard import haversine_km
+
+    if lat is not None and not (-90 <= lat <= 90):
+        raise HTTPException(status_code=400, detail="lat out of range")
+    if lon is not None and not (-90 <= lon <= 180):
+        raise HTTPException(status_code=400, detail="lon out of range")
+    radius_km = max(0.1, min(float(radius_km), 1000.0))
+
+    # Last-Event-ID for replay-after-reconnect. Header is preferred; query
+    # `since` is an explicit fallback for clients that can't set it.
+    last_id_raw = request.headers.get("Last-Event-ID") or request.query_params.get("since") or "0"
+    try:
+        last_id = int(last_id_raw)
+    except (TypeError, ValueError):
+        last_id = 0
+
+    async def stream():
+        # Initial server-comment line nudges proxies (and tells the browser
+        # the stream is alive immediately).
+        yield ":piscope dashboard events stream\n\n"
+        # Recommended client retry on disconnect (5 s).
+        yield "retry: 5000\n\n"
+
+        sub = events_bus.subscribe(start_after_id=last_id)
+        loop_done = False
+        while not loop_done:
+            try:
+                # Race the next bus event against a 25 s heartbeat. asyncio.wait
+                # would also work but anext + wait_for is the simpler shape here.
+                next_task = asyncio.ensure_future(sub.__anext__())
+                try:
+                    ev = await asyncio.wait_for(next_task, timeout=25.0)
+                except asyncio.TimeoutError:
+                    next_task.cancel()
+                    yield f"event: heartbeat\ndata: {json.dumps({'as_of': time.time()})}\n\n"
+                    continue
+                except StopAsyncIteration:
+                    loop_done = True
+                    break
+
+                # Location filter — events without coords always pass.
+                if (lat is not None and lon is not None
+                        and ev.lat is not None and ev.lon is not None):
+                    d = haversine_km(lat, lon, ev.lat, ev.lon)
+                    if d > radius_km:
+                        continue
+
+                payload = {
+                    "hex": ev.hex,
+                    "ts": ev.ts,
+                    "lat": ev.lat,
+                    "lon": ev.lon,
+                    **(ev.data or {}),
+                }
+                yield f"id: {ev.id}\nevent: {ev.kind}\ndata: {json.dumps(payload)}\n\n"
+            except asyncio.CancelledError:
+                loop_done = True
+            except Exception as exc:
+                # Don't kill the stream over one bad event — log + send a comment
+                # so the client knows something happened but isn't disconnected.
+                log.warning("dashboard SSE stream error: %s", exc)
+                yield f": error: {type(exc).__name__}\n\n"
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",   # nginx / lighttpd: don't buffer
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.get("/dashboard/events/stats")
+async def dashboard_events_stats() -> dict[str, Any]:
+    """Bus diagnostics — current subscriber count + ring size + latest event id.
+    Cheap, intended for the dashboard agent's debug overlays."""
+    from ..services import events_bus
+    return {
+        "subscribers": events_bus.subscriber_count(),
+        "ring_size": events_bus.ring_size(),
+        "latest_event_id": events_bus.latest_event_id(),
     }

@@ -15,6 +15,7 @@ import httpx
 from ..models.aircraft import Aircraft, aircraft_from_wire, haversine_nm
 from . import backups as backups_store
 from . import events as events_store
+from . import events_bus
 from . import hexdb as hexdb_service
 from . import insights as insights_store
 from . import records as records_store
@@ -100,6 +101,10 @@ class FeedService:
         self._notified_military: set[str] = set()
         self._notified_emergency: set[str] = set()
         self._notified_watchlist: set[str] = set()
+        # When an emergency squawk first appeared. Used to emit `emergency_resolved`
+        # bus events with the squawk's lifetime when the aircraft drops the
+        # emergency code (or leaves coverage).
+        self._emergency_started_at: dict[str, float] = {}
 
         # Snapshot persistence cadence — every Nth poll write to feed_snapshots. Read from
         # settings on each poll so it can be retuned without a restart.
@@ -497,6 +502,23 @@ class FeedService:
                         distance_nm=ac.distance_nm, payload=payload, conn=poll_conn,
                     )
                     webhooks_service.fan_out(kind, ac_dict)
+                    # Live SSE channel for dashboards (iter 9.3). publish() is
+                    # synchronous + non-blocking; failures are swallowed inside
+                    # so the poll loop never trips on bus issues.
+                    try:
+                        events_bus.publish(
+                            kind, hex=ac.hex, lat=ac.lat, lon=ac.lon,
+                            data={
+                                "callsign": ac.callsign,
+                                "registration": ac.registration,
+                                "type_code": ac.type_code,
+                                "altitude_ft": ac.altitude_baro,
+                                "distance_nm": ac.distance_nm,
+                                **payload,
+                            },
+                        )
+                    except Exception as exc:
+                        log.warning("events_bus.publish failed for %s: %s", kind, exc)
 
                 if ac.military and ac.hex not in self._notified_military:
                     self._notified_military.add(ac.hex)
@@ -505,8 +527,27 @@ class FeedService:
                 if ac.is_emergency_squawk and ac.hex not in self._notified_emergency:
                     self._notified_emergency.add(ac.hex)
                     self._daily_emergencies.add(ac.hex)
+                    self._emergency_started_at[ac.hex] = now_ts
                     _fire("emergency", {"squawk": ac.squawk, "altitude": ac.altitude_baro,
                                          "lat": ac.lat, "lon": ac.lon, "type_code": ac.type_code})
+                elif (not ac.is_emergency_squawk) and ac.hex in self._notified_emergency:
+                    # Squawk has reverted to a normal code while still in coverage.
+                    started = self._emergency_started_at.pop(ac.hex, None)
+                    duration = (now_ts - started) if started else None
+                    self._notified_emergency.discard(ac.hex)
+                    try:
+                        events_bus.publish(
+                            "emergency_resolved", hex=ac.hex, lat=ac.lat, lon=ac.lon,
+                            data={
+                                "callsign": ac.callsign,
+                                "registration": ac.registration,
+                                "type_code": ac.type_code,
+                                "duration_s": round(duration, 1) if duration is not None else None,
+                                "reason": "squawk_normalised",
+                            },
+                        )
+                    except Exception as exc:
+                        log.warning("emergency_resolved publish failed: %s", exc)
                 if watchlist and ac.hex not in self._notified_watchlist:
                     tokens = {t.upper() for t in [ac.callsign, ac.registration, ac.hex] if t}
                     if tokens & set(watchlist):
@@ -538,6 +579,21 @@ class FeedService:
         for s_set in (self._notified_military, self._notified_emergency, self._notified_watchlist):
             for h in list(s_set):
                 if h not in new_store:
+                    # Coverage-loss resolves a still-active emergency. Other
+                    # event kinds (military, watchlist) just re-arm silently.
+                    if s_set is self._notified_emergency:
+                        started = self._emergency_started_at.pop(h, None)
+                        duration = (now_ts - started) if started else None
+                        try:
+                            events_bus.publish(
+                                "emergency_resolved", hex=h, lat=None, lon=None,
+                                data={
+                                    "duration_s": round(duration, 1) if duration is not None else None,
+                                    "reason": "coverage_lost",
+                                },
+                            )
+                        except Exception as exc:
+                            log.warning("emergency_resolved publish failed: %s", exc)
                     s_set.discard(h)
 
         # Roll the daily counters when the date changes.
