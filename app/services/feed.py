@@ -203,6 +203,16 @@ class FeedService:
             self._subscribers.remove(q)
 
     def _broadcast(self, payload: dict[str, Any]) -> None:
+        # Pre-serialise to JSON text once per broadcast instead of once per subscriber.
+        # Before iter-10 the WS endpoint called `ws.send_json(payload)` which did its
+        # own json.dumps for every connected client — `iterencode` showed up as ~6%
+        # of active CPU in the profile. With one dumps here, each subscriber just
+        # ships the same string via `ws.send_text`.
+        try:
+            text = json.dumps(payload, default=str, separators=(",", ":"))
+        except Exception as exc:
+            log.warning("broadcast serialise failed: %s", exc)
+            return
         for q in list(self._subscribers):
             try:
                 if q.full():
@@ -211,7 +221,7 @@ class FeedService:
                         q.get_nowait()
                     except asyncio.QueueEmpty:
                         pass
-                q.put_nowait(payload)
+                q.put_nowait(text)
             except Exception as exc:
                 log.warning("broadcast to subscriber failed: %s", exc)
 
@@ -429,6 +439,13 @@ class FeedService:
         # Coalesce per-bucket heatmap counts so we issue one UPSERT per distinct bucket
         # at the end of the loop, not one per aircraft.
         heatmap_counts: dict[tuple[int, int], int] = {}
+        # Coalesce per-type sightings (iter 10.3). Pre-iter-10 each aircraft caused
+        # a SELECT + UPDATE — ~200 SQL ops/poll at 50 contacts. Now it's one
+        # executemany per poll per distinct type. The in-memory `known_types` set
+        # tells us whether a type is new (for "rare" event firing) without a DB hit.
+        type_counts_this_poll: dict[str, int] = {}
+        rare_fired_this_poll: set[str] = set()
+        known_types = insights_store.ensure_known_types()
         sql_started = time.time()
         with settings_store.batch() as poll_conn:
             for row in all_rows:
@@ -485,7 +502,13 @@ class FeedService:
 
                 is_new_type = False
                 if ac.type_code:
-                    is_new_type = insights_store.record_type_sighting(ac.type_code, conn=poll_conn)
+                    code = ac.type_code.upper().strip()
+                    type_counts_this_poll[code] = type_counts_this_poll.get(code, 0) + 1
+                    # New = type isn't in the persisted known set AND we haven't
+                    # already fired "rare" for it earlier in this same poll.
+                    if code not in known_types and code not in rare_fired_this_poll:
+                        is_new_type = True
+                        rare_fired_this_poll.add(code)
                 elif ac.hex not in self._enriched_hexes:
                     # Queue this hex for background type enrichment via hexdb.
                     self._enrich_pending.add(ac.hex)
@@ -563,10 +586,16 @@ class FeedService:
             records_store.update_records_bulk(poll_aircraft, conn=poll_conn)
             insights_store.flush_heatmap_batch(heatmap_counts, conn=poll_conn)
             # Drain anything the enrichment loop queued while this poll was building.
+            # Each enrichment-discovered type counts as one sighting; merge into the
+            # per-poll counts so flush_type_sightings handles it in the same batch.
             pending = list(self._pending_type_records)
             self._pending_type_records.clear()
             for type_code in pending:
-                insights_store.record_type_sighting(type_code, conn=poll_conn)
+                code = (type_code or "").upper().strip()
+                if code:
+                    type_counts_this_poll[code] = type_counts_this_poll.get(code, 0) + 1
+            # One executemany per distinct type instead of two SQL ops per aircraft.
+            insights_store.flush_type_sightings(type_counts_this_poll, conn=poll_conn)
         self.last_sql_ms = (time.time() - sql_started) * 1000
 
         # Trail GC + re-arm event de-dup once aircraft drop out of coverage for ≥120 s.
