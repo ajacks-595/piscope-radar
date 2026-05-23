@@ -41,16 +41,19 @@ async def aircraft_ws(ws: WebSocket) -> None:
     queue = feed_service.subscribe()
     try:
         # Send the latest snapshot immediately so the UI doesn't have to wait
-        # for the next poll cycle.
+        # for the next poll cycle. Initial-connect snapshot is rare (once per
+        # client connect), so still using send_json here is fine.
         await ws.send_json(feed_service.snapshot())
         while True:
             try:
-                payload = await asyncio.wait_for(queue.get(), timeout=30.0)
+                # Broadcast payloads are pre-serialised JSON strings (iter 10.2)
+                # so every subscriber ships the same bytes without re-encoding.
+                text = await asyncio.wait_for(queue.get(), timeout=30.0)
             except asyncio.TimeoutError:
                 # Send a heartbeat so reverse proxies don't kill the connection.
                 await ws.send_json({"type": "ping"})
                 continue
-            await ws.send_json(payload)
+            await ws.send_text(text)
     except WebSocketDisconnect:
         pass
     except Exception as exc:
