@@ -419,3 +419,39 @@
   --font-body: var(--font-system);
   --font-title: var(--font-system);
 }
+
+/* -------- EXTERNAL (iter 9.5) ---------------------------------------------
+ * "Match-the-host-dashboard" theme. The embed bootstrap stamps a few CSS
+ * variables onto <html>'s inline style from URL params (?accent=&bg=&
+ * surface=&text=). Inline style outranks selector specificity, so those
+ * stamped values win. This block provides sensible defaults for every
+ * OTHER theme variable — neutral dark scheme so PiScope renders without
+ * a hard-coded clash even if only one or two tokens are passed in.
+ *
+ * Activate with `?embed=1&theme=external&accent=…&bg=…&surface=…&text=…`.
+ */
+[data-theme="external"] {
+  --bg: #0a0e13;
+  --panel-bg: #0d121a;
+  --surface-bg: #15202b;
+  --primary-text: #d8e2eb;
+  --secondary-text: #8fa3b8;
+  --tertiary-text: #4a5a6c;
+  --accent: #5294e2;
+  --accent-muted: #2d5d99;
+  --alert: #ff6b6b;
+  --success: #51cf66;
+  --warning: #ffd43b;
+  --separator: #1f2a36;
+  --map-trail: rgba(82, 148, 226, 0.7);
+  --map-range-ring: rgba(31, 42, 54, 0.9);
+  --map-receiver: #ffffff;
+  --aircraft-selected: #ffffff;
+  --band-ground: #6c757d;
+  --band-low: #51cf66;
+  --band-mid: #ffd43b;
+  --band-high: #ff922b;
+  --band-very-high: #ff6b6b;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+}
