@@ -15,7 +15,11 @@ const SHELL = [
   // and works offline. Refreshed by the same version-eviction logic when the cache bumps.
   '/piscope/static/data/airports.json',
 ];
-const CACHE = 'piscope-shell-v12';
+// NOTE: this literal is rewritten on the wire to a content-hash-derived tag
+// (`piscope-shell-<version>-<sha256-prefix>`) by app/main.py's /piscope/sw.js
+// route — see iter 9.4. The literal here is just a sensible fallback if anyone
+// serves sw.js as a static file without going through the FastAPI rewrite.
+const CACHE = 'piscope-shell-rewritten';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));
