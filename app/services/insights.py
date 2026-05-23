@@ -82,26 +82,88 @@ def is_known_type(type_code: str) -> bool:
     return row is not None
 
 
+# In-memory cache of known type_codes. Populated lazily on first lookup; updated by
+# `flush_type_sightings`. Lets the feed loop ask "is this type new?" without a DB
+# round-trip per aircraft. Pre-iter-10.3 each aircraft per poll did SELECT+UPDATE
+# (or SELECT+INSERT) — ~210 SQL ops/poll at 50 aircraft. Now it's at most one
+# executemany per distinct type per poll.
+_KNOWN_TYPES: Optional[set[str]] = None
+
+
+def ensure_known_types() -> set[str]:
+    """Return the in-memory set of type_codes we've ever recorded. Populates from DB
+    on first call. Callers may read but should not mutate — `flush_type_sightings`
+    is the only writer."""
+    global _KNOWN_TYPES
+    if _KNOWN_TYPES is None:
+        with _connect() as conn:
+            rows = conn.execute("SELECT type_code FROM seen_types").fetchall()
+        _KNOWN_TYPES = {r["type_code"] for r in rows}
+    return _KNOWN_TYPES
+
+
 def record_type_sighting(type_code: str, conn: Optional[sqlite3.Connection] = None) -> bool:
-    """Upsert a sighting row. Returns True if this is the first time we've ever seen this type."""
+    """Upsert a single sighting. Returns True if this is the first time we've ever
+    seen this type. Prefer `flush_type_sightings` from the poll loop — this entry
+    point is kept for one-off calls (admin tools, tests, the background enrichment
+    loop's odd type discovery)."""
     type_code = (type_code or "").upper().strip()
     if not type_code:
         return False
+    known = ensure_known_types()
+    is_new = type_code not in known
     now = time.time()
     with _conn_or_provided(conn) as c:
-        row = c.execute("SELECT first_seen FROM seen_types WHERE type_code = ?", (type_code,)).fetchone()
-        is_new = row is None
         if is_new:
             c.execute(
                 "INSERT INTO seen_types(type_code, first_seen, last_seen, sightings) VALUES(?, ?, ?, 1)",
                 (type_code, now, now),
             )
+            known.add(type_code)
         else:
             c.execute(
                 "UPDATE seen_types SET last_seen = ?, sightings = sightings + 1 WHERE type_code = ?",
                 (now, type_code),
             )
     return is_new
+
+
+def flush_type_sightings(counts: dict[str, int], conn: sqlite3.Connection) -> set[str]:
+    """Persist per-poll type counts in one or two `executemany` calls instead of N
+    SELECT+UPDATEs. Returns the set of type_codes that were NEW (not previously
+    in the known set) — caller uses this to fire "rare" events.
+
+    Caller owns the surrounding transaction; we never commit. Updates the
+    in-memory `_KNOWN_TYPES` set as a side effect so subsequent polls don't
+    re-classify these as new."""
+    if not counts:
+        return set()
+    known = ensure_known_types()
+    now = time.time()
+    new_types: set[str] = set()
+    insert_rows: list[tuple] = []
+    update_rows: list[tuple] = []
+    for type_code, n in counts.items():
+        type_code = type_code.upper().strip()
+        if not type_code:
+            continue
+        if type_code in known:
+            update_rows.append((now, n, type_code))
+        else:
+            insert_rows.append((type_code, now, now, n))
+            new_types.add(type_code)
+            known.add(type_code)
+    if insert_rows:
+        conn.executemany(
+            "INSERT INTO seen_types(type_code, first_seen, last_seen, sightings) VALUES(?, ?, ?, ?)",
+            insert_rows,
+        )
+    if update_rows:
+        conn.executemany(
+            "UPDATE seen_types SET last_seen = ?, sightings = sightings + ? WHERE type_code = ?",
+            update_rows,
+        )
+    return new_types
 
 
 def leaderboard(limit: int = 20) -> list[dict[str, Any]]:
