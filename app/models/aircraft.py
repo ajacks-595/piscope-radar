@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 
@@ -90,14 +90,58 @@ class Aircraft:
         return "very_high"
 
     def to_json(self) -> dict[str, Any]:
-        d = asdict(self)
-        # Promote useful derived fields so the frontend doesn't recompute them.
-        d["heading"] = self.heading
-        d["is_emergency_squawk"] = self.is_emergency_squawk
-        d["display_name"] = self.display_name
-        d["vertical_trend"] = self.vertical_trend
-        d["altitude_band"] = self.altitude_band
-        return d
+        # Hand-rolled flat literal: dataclasses.asdict() does a recursive copy with
+        # per-field isinstance checks (`_is_dataclass_instance`) which dominated the
+        # poll-loop profile pre-iter10 — ~36% of active CPU inclusive, ~16% pure
+        # leaf time, because this is called twice per aircraft per poll (snapshot
+        # + broadcast). Skipping asdict drops both numbers to near zero. Field list
+        # must stay in sync with the @dataclass declaration above; if you add a
+        # field there, add it here too.
+        return {
+            "hex": self.hex,
+            "callsign": self.callsign,
+            "registration": self.registration,
+            "type_code": self.type_code,
+            "category": self.category,
+            "military": self.military,
+            "data_source": self.data_source,
+            "lat": self.lat,
+            "lon": self.lon,
+            "altitude_baro": self.altitude_baro,
+            "on_ground": self.on_ground,
+            "altitude_geom": self.altitude_geom,
+            "ground_speed": self.ground_speed,
+            "ias": self.ias,
+            "tas": self.tas,
+            "mach": self.mach,
+            "track": self.track,
+            "mag_heading": self.mag_heading,
+            "true_heading": self.true_heading,
+            "baro_rate": self.baro_rate,
+            "geom_rate": self.geom_rate,
+            "squawk": self.squawk,
+            "emergency": self.emergency,
+            "wind_direction": self.wind_direction,
+            "wind_speed": self.wind_speed,
+            "oat": self.oat,
+            "tat": self.tat,
+            "roll": self.roll,
+            "track_rate": self.track_rate,
+            "nav_altitude_mcp": self.nav_altitude_mcp,
+            "nav_qnh": self.nav_qnh,
+            "rssi": self.rssi,
+            "distance_nm": self.distance_nm,
+            "seen": self.seen,
+            "seen_pos": self.seen_pos,
+            "messages": self.messages,
+            "observed_at": self.observed_at,
+            # Promoted derived fields so the frontend doesn't recompute.
+            "heading": self.heading,
+            "is_emergency_squawk": self.is_emergency_squawk,
+            "display_name": self.display_name,
+            "vertical_trend": self.vertical_trend,
+            "altitude_band": self.altitude_band,
+        }
 
 
 def _strip(v: Any) -> Optional[str]:
