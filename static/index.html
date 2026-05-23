@@ -68,13 +68,23 @@
       document.documentElement.setAttribute('data-embed-interactive', cfg.interactive);
       if (cfg.theme) document.documentElement.setAttribute('data-theme', cfg.theme);
       // Stamp external theme tokens onto <html>'s style so var(--accent, …) lookups
-      // pick them up before app.css loads. If theme=external the CSS block in 9.5
-      // consumes these; otherwise they're harmless overrides on top of the theme.
+      // pick them up before app.css loads. Mapping is from the URL-friendly token
+      // names (accent/bg/surface/text) to the actual CSS variable names PiScope
+      // uses internally. When `?theme=external` is also set, the data-theme block
+      // in themes.css provides sane defaults for any unspecified variables.
       var s = document.documentElement.style;
-      if (cfg.accent)  s.setProperty('--accent', cfg.accent);
-      if (cfg.bg)      s.setProperty('--bg', cfg.bg);
-      if (cfg.surface) s.setProperty('--surface', cfg.surface);
-      if (cfg.text)    s.setProperty('--text', cfg.text);
+      if (cfg.accent) {
+        s.setProperty('--accent', cfg.accent);
+        s.setProperty('--accent-muted', cfg.accent);
+      }
+      if (cfg.bg) {
+        s.setProperty('--bg', cfg.bg);
+        s.setProperty('--panel-bg', cfg.bg);
+      }
+      if (cfg.surface) s.setProperty('--surface-bg', cfg.surface);
+      if (cfg.text) {
+        s.setProperty('--primary-text', cfg.text);
+      }
       // themeMode=auto: follow OS preference; apply once now + listen for changes.
       if (cfg.themeMode === 'auto' && window.matchMedia) {
         var mq = window.matchMedia('(prefers-color-scheme: dark)');
