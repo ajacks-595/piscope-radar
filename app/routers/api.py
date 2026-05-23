@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, Body, HTTPException, Response
@@ -25,6 +25,7 @@ from ..services.ai import ollama as _ollama_provider
 from ..services.ai import cloud_api as _cloud_api_provider
 from ..services.ai import claude_cli as _claude_cli_provider
 from ..services import digest as digest_svc
+from ..services import dashboard as dashboard_svc
 from ..services._http import LRUCache, get_client, reset_client
 from ..services.feed import feed_service
 
@@ -679,3 +680,84 @@ async def digest_run() -> dict[str, Any]:
     except Exception as exc:
         log.exception("digest run failed")
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+
+
+# --- Dashboard integration (iter 9.2) ---------------------------------------
+#
+# `/api/dashboard/*` is the public-facing surface for external dashboards
+# (jacknet-home, anything anyone wants to build) to consume PiScope data
+# without iframing the full map. Endpoints under this prefix follow the
+# `{success, data, error}` envelope convention shared with similar projects.
+
+@router.get("/dashboard/summary")
+async def dashboard_summary(
+    lat: float,
+    lon: float,
+    radius_km: float = 50.0,
+    filters: Optional[str] = None,
+    top: int = 3,
+    min_alt: Optional[float] = None,
+    max_alt: Optional[float] = None,
+    min_speed: Optional[float] = None,
+    overhead_threshold_s: float = 60.0,
+    overhead_radius_km: float = 2.0,
+) -> Response:
+    """Read-only summary for dashboard widgets: counts by category, nearest
+    contact, overhead-imminent list, top-N highlights. 5 s response cache."""
+    # Sanity-bound inputs to prevent abusive computations / coordinate typos.
+    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+        return JSONResponse(status_code=400, content={"success": False, "data": None,
+                                                       "error": "lat/lon out of range"})
+    radius_km = max(0.1, min(float(radius_km), 500.0))
+    top = max(1, min(int(top), 10))
+    overhead_threshold_s = max(5.0, min(float(overhead_threshold_s), 300.0))
+    overhead_radius_km = max(0.1, min(float(overhead_radius_km), 50.0))
+
+    cache_key = (round(lat, 4), round(lon, 4), round(radius_km, 1),
+                 filters or "", top,
+                 None if min_alt is None else int(min_alt),
+                 None if max_alt is None else int(max_alt),
+                 None if min_speed is None else int(min_speed),
+                 round(overhead_threshold_s, 1), round(overhead_radius_km, 2))
+    cached = dashboard_svc.cache_get(cache_key)
+    if cached is not None:
+        return JSONResponse(content={"success": True, "data": cached, "error": None},
+                            headers={"Cache-Control": "public, max-age=5"})
+
+    # Pull live state from feed_service. snapshot() builds full aircraft dicts;
+    # we iterate them once to build the summary.
+    snap = feed_service.snapshot()
+    health = feed_service.health()
+    data = dashboard_svc.build_summary(
+        snap.get("aircraft") or [],
+        observer_lat=lat,
+        observer_lon=lon,
+        radius_km=radius_km,
+        filters=filters,
+        top=top,
+        min_alt=min_alt,
+        max_alt=max_alt,
+        min_speed=min_speed,
+        overhead_threshold_s=overhead_threshold_s,
+        overhead_radius_km=overhead_radius_km,
+        feed_total_messages=int(snap.get("total_messages") or 0),
+        feed_uptime_seconds=float(health.get("uptime_seconds") or 0.0),
+        feed_last_poll_at=snap.get("polled_at"),
+        feed_connection_state=str(snap.get("connection_state") or "unknown"),
+        daily_unique_count=int((health.get("daily") or {}).get("unique_aircraft") or 0),
+        watchlist=dashboard_svc.parse_watchlist(),
+    )
+    dashboard_svc.cache_set(cache_key, data)
+    return JSONResponse(content={"success": True, "data": data, "error": None},
+                        headers={"Cache-Control": "public, max-age=5"})
+
+
+@router.get("/dashboard/categorize")
+async def dashboard_categorize_stats() -> dict[str, Any]:
+    """Diagnostic for the categorization table. Returns size + currently-loaded
+    categories. Useful when extending app/data/type_categories.json."""
+    from ..services import categorize
+    return {
+        "table_size": categorize.table_size(),
+        "categories": list(categorize.CATEGORIES),
+    }
