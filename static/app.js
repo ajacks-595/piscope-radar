@@ -2301,6 +2301,7 @@ function populateSettingsModal() {
   // Multi-provider AI (iteration 7). Provider dropdown drives which sub-panel is visible.
   if (el('setting-ai-provider'))     el('setting-ai-provider').value = s.ai_provider || '';
   if (el('setting-ai-chat-max-turns')) el('setting-ai-chat-max-turns').value = s.ai_chat_max_turns || 5;
+  if (el('setting-frame-ancestors')) el('setting-frame-ancestors').value = s.frame_ancestors || "'self'";
   if (el('setting-ollama-url'))      el('setting-ollama-url').value = s.ollama_url || '';
   if (el('setting-ollama-model'))    el('setting-ollama-model').value = s.ollama_model || 'gemma4:latest';
   if (el('setting-ollama-enabled'))  el('setting-ollama-enabled').checked = !!s.ollama_enabled;
@@ -2395,6 +2396,7 @@ async function saveSettings() {
     // each provider's settings persist independently so switching back doesn't lose config.
     ai_provider:     document.getElementById('setting-ai-provider')?.value || '',
     ai_chat_max_turns: Math.max(1, Math.min(parseInt(document.getElementById('setting-ai-chat-max-turns')?.value, 10) || 5, 20)),
+    frame_ancestors: (document.getElementById('setting-frame-ancestors')?.value || "'self'").trim() || "'self'",
     ollama_url:      document.getElementById('setting-ollama-url')?.value.trim() || '',
     ollama_model:    document.getElementById('setting-ollama-model')?.value.trim() || 'gemma4:latest',
     ollama_enabled:  !!document.getElementById('setting-ollama-enabled')?.checked,

@@ -123,6 +123,14 @@ DEFAULTS: dict[str, Any] = {
     # cost more tokens per follow-up (cloud_api + claude_cli only — Ollama
     # is free). 5 keeps the prompt small while still feeling chatty.
     "ai_chat_max_turns": 5,
+    # ---- Embed mode security (iteration 9.4) ----
+    # Allowed parent origins for iframe embedding. Comma-separated list of
+    # CSP frame-ancestors tokens — special keyword `'self'` (with quotes) or
+    # an origin like `http://10.0.0.188:8090` or `https://home.example.com`.
+    # Default `'self'` blocks all cross-origin embedding. Required for any
+    # external dashboard (jacknet-home / SOC-dashboard / etc.) to iframe
+    # PiScope via the iter-9.1 embed mode.
+    "frame_ancestors": "'self'",
     # ---- Daily digest (iteration 5) ----
     "digest_enabled": True,
     # 24h "HH:MM" string. Cron fires once per local day at this time. Default 07:30 lands

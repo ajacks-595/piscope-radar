@@ -629,6 +629,14 @@
           </div>
           <button id="enable-notifications" class="secondary">Enable browser notifications</button>
           <span id="notif-status" class="hint"></span>
+          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 14px 0;" />
+          <h3>Embed / dashboard integration</h3>
+          <p class="hint">PiScope can be iframed inside another dashboard via <code>/piscope?embed=1</code>. Cross-origin iframes are blocked by default for safety (clickjacking, etc.). Add the dashboard's origin below to allow it. Format: <code>'self'</code> (keyword, with quotes) plus URLs like <code>https://home.example.com</code> or <code>http://10.0.0.x:8090</code> — comma-separated.</p>
+          <div class="field">
+            <label for="setting-frame-ancestors">Allowed iframe parents (CSP frame-ancestors)</label>
+            <input id="setting-frame-ancestors" type="text" placeholder="'self', http://10.0.0.x:8090, https://home.example.com" />
+            <span class="hint">Takes effect on next page load — affects both the main UI and the embedded map view.</span>
+          </div>
         </section>
 
         <section class="tab-section" data-section="digest">
