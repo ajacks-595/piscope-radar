@@ -224,7 +224,16 @@ class PiScopeClient {
 
   _handle(data) {
     if (data.type === 'ping') return;
-    if (data.type === 'aircraft_update') applyAircraftUpdate(data);
+    if (data.type === 'aircraft_update') {
+      // Embed `refresh=slow|normal` coalesces renders to bound CPU when the
+      // page is in a backgrounded iframe. `realtime` (default in non-embed)
+      // skips the wrapper. See applyEmbedPostInit for window.__embedRefreshMs.
+      if (window.__embed && window.__embedRefreshMs > 0) {
+        embedScheduleAircraftUpdate(data, applyAircraftUpdate);
+      } else {
+        applyAircraftUpdate(data);
+      }
+    }
   }
 }
 
@@ -1074,9 +1083,17 @@ function createMarker(ac) {
   marker.on('add', () => {
     const el = marker.getElement();
     const label = el?.querySelector('.ac-label');
-    if (label) label.onclick = (e) => { e.stopPropagation(); selectAircraft(ac.hex, { pan: false }); };
+    if (label) label.onclick = (e) => {
+      e.stopPropagation();
+      // Embed-mode hook: 'view' opens new tab, 'locked' swallows, 'full' falls through.
+      if (window.__embed && embedHandleAircraftClick(ac.hex, state.aircraft.get(ac.hex))) return;
+      selectAircraft(ac.hex, { pan: false });
+    };
   });
-  marker.on('click', () => selectAircraft(ac.hex, { pan: false }));
+  marker.on('click', () => {
+    if (window.__embed && embedHandleAircraftClick(ac.hex, state.aircraft.get(ac.hex))) return;
+    selectAircraft(ac.hex, { pan: false });
+  });
   marker.on('contextmenu', (ev) => {
     const me = ev.originalEvent;
     me.preventDefault();
@@ -3840,16 +3857,180 @@ function writeUrlState() {
   }
 }
 
+// ===== Embed mode (iter 9.1) =================================================
+// Spec: docs/embed.md (TODO) + CLAUDE.md.
+// Bootstrap (in index.html <head>) has already:
+//   - Parsed location.search into window.__embed
+//   - Set <html data-embed="1" data-embed-interactive="…" data-theme="…">
+//   - Applied prefers-color-scheme tracking when themeMode=auto
+//   - Stamped external theme tokens onto <html>'s inline style
+//
+// This block handles the things that require the app to have booted: map
+// handler tweaks, view (center/zoom/bbox) override, filter set-up, marker-click
+// interception for `interactive=view`, the expand-link, and the refresh-rate
+// debounce on WS frames.
+
+function applyEmbedPreInit(cfg) {
+  // Pre-init: things to set up BEFORE the map / WS exists.
+  // 1. Reflect attribution + expand-link state as data-attrs so CSS picks them up.
+  document.documentElement.setAttribute('data-embed-attribution', cfg.attribution ? '1' : '0');
+  document.documentElement.setAttribute('data-embed-expand', cfg.expandLink ? '1' : '0');
+}
+
+function applyEmbedPostInit(cfg) {
+  // Post-init: things that need the map + DOM ready.
+  if (!map) return;
+
+  // --- Theme override (defends against applyUrlState fragment-theme writing
+  // over our embed theme). The head-inline script already set data-theme on
+  // <html> from the embed param. Sync the theme-select dropdown without
+  // firing its change handler, so persistence into localStorage doesn't
+  // happen (an embed shouldn't pollute the host browser's stored theme). ---
+  if (cfg.theme) {
+    document.documentElement.setAttribute('data-theme', cfg.theme);
+    const sel = document.getElementById('theme-select');
+    if (sel && [...sel.options].some((o) => o.value === cfg.theme)) sel.value = cfg.theme;
+    if (typeof applyTileLayerForTheme === 'function') applyTileLayerForTheme();
+  }
+
+  // --- View override ---
+  // bbox wins over center+zoom (spec). Both are absolute — they override
+  // anything applyUrlState pulled from the # fragment. Once set, suppress
+  // the "first WS frame auto-fits to data" behaviour so the dashboard's
+  // configured view stays put.
+  let viewSet = false;
+  if (cfg.bbox) {
+    const parts = cfg.bbox.split(',').map(parseFloat);
+    if (parts.length === 4 && parts.every(Number.isFinite)) {
+      map.fitBounds([[parts[0], parts[1]], [parts[2], parts[3]]], { animate: false });
+      viewSet = true;
+    }
+  } else if (cfg.center) {
+    const [lat, lon] = cfg.center.split(',').map(parseFloat);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      const z = Number.isFinite(cfg.zoom) ? cfg.zoom : map.getZoom();
+      map.setView([lat, lon], z, { animate: false });
+      viewSet = true;
+    }
+  } else if (Number.isFinite(cfg.zoom)) {
+    map.setZoom(cfg.zoom, { animate: false });
+    viewSet = true;
+  }
+  if (viewSet) state.didInitialFit = true;
+
+  // --- Interaction mode ---
+  if (cfg.interactive === 'locked') {
+    // Disable every Leaflet handler so the view is truly fixed. CSS-hiding
+    // controls isn't enough — scroll-zoom would still work without this.
+    ['dragging', 'touchZoom', 'doubleClickZoom', 'scrollWheelZoom',
+     'boxZoom', 'keyboard', 'tap'].forEach((h) => {
+      if (map[h] && typeof map[h].disable === 'function') map[h].disable();
+    });
+    if (map.zoomControl) map.removeControl(map.zoomControl);
+  }
+  // `view` mode keeps pan/zoom but intercepts aircraft clicks (handled in
+  // embedHandleAircraftClick, called from the marker click hook below).
+
+  // --- Expand link ---
+  if (cfg.expandLink) {
+    const link = document.getElementById('embed-expand-link');
+    if (link) link.hidden = false;
+    updateEmbedExpandLink();
+  }
+
+  // --- WS refresh debounce ---
+  // `realtime` is the existing behaviour (no extra coalescing). `normal` and
+  // `slow` apply a setTimeout-coalesced render so high-traffic moments don't
+  // peg the embedded view's CPU. State lives on window so applyAircraftUpdate
+  // can consult it without an import dance.
+  const debounceMs = cfg.refresh === 'slow' ? 5000 : cfg.refresh === 'normal' ? 1000 : 0;
+  window.__embedRefreshMs = debounceMs;
+}
+
+// Coalesce WS-driven renders by the embed's refresh setting. Wraps the
+// existing applyAircraftUpdate; the wrapper short-circuits if a coalesce
+// window is already open. The actual render still runs at the end of the
+// window so the user never sees stuck data.
+let _embedRenderTimer = null;
+let _embedRenderPending = null;
+function embedScheduleAircraftUpdate(update, originalApply) {
+  const ms = window.__embedRefreshMs || 0;
+  if (ms <= 0) { originalApply(update); return; }
+  _embedRenderPending = update;
+  if (_embedRenderTimer) return;
+  _embedRenderTimer = setTimeout(() => {
+    _embedRenderTimer = null;
+    const u = _embedRenderPending;
+    _embedRenderPending = null;
+    if (u) originalApply(u);
+  }, ms);
+}
+
+// View-mode aircraft click: open the full /piscope on this aircraft in a new
+// tab. Relative URL — never hardcode hostname, so this works for any deployment.
+function embedHandleAircraftClick(hex, ac) {
+  const cfg = window.__embed;
+  if (!cfg || cfg.interactive === 'full') return false;   // let default selectAircraft run
+  if (cfg.interactive === 'locked') return true;          // swallow click, no nav
+  // view mode → open full app in new tab, centered on the aircraft.
+  const lat = ac && ac.lat;
+  const lon = ac && ac.lon;
+  const frag = [];
+  if (Number.isFinite(lat) && Number.isFinite(lon)) frag.push(`center=${lat.toFixed(4)},${lon.toFixed(4)}`);
+  frag.push('zoom=14');
+  if (hex) frag.push(`select=${encodeURIComponent(hex)}`);
+  const url = `${window.location.origin}/piscope#${frag.join('&')}`;
+  window.open(url, '_blank', 'noopener,noreferrer');
+  return true;
+}
+
+// Keep the expand-link's href in sync with the current map view + selection so
+// "open in PiScope" lands the user on what they were just looking at.
+function updateEmbedExpandLink() {
+  const link = document.getElementById('embed-expand-link');
+  if (!link || !map) return;
+  const c = map.getCenter();
+  const z = map.getZoom();
+  const frag = [`center=${c.lat.toFixed(4)},${c.lng.toFixed(4)}`, `zoom=${z}`];
+  if (state && state.selectedHex) frag.push(`select=${encodeURIComponent(state.selectedHex)}`);
+  link.href = `${window.location.origin}/piscope#${frag.join('&')}`;
+}
+
 async function init() {
+  // Embed mode bootstrap (iter 9.1). The head-inline script in index.html has
+  // already parsed URL params into `window.__embed` and set `data-embed` on
+  // <html> so chrome was suppressed before first paint. Here we apply the
+  // post-DOM bits: data-attributes that drive remaining CSS, the expand link,
+  // map handler tweaks (done later in setupMap), filters/center/zoom/bbox
+  // (done after setupMap completes).
+  if (window.__embed) {
+    applyEmbedPreInit(window.__embed);
+  }
+
   bindUI();
   await loadSettings();
   setupMap();
   applySettingsToUI();   // re-apply after radar is created
   // Re-hydrate from URL before the first WS frame — theme + map view + selection.
   applyUrlState();
+  // Embed-mode post-init: param-driven center/zoom/bbox/handlers/refresh.
+  // Must run AFTER applyUrlState so the embed params decisively win over the
+  // shareable-fragment state for embed scenarios (per iter-9.1 spec).
+  if (window.__embed) {
+    applyEmbedPostInit(window.__embed);
+  }
   // Persist map view + selection into the URL as the user pans/zooms/selects.
-  map.on('moveend', scheduleUrlStateWrite);
-  map.on('zoomend', scheduleUrlStateWrite);
+  // Suppressed in embed mode so iframes don't keep rewriting their own URL —
+  // the hosting dashboard owns the URL contract there.
+  if (!window.__embed) {
+    map.on('moveend', scheduleUrlStateWrite);
+    map.on('zoomend', scheduleUrlStateWrite);
+  } else {
+    // Still keep the expand-link's href in sync with the live view so the user
+    // can pop out into the full app and land on what they were looking at.
+    map.on('moveend', updateEmbedExpandLink);
+    map.on('zoomend', updateEmbedExpandLink);
+  }
   const client = new PiScopeClient();
   client.connect();
   // Best-effort initial REST fetch in case WS hasn't connected yet

@@ -1207,3 +1207,89 @@ input[type="range"] {
 }
 .digest-ai h4 { margin: 0 0 4px; }
 .digest-ai p  { margin: 0; font-size: 13px; line-height: 1.5; }
+
+/* ---------- embed mode (iter 9.1) ----------------------------------------
+ * Activated by `?embed=1` on the URL. The head-inline bootstrap sets
+ * `data-embed="1"` on <html> so CSS applies on the very first paint with
+ * no flash of full UI. Strips all chrome; map fills the viewport.
+ */
+html[data-embed] .topbar,
+html[data-embed] .sidebar,
+html[data-embed] .detail,
+html[data-embed] .replay-bar,
+html[data-embed] .modal,
+html[data-embed] .toast,
+html[data-embed] .version-pill,
+html[data-embed] .onboarding,
+html[data-embed] .events-fab,
+html[data-embed] #ai-chat {
+  display: none !important;
+}
+html[data-embed] body {
+  overflow: hidden !important;
+}
+html[data-embed] .layout {
+  /* Was 320px 1fr 360px (sidebar/map/detail). Map only. */
+  grid-template-columns: 1fr !important;
+  grid-template-areas: "map" !important;
+  height: 100vh !important;
+  width: 100vw !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+html[data-embed] .map-section,
+html[data-embed] #map {
+  width: 100% !important;
+  height: 100vh !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+}
+
+/* OSM ToS — attribution must stay legible. Shrunk but never hidden, even
+ * if `?attribution=0` was passed. `attribution=0` just makes it less
+ * prominent — still readable to anyone who looks, satisfying the policy. */
+html[data-embed] .leaflet-control-attribution {
+  font-size: 10px !important;
+  padding: 1px 4px !important;
+  opacity: 0.85;
+  background: rgba(0,0,0,0.45) !important;
+  color: #eee !important;
+}
+html[data-embed] .leaflet-control-attribution a { color: #cfd8dc !important; }
+html[data-embed][data-embed-attribution="0"] .leaflet-control-attribution {
+  font-size: 9px !important;
+  opacity: 0.55;
+  padding: 0 3px !important;
+}
+
+/* Zoom control: keep it visible in `full` and `view`, hide for `locked`.
+ * CSS-only; JS separately disables the Leaflet handlers so the map can't
+ * still be zoomed by scroll or keyboard. */
+html[data-embed][data-embed-interactive="locked"] .leaflet-control-zoom {
+  display: none !important;
+}
+html[data-embed][data-embed-interactive="locked"] {
+  cursor: default;
+}
+
+/* "Open in PiScope" link — small corner affordance, rendered as a real <a>
+ * so middle-click and cmd-click work. Hidden when not in embed mode or when
+ * `expandLink=0` was passed. */
+.embed-expand-link {
+  display: none;
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  z-index: 1200;   /* above Leaflet controls + zoom buttons */
+  padding: 4px 8px;
+  font-size: 11px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  border-radius: 4px;
+  text-decoration: none;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.4);
+  pointer-events: auto;
+}
+.embed-expand-link:hover { background: rgba(0,0,0,0.75); }
+html[data-embed][data-embed-expand="1"] .embed-expand-link { display: inline-block; }

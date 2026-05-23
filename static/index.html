@@ -10,12 +10,97 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="apple-touch-icon" href="/piscope/static/icons/aircraft.svg" />
+  <script>
+  // ---- Embed bootstrap (iter 9.1) ----------------------------------------------
+  // Runs before any stylesheet or app code so the embed chrome strip applies on the
+  // very first paint — no flash of full UI. Parses URL query params (NOT the `#`
+  // fragment, which the main app uses for human-shareable state), stores the parsed
+  // config on `window.__embed` for app.js to consume, and stamps `data-embed`
+  // + theme + external theme tokens onto <html> so CSS selectors hit immediately.
+  //
+  // Anything that fails here is logged and swallowed — embed bootstrap must never
+  // break the main app for a non-embed visitor.
+  (function () {
+    try {
+      var qs = new URLSearchParams(location.search);
+      var raw = qs.get('embed');
+      if (!raw || raw === '0' || raw === 'false' || raw === 'no') return;
+      var num = function (k) {
+        var v = parseFloat(qs.get(k));
+        return Number.isFinite(v) ? v : null;
+      };
+      var int = function (k) {
+        var v = parseInt(qs.get(k), 10);
+        return Number.isFinite(v) ? v : null;
+      };
+      var bool = function (k, dflt) {
+        var v = qs.get(k);
+        if (v === null) return dflt;
+        return v !== '0' && v !== 'false' && v !== 'no';
+      };
+      var oneOf = function (k, allowed, dflt) {
+        var v = qs.get(k);
+        return allowed.indexOf(v) >= 0 ? v : dflt;
+      };
+      var cfg = {
+        embed: true,
+        interactive: oneOf('interactive', ['full', 'view', 'locked'], 'full'),
+        center: qs.get('center'),                       // "lat,lon"
+        zoom: int('zoom'),
+        bbox: qs.get('bbox'),                           // "lat1,lon1,lat2,lon2"
+        theme: qs.get('theme'),                         // any theme id, or "external"
+        themeMode: oneOf('themeMode', ['auto', 'dark', 'light'], 'auto'),
+        filters: qs.get('filters'),                     // comma string, parsed app-side
+        minAlt: num('min_alt'),
+        maxAlt: num('max_alt'),
+        minSpeed: num('min_speed'),
+        attribution: bool('attribution', true),
+        expandLink: bool('expandLink', true),
+        refresh: oneOf('refresh', ['slow', 'normal', 'realtime'], 'normal'),
+        // Iter-9.5 hook: dashboard can pass its own theme tokens.
+        accent: qs.get('accent'),
+        bg: qs.get('bg'),
+        surface: qs.get('surface'),
+        text: qs.get('text'),
+      };
+      window.__embed = cfg;
+      document.documentElement.setAttribute('data-embed', '1');
+      document.documentElement.setAttribute('data-embed-interactive', cfg.interactive);
+      if (cfg.theme) document.documentElement.setAttribute('data-theme', cfg.theme);
+      // Stamp external theme tokens onto <html>'s style so var(--accent, …) lookups
+      // pick them up before app.css loads. If theme=external the CSS block in 9.5
+      // consumes these; otherwise they're harmless overrides on top of the theme.
+      var s = document.documentElement.style;
+      if (cfg.accent)  s.setProperty('--accent', cfg.accent);
+      if (cfg.bg)      s.setProperty('--bg', cfg.bg);
+      if (cfg.surface) s.setProperty('--surface', cfg.surface);
+      if (cfg.text)    s.setProperty('--text', cfg.text);
+      // themeMode=auto: follow OS preference; apply once now + listen for changes.
+      if (cfg.themeMode === 'auto' && window.matchMedia) {
+        var mq = window.matchMedia('(prefers-color-scheme: dark)');
+        var apply = function () {
+          document.documentElement.setAttribute('data-color-mode', mq.matches ? 'dark' : 'light');
+        };
+        apply();
+        if (mq.addEventListener) mq.addEventListener('change', apply);
+      } else if (cfg.themeMode === 'dark' || cfg.themeMode === 'light') {
+        document.documentElement.setAttribute('data-color-mode', cfg.themeMode);
+      }
+    } catch (e) {
+      if (window.console) window.console.warn('[piscope embed bootstrap]', e);
+    }
+  })();
+  </script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <link rel="stylesheet" href="/piscope/static/themes.css" />
   <link rel="stylesheet" href="/piscope/static/app.css" />
 </head>
 <body>
+  <!-- Embed-only "open in PiScope" link. Rendered as a real <a> so middle-click /
+       cmd-click work; suppressed by CSS when not in embed mode. Href is filled in
+       by the embed runtime in app.js so it tracks live center/zoom/selection. -->
+  <a id="embed-expand-link" class="embed-expand-link" href="/piscope" target="_blank" rel="noopener" hidden>↗ open in PiScope</a>
   <header class="topbar">
     <div class="brand">
       <span class="brand-icon">⊙</span>
