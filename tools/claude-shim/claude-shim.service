@@ -27,7 +27,10 @@ ProtectControlGroups=true
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 LockPersonality=true
-MemoryDenyWriteExecute=false   # Node JIT needs W+X
+# Node's JIT needs W+X memory, so MDWE must stay off for the claude binary.
+# systemd directives can't have trailing comments on the same line — keep the
+# explanation up here.
+MemoryDenyWriteExecute=false
 SystemCallArchitectures=native
 
 [Install]
