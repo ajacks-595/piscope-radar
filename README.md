@@ -2,8 +2,9 @@
 
 > A self-hosted ADS-B flight-tracker for your Raspberry Pi. Sits alongside `tar1090` /
 > PiAware and gives you a polished web UI with **11 themes**, an **animated radar sweep**,
-> **all-time records**, **polar coverage diagrams**, **webhook alerts**, a **PWA installer**
-> for your phone, and a lot more.
+> **AI aircraft briefings you can chat with**, **all-time records**, **polar coverage
+> diagrams**, **webhook alerts**, a **PWA installer** for your phone, and a clean **API for
+> embedding into other dashboards**.
 >
 > Designed for LAN use — no auth, no HTTPS dance, no cloud accounts. Open
 > `http://<pi-ip>/piscope` and you're tracking aircraft.
@@ -16,7 +17,9 @@
 - **Animated radar sweep overlay** — two variants (classic phosphor 5s rotation, modern ATC 3s) with snapshot mode where aircraft positions only update as the sweep passes
 - **11 themes** — radar (classic / modern), terminal CRT, light, dark, tactical, sectional (paper aviation chart), solarized (dark / light), nord, synthwave
 - **Three map-label modes** — off, callsign only, or tar1090-style full info (reg · type / speed-altitude / callsign / origin-destination)
-- **Detail panel** with a compass rose, signal-strength bar, squawk chip, performance section (IAS / TAS / Mach / roll / turn rate), autopilot section, photos, route, FlightAware integration
+- **Detail panel** with a compass rose, signal-strength bar, squawk chip, performance section (IAS / TAS / Mach / roll / turn rate), autopilot section, photos, route, FlightAware integration, and an AI-written brief
+- **AI aircraft briefings + chat** — generate a short natural-language brief for any aircraft and ask follow-up questions. Pick your backend: a local **Ollama** model, a **cloud API** (Anthropic / OpenAI / Google, bring your own key), or your own **Claude Code subscription** via a tiny LAN shim — see [`tools/claude-shim/`](tools/claude-shim/)
+- **Daily digest** — a once-a-day rollup (event totals, top types, rare callouts, optional AI commentary) delivered in-app, by webhook, or email
 - **Event log** for military / emergency / watchlist / rare-type sightings
 - **Webhook fan-out** to Discord / Slack / ntfy.sh / generic JSON endpoints
 - **All-time records** — closest pass, lowest altitude, fastest, longest range, highest
@@ -25,6 +28,7 @@
 - **Traffic heatmap** layer, **day/night terminator**, **weather radar overlay** (RainViewer)
 - **Replay** — scrub back through the last hour of feed
 - **Multi-receiver merge** — point at extra tar1090s and dedupe by hex
+- **Dashboard integration** — drop PiScope into a home dashboard: a chrome-less embeddable map view, a JSON summary API, and a real-time event stream (see [Dashboard integration](#dashboard-integration))
 - **Browser notifications + audio chimes** with stereo-panning by aircraft bearing
 - **PWA install** — adds to your phone homescreen, offline-aware
 - **Keyboard shortcuts** for everything (`?` for help)
@@ -102,6 +106,59 @@ Click ⚙ to open Settings. The minimum to get aircraft flowing:
 
 That's it. Aircraft should start appearing on the map.
 
+## AI aircraft briefings
+
+Open Settings → **AI** and pick a provider. Once configured, an **✨ Explain this aircraft**
+button appears in the detail panel; the brief comes back as a short two-paragraph summary,
+and you can ask follow-up questions in the chat box beneath it.
+
+| Provider | What you need | Notes |
+|---|---|---|
+| **Ollama** | An Ollama server reachable from the Pi (`http://<host>:11434`) + a model | Fully local, free. Set `OLLAMA_HOST=0.0.0.0:11434 ollama serve` on the host. |
+| **Cloud API** | An API key for Anthropic, OpenAI, or Google | Bring your own key. Pick the vendor + model in Settings. |
+| **Claude CLI** | A box on your LAN running [`tools/claude-shim/`](tools/claude-shim/) | Uses an existing Claude Code subscription instead of an API key. The shim is a stdlib-only daemon that wraps `claude -p`; point PiScope at its URL + bearer token. |
+
+Prompt inputs are strictly validated — only structured, whitelisted fields (hex, type code,
+route, live state) ever reach the model, never raw upstream strings. Responses are cached and
+size-capped. The Explain button hides itself when no provider is configured.
+
+## Dashboard integration
+
+PiScope exposes a first-class surface for embedding into another dashboard (or any LAN client).
+All of it is LAN-only and reads from the same in-memory aircraft state — no extra feeds.
+
+**Embeddable map view** — append `?embed=1` to strip all chrome and render just the map.
+Tunable via URL parameters:
+
+```
+http://<pi>/piscope?embed=1&interactive=locked&center=55.5,-2.75&zoom=8&theme=radar&filters=military,emergency
+```
+
+Supported params include `interactive` (`full` / `view` / `locked`), `center`, `zoom`, `bbox`,
+`theme`, `themeMode`, `filters` (+ `min_alt` / `max_alt` / `min_speed`), `attribution`,
+`expandLink`, `refresh`, and theme tokens (`accent` / `bg` / `surface` / `text`) for matching a
+host dashboard's palette. Cross-origin iframing is blocked by default — add your dashboard's
+origin under Settings → Notifications → "Allowed iframe parents".
+
+**JSON summary API** — for a native (non-iframe) status widget:
+
+```
+GET /piscope/api/dashboard/summary?lat=55.5&lon=-2.75&radius_km=50
+```
+
+Returns `{success, data, error}` with counts by category (commercial / military / helicopter /
+ga / emergency), nearest contact, overhead-imminent list, and top-N highlights. 5-second
+response cache.
+
+**Real-time event stream** — Server-Sent Events for alert-grade events:
+
+```
+GET /piscope/api/dashboard/events?lat=55.5&lon=-2.75&radius_km=50
+```
+
+Emits `emergency`, `emergency_resolved`, `military`, `watchlist`, `rare`, and 25-second
+`heartbeat` events, filtered to the observer's area, with `Last-Event-ID` replay on reconnect.
+
 ## Day-to-day commands
 
 ```bash
@@ -119,10 +176,16 @@ piscope help
 - **Backend** — Python 3.11+ / FastAPI / asyncio / httpx / SQLite (`sqlite3` stdlib).
   Single uvicorn process at `127.0.0.1:8765`, reverse-proxied through lighttpd or nginx.
 - **Frontend** — vanilla HTML / CSS / JavaScript. No framework, no bundler, no build step.
-  Leaflet for the map, Canvas for the radar sweep, Web Audio for chimes.
+  Leaflet for the map, Canvas for the radar sweep, Web Audio for chimes. Live data arrives
+  over a WebSocket; the broadcast payload is serialised once per cycle and trail history is
+  shipped as deltas.
 - **Database** — one SQLite file at `/opt/piscope/piscope.db`. WAL mode, snapshot
-  compression, single-transaction-per-poll batching. Tested with 400+ aircraft at
-  ~10 ms SQL time per cycle on a Pi 4.
+  compression, single-transaction-per-poll batching with coalesced per-type / per-bucket
+  writes. Tuned to stay light on a Pi 4 — the poll loop is idle ~97% of the time at typical
+  traffic.
+- **AI** — multi-provider façade in `app/services/ai/` (Ollama / cloud API / Claude CLI shim).
+  Shared prompt-building, sanitisation, LRU cache, and in-flight de-duplication; each provider
+  is a small module behind a common `generate` / `ping` interface.
 - **PWA** — manifest + service worker. App shell is cached for offline-ish use; live data
   always hits the network.
 
@@ -151,6 +214,7 @@ PiScope Radar is just the glue. The real data comes from:
 - [FlightAware AeroAPI](https://www.flightaware.com/commercial/aeroapi/) — optional, paid, on-demand flight data
 - [OpenAIP](https://www.openaip.net/) — optional aviation chart overlay (free API key required)
 - [RainViewer](https://www.rainviewer.com/) — weather radar overlay (no key)
+- AI briefings are optional and bring-your-own: [Ollama](https://ollama.com/) (local), or a cloud key from [Anthropic](https://www.anthropic.com/) / [OpenAI](https://openai.com/) / [Google](https://ai.google.dev/), or your own [Claude Code](https://claude.com/claude-code) subscription via the bundled shim
 
 ## Security model
 
@@ -159,10 +223,12 @@ without putting auth + HTTPS in front of it.
 
 - No CORS (any browser-tab-origin on the LAN can hit the API; that's intentional for `http://pi.local/piscope`)
 - WebSocket endpoint rejects cross-origin connections
+- Cross-origin iframing is blocked by default (`Content-Security-Policy: frame-ancestors 'self'`); embedding requires explicitly allow-listing the parent origin in Settings
 - SSRF-safe URL validation for the tar1090 base URL and any extra feeds
-- API keys stored only in SQLite, never echoed back to the browser
+- API keys + AI provider tokens stored only in SQLite, never echoed back to the browser (redacted to `***` with a "stored" flag)
+- AI prompt inputs are whitelisted + regex-validated — raw upstream/ADS-B strings never reach a model
 - Regex-validated hex / callsign at every API entry point
-- XSS-safe rendering of upstream photo URLs
+- XSS-safe rendering of upstream photo URLs and AI brief text
 
 ### Optional UFW firewall recipe (LAN-only lock-down)
 
