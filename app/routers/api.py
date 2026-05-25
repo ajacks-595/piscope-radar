@@ -369,6 +369,7 @@ async def save_webhooks(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
 async def test_webhook(body: WebhookTestBody) -> dict[str, Any]:
     """Send a sample notification to a single webhook so the user can verify their setup."""
     from ..services import webhooks as webhooks_service
+    from ..services._http import validate_external_url
     ep = {
         "kind": (body.kind or "generic").lower(),
         "url": body.url or "",
@@ -376,6 +377,12 @@ async def test_webhook(body: WebhookTestBody) -> dict[str, Any]:
     }
     if not ep["url"].startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Invalid URL")
+    # Surface the SSRF guard's verdict here rather than letting _post_one swallow it —
+    # otherwise the "Test" button reports success for a URL we actually refused to hit.
+    try:
+        validate_external_url(ep["url"], resolve=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"URL blocked: {exc}")
     sample_ac = {"display_name": "SAMPLE", "hex": "abcdef", "type_code": "A320",
                  "distance_nm": 12.3, "squawk": "1234", "altitude_baro": 35000}
     await webhooks_service._post_one(ep, "Test alert from PiScope Radar — webhook is working.", sample_ac)
