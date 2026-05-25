@@ -438,16 +438,38 @@ async def delete_bookmark(hex_id: str) -> dict[str, Any]:
 def _build_export_zip(db_path: Path) -> bytes:
     """Online-backup the DB to memory, dump SQL, and zip it. Synchronous + CPU/IO-bound
     (whole-DB copy + zlib compression) — run via run_in_threadpool so it never blocks the
-    event loop, which would otherwise stall WS heartbeats during a large export (iter 11)."""
+    event loop, which would otherwise stall WS heartbeats during a large export (iter 11).
+
+    Secrets (API keys, SMTP password, provider tokens) are stripped from the dump (iter 11):
+    backup zips get emailed and cloud-stored, and we don't want plaintext credentials riding
+    along. The strip runs on the throwaway in-memory copy, so the live DB is untouched. On
+    restore those keys come back blank and must be re-entered in Settings.
+    """
     bio = io.BytesIO()
     # SQLite's online backup API gives us a consistent file even with the feed loop writing.
     with sqlite3.connect(db_path) as src, sqlite3.connect(":memory:") as mem:
         src.backup(mem)
+        secret_keys = sorted(settings_store.SECRET_KEYS)
+        if secret_keys:
+            # Values are JSON-encoded in the settings table; '""' is an empty string.
+            placeholders = ",".join("?" * len(secret_keys))
+            mem.execute(
+                f"UPDATE settings SET value = '\"\"' WHERE key IN ({placeholders})",
+                tuple(secret_keys),
+            )
+            mem.commit()
         rows = list(mem.iterdump())
     sql_dump = "\n".join(rows)
     with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("piscope.sql", sql_dump)
         zf.writestr("exported_at.txt", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + "\n")
+        zf.writestr(
+            "README-RESTORE.txt",
+            "PiScope Radar backup.\n\n"
+            "For your security, secret values (API keys, SMTP password, AI provider tokens) "
+            "have been STRIPPED from this backup. After restoring, re-enter them under "
+            "Settings. Everything else (events, records, coverage, settings) restores as-is.\n",
+        )
     return bio.getvalue()
 
 
