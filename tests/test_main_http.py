@@ -31,9 +31,9 @@ def test_sw_js_cache_tag_rewritten(client):
     assert r.status_code == 200
     body = r.text
     # The literal placeholder must have been replaced with the content-hash tag,
-    # which embeds the current version (1_11_0).
+    # which embeds the current version (1_5_0).
     assert "piscope-shell-rewritten" not in body
-    assert "piscope-shell-1_11_0-" in body
+    assert "piscope-shell-1_5_0-" in body
     assert r.headers.get("service-worker-allowed") == "/piscope"
 
 

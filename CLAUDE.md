@@ -65,7 +65,7 @@ Self-hosted ADS-B flight tracker for a Raspberry Pi. Sits alongside `tar1090` / 
 serves a polished LAN web UI on `http://<pi>/piscope`: live map with Leaflet, themed radar
 sweep, detail panel with route + photo + AI brief, events log, polar coverage diagram,
 heatmap, webhooks, replay, PWA install. No auth — LAN-only by design. Currently
-`VERSION = "1.8.0"` (see `app/main.py:46`).
+`VERSION = "1.5.0"` (see `app/main.py`), tagged `v1.5.0`.
 
 ## Architecture & tech stack
 
