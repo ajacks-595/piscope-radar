@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import httpx
 from fastapi import APIRouter, Body, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 import io
 import json
@@ -35,6 +36,69 @@ from ..services.feed import feed_service
 log = logging.getLogger("piscope.api")
 
 router = APIRouter(prefix="/api")
+
+
+# --- Request models (iter 11) -----------------------------------------------
+# Pydantic models for the endpoints where strict typing is a clean win: automatic
+# 422 on malformed input + OpenAPI/Swagger docs. Deliberately NOT applied to
+# /api/settings (the DEFAULTS whitelist in settings.py is the right validation
+# there — a model duplicating ~50 keys would be brittle) nor to the webhook-save
+# list (its lenient coerce-and-clean loop intentionally doesn't 422 a whole list
+# over one bad entry).
+
+
+class WebhookTestBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    kind: str = "generic"
+    url: str
+
+
+class ChatTurn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=2000)
+
+
+class AircraftBrief(BaseModel):
+    """Aircraft fields accepted by /api/explain (+ the followup's `aircraft`). Mirrors the
+    old _EXPLAIN_ALLOWED_FIELDS whitelist; `extra='ignore'` drops anything else. Every value
+    is independently re-sanitised in ai/_common (regex / range-clamp / printable-strip), so
+    this is shape + docs validation, not the security boundary. Keep in sync with the field
+    list there if you add inputs."""
+    model_config = ConfigDict(extra="ignore")
+    hex: str = Field(..., min_length=1)
+    callsign: Optional[str] = None
+    type_code: Optional[str] = None
+    registration: Optional[str] = None
+    airline_name: Optional[str] = None
+    operator: Optional[str] = None
+    origin_name: Optional[str] = None
+    origin_municipality: Optional[str] = None
+    origin_iata: Optional[str] = None
+    origin_icao: Optional[str] = None
+    origin_country_iso: Optional[str] = None
+    destination_name: Optional[str] = None
+    destination_municipality: Optional[str] = None
+    destination_iata: Optional[str] = None
+    destination_icao: Optional[str] = None
+    destination_country_iso: Optional[str] = None
+    altitude_baro: Optional[float] = None
+    ground_speed: Optional[float] = None
+    heading: Optional[float] = None
+    vertical_rate: Optional[float] = None
+    distance_nm: Optional[float] = None
+    on_ground: Optional[bool] = None
+    squawk: Optional[str] = None
+    is_emergency_squawk: Optional[bool] = None
+    military: Optional[bool] = None
+    watchlist_match: Optional[bool] = None
+
+
+class FollowupBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    aircraft: AircraftBrief
+    history: list[ChatTurn] = Field(default_factory=list)
+    question: str = Field(..., min_length=1, max_length=500)
 
 
 # --- aircraft snapshot (REST fallback for clients that don't speak WS) -------
@@ -302,12 +366,12 @@ async def save_webhooks(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 
 @router.post("/webhooks/test")
-async def test_webhook(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def test_webhook(body: WebhookTestBody) -> dict[str, Any]:
     """Send a sample notification to a single webhook so the user can verify their setup."""
     from ..services import webhooks as webhooks_service
     ep = {
-        "kind": (body.get("kind") or "generic").lower(),
-        "url": body.get("url") or "",
+        "kind": (body.kind or "generic").lower(),
+        "url": body.url or "",
         "types": ["emergency", "military", "watchlist", "rare"],
     }
     if not ep["url"].startswith(("http://", "https://")):
@@ -539,18 +603,8 @@ async def import_db(file: UploadFile = File(...)) -> dict[str, Any]:
 
 
 # --- AI explain (iteration 5) -----------------------------------------------
-
-# Strict allow-list of payload fields. Anything else in the body is dropped before the
-# call into ollama_svc.explain — we never let raw user keys flow into the prompt builder.
-_EXPLAIN_ALLOWED_FIELDS = {
-    # Identifiers / enrichment
-    "hex", "callsign", "type_code", "registration", "airline_name", "operator",
-    "origin_name", "origin_municipality", "origin_iata", "origin_icao", "origin_country_iso",
-    "destination_name", "destination_municipality", "destination_iata", "destination_icao", "destination_country_iso",
-    # Live state — added in iteration 6 so the brief can reference current flight phase
-    "altitude_baro", "ground_speed", "heading", "vertical_rate", "distance_nm",
-    "on_ground", "squawk", "is_emergency_squawk", "military", "watchlist_match",
-}
+# The payload allow-list that used to live here is now the AircraftBrief Pydantic
+# model near the top of this file (iter 11) — same fields, with extra='ignore'.
 
 
 def _provider_model_label() -> str:
@@ -598,13 +652,13 @@ async def explain_status() -> dict[str, Any]:
 
 
 @router.post("/explain")
-async def explain(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def explain(body: AircraftBrief) -> dict[str, Any]:
     """Generate a short natural-language brief for one aircraft."""
     if not ai_svc.is_configured():
         raise HTTPException(status_code=503, detail="AI explanations not configured")
-    payload = {k: body[k] for k in body.keys() if k in _EXPLAIN_ALLOWED_FIELDS}
-    if not payload.get("hex"):
-        raise HTTPException(status_code=400, detail="hex required")
+    # Model already validated shape + required hex; extra keys dropped. Nones trimmed so
+    # the prompt builder's `.get()` checks behave as before.
+    payload = body.model_dump(exclude_none=True)
     result = await ai_svc.explain(payload)
     # 200 with an envelope (including "unavailable") rather than 5xx — the frontend renders
     # an inline error instead of a console-spew red 500.
@@ -612,14 +666,14 @@ async def explain(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 
 @router.post("/explain/followup")
-async def explain_followup(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def explain_followup(body: FollowupBody) -> dict[str, Any]:
     """Follow-up question about an aircraft the user has already seen the brief for.
 
-    Body shape:
+    Body shape (validated by FollowupBody):
       {
-        "aircraft": {hex, callsign, ...},          # same whitelist as /explain
+        "aircraft": {hex, callsign, ...},          # same fields as /api/explain
         "history":  [{"role": "user"|"assistant", "content": "..."}, ...],
-        "question": "..."
+        "question": "..."                          # 1–500 chars
       }
 
     Caching deliberately skipped — each conversation is unique and a stale
@@ -629,35 +683,8 @@ async def explain_followup(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
     if not ai_svc.is_configured():
         raise HTTPException(status_code=503, detail="AI explanations not configured")
 
-    raw_ac = body.get("aircraft") or {}
-    if not isinstance(raw_ac, dict):
-        raise HTTPException(status_code=400, detail="aircraft must be an object")
-    payload = {k: raw_ac[k] for k in raw_ac.keys() if k in _EXPLAIN_ALLOWED_FIELDS}
-    if not payload.get("hex"):
-        raise HTTPException(status_code=400, detail="aircraft.hex required")
-
-    question = (body.get("question") or "").strip()
-    if not question:
-        raise HTTPException(status_code=400, detail="question required")
-    # Hard cap question length here too (the prompt builder also enforces this,
-    # but a clear 400 is friendlier than a silently truncated prompt).
-    if len(question) > 500:
-        raise HTTPException(status_code=400, detail="question too long (max 500 chars)")
-
-    raw_history = body.get("history") or []
-    if not isinstance(raw_history, list):
-        raise HTTPException(status_code=400, detail="history must be a list")
-    history: list[dict[str, str]] = []
-    for entry in raw_history:
-        if not isinstance(entry, dict):
-            continue
-        role = (entry.get("role") or "").strip().lower()
-        if role not in ("user", "assistant"):
-            continue
-        content = entry.get("content")
-        if not isinstance(content, str) or not content.strip():
-            continue
-        history.append({"role": role, "content": content})
+    payload = body.aircraft.model_dump(exclude_none=True)
+    history = [{"role": t.role, "content": t.content} for t in body.history]
 
     max_turns = settings_store.get("ai_chat_max_turns") or 5
     try:
@@ -667,7 +694,7 @@ async def explain_followup(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
     max_turns = max(1, min(max_turns, 20))
 
     from ..services.ai._common import build_followup_prompt, cap_response
-    prompt = build_followup_prompt(payload, history, question, max_turns=max_turns)
+    prompt = build_followup_prompt(payload, history, body.question, max_turns=max_turns)
     text = await ai_svc.generate(prompt, num_predict=240, temperature=0.5)
     provider = ai_svc.active_provider_name()
     if not text:
