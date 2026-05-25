@@ -112,8 +112,10 @@ async def explain(payload: dict[str, Any]) -> dict[str, Any]:
             text = await existing
             if text:
                 return {"text": text, "source": "cache", "provider": provider}
-        except Exception:
-            pass
+        except Exception as exc:
+            # The in-flight call we were piggybacking on failed; we don't re-raise its
+            # error (it already logged at its own site) but record why we fell through.
+            log.debug("shared in-flight explain call failed: %s", exc)
         return {"source": "unavailable", "error": "concurrent call failed", "provider": provider}
 
     loop = asyncio.get_running_loop()

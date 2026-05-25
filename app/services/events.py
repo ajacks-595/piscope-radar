@@ -79,7 +79,9 @@ def recent_events(limit: int = 100, kind: Optional[str] = None) -> list[dict[str
         if item.get("payload"):
             try:
                 item["payload"] = json.loads(item["payload"])
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
+                # Leave payload as the raw string if it isn't valid JSON — best-effort
+                # decode of a display field. Narrowed from bare Exception.
                 pass
         out.append(item)
     return out
