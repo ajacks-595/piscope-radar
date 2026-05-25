@@ -19,7 +19,7 @@ from . import insights as insights_store
 from . import records as records_store
 from . import settings as settings_store
 from . import webhooks as webhooks_service
-from ._http import validate_external_url, _BLOCKED_METADATA_HOSTS  # SSRF guard (shared)  # noqa: F401
+from ._http import validate_external_url, _BLOCKED_METADATA_HOSTS, LRUCache  # noqa: F401
 
 
 log = logging.getLogger("piscope.feed")
@@ -101,10 +101,14 @@ class FeedService:
 
         # Hex IDs queued for hexdb type-enrichment. Some tar1090 deployments omit `t` for many
         # aircraft, so we backfill the ICAO type code from hexdb in the background.
+        # `_enrich_pending` drains as the loop pops it, so it's self-bounding. The other two
+        # accumulate per unique hex over the process lifetime, so they're LRU-bounded (iter 11):
+        # eviction is harmless — worst case a returning aircraft gets re-enriched once. Accessed
+        # via .get() (which refreshes recency) so aircraft continuously in view stay warm.
         self._enrich_pending: set[str] = set()
-        self._enriched_hexes: set[str] = set()
+        self._enriched_hexes = LRUCache(max_size=8192)   # hex -> True (bounded set)
         # Map hex → ICAO type code we've discovered via hexdb. Lets subsequent polls reuse it.
-        self._known_types: dict[str, str] = {}
+        self._known_types = LRUCache(max_size=8192)
         # Types discovered by the enrichment loop but not yet written to seen_types. Drained
         # into the poll batch so we don't open competing write transactions on SQLite.
         self._pending_type_records: list[str] = []
@@ -141,7 +145,7 @@ class FeedService:
             try:
                 if self._enrich_pending:
                     hex_id = self._enrich_pending.pop()
-                    self._enriched_hexes.add(hex_id)
+                    self._enriched_hexes.set(hex_id, True)
                     try:
                         result = await hexdb_service.lookup(hex_id)
                     except Exception:
@@ -149,7 +153,7 @@ class FeedService:
                     if result:
                         icao_type = (result.get("icao_type_code") or "").strip().upper()
                         if icao_type:
-                            self._known_types[hex_id] = icao_type
+                            self._known_types.set(hex_id, icao_type)
                             # Defer the write — the next poll's batch will flush it. This avoids
                             # opening a competing SQLite write transaction every 0.2 s, which
                             # was causing the poll loop to block for the busy_timeout (5 s).
@@ -470,9 +474,11 @@ class FeedService:
                     heatmap_counts[bucket] = heatmap_counts.get(bucket, 0) + 1
                 # Records updated in one batch at the end of the loop (O(5) DB ops total).
                 # If the wire data didn't carry a type code, but we previously enriched it via hexdb,
-                # restore that value before the snapshot ships.
-                if not ac.type_code and ac.hex in self._known_types:
-                    ac.type_code = self._known_types[ac.hex]
+                # restore that value before the snapshot ships. .get() refreshes LRU recency.
+                if not ac.type_code:
+                    cached_type = self._known_types.get(ac.hex)
+                    if cached_type:
+                        ac.type_code = cached_type
 
                 is_new_type = False
                 if ac.type_code:
@@ -483,8 +489,9 @@ class FeedService:
                     if code not in known_types and code not in rare_fired_this_poll:
                         is_new_type = True
                         rare_fired_this_poll.add(code)
-                elif ac.hex not in self._enriched_hexes:
+                elif self._enriched_hexes.get(ac.hex) is None:
                     # Queue this hex for background type enrichment via hexdb.
+                    # .get() (not `in`) so a hex still in view refreshes its LRU recency.
                     self._enrich_pending.add(ac.hex)
 
                 ac_dict = ac.to_json()
