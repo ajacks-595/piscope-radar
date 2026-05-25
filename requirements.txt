@@ -1,0 +1,33 @@
+# PiScope Radar — pinned runtime dependencies.
+#
+# Frozen set, verified working on the production Pi (Python 3.11, armhf/aarch64).
+# Pinning keeps deployments reproducible — `install.sh` installs from this file
+# rather than unpinned package names, so an upstream release can't silently change
+# behaviour between installs.
+#
+# To regenerate after a deliberate upgrade:
+#   /opt/piscope/venv/bin/pip install -U <pkg> && /opt/piscope/venv/bin/pip freeze > requirements.txt
+# then re-test on the Pi before committing.
+#
+# NOTE: starlette is pinned to 1.0.1 (not the 1.0.0 that was deployed) to pick up
+# the PYSEC-2026-161 fix. fastapi 0.136.1 requires starlette>=0.46.0, so this is
+# compatible.
+
+# --- Direct dependencies (the five install.sh used to install unpinned) ---
+fastapi==0.136.1
+uvicorn==0.47.0
+httpx==0.28.1
+websockets==16.0
+python-multipart==0.0.29
+
+# --- Transitive, pinned for full reproducibility ---
+annotated-types==0.7.0
+anyio==4.13.0
+certifi==2026.4.22
+click==8.4.0
+h11==0.16.0
+httpcore==1.0.9
+idna==3.15
+pydantic==2.13.4
+starlette==1.0.1
+typing-extensions==4.15.0

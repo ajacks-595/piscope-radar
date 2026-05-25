@@ -153,11 +153,20 @@ if [[ ! -d "${INSTALL_DIR}/venv" ]]; then
   sudo -u "${SERVICE_USER}" python3 -m venv "${INSTALL_DIR}/venv"
 fi
 sudo -u "${SERVICE_USER}" "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
-# Plain `uvicorn` (no [standard] extras) — the extras pull in uvloop/httptools/watchfiles which
-# don't ship binary wheels for armv7l and require C compilation. Plain asyncio is plenty fast
-# for our ~30 polls/min workload, and `websockets` is the WS implementation we actually want.
-sudo -u "${SERVICE_USER}" "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade \
-  fastapi uvicorn httpx websockets python-multipart
+# Pinned via requirements.txt for reproducible installs (no surprise upstream breakage
+# between deploys). Plain `uvicorn` (no [standard] extras) — the extras pull in
+# uvloop/httptools/watchfiles which don't ship binary wheels for armv7l and require C
+# compilation. Plain asyncio is plenty fast for our ~30 polls/min workload, and the pinned
+# `websockets` is the WS implementation we actually want.
+if [[ -f "${PROJECT_DIR}/requirements.txt" ]]; then
+  sudo -u "${SERVICE_USER}" "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade \
+    -r "${PROJECT_DIR}/requirements.txt"
+else
+  # Fallback for older checkouts without the pinned file.
+  log "WARNING: requirements.txt not found — installing unpinned latest"
+  sudo -u "${SERVICE_USER}" "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade \
+    fastapi uvicorn httpx websockets python-multipart
+fi
 
 # ----- 4. systemd service ----------------------------------------------------
 log "Writing systemd unit (piscope.service)"
