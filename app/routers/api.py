@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, Body, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
 import io
@@ -434,14 +435,12 @@ async def delete_bookmark(hex_id: str) -> dict[str, Any]:
     return {"ok": True}
 
 
-@router.get("/export")
-async def export_db() -> Response:
-    """Return the entire database as a downloadable ZIP. Settings + events + history."""
-    db_path = Path(settings_store.DB_PATH)
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="No database file yet")
-    # SQLite's online backup API gives us a consistent file even with the feed loop writing.
+def _build_export_zip(db_path: Path) -> bytes:
+    """Online-backup the DB to memory, dump SQL, and zip it. Synchronous + CPU/IO-bound
+    (whole-DB copy + zlib compression) — run via run_in_threadpool so it never blocks the
+    event loop, which would otherwise stall WS heartbeats during a large export (iter 11)."""
     bio = io.BytesIO()
+    # SQLite's online backup API gives us a consistent file even with the feed loop writing.
     with sqlite3.connect(db_path) as src, sqlite3.connect(":memory:") as mem:
         src.backup(mem)
         rows = list(mem.iterdump())
@@ -449,13 +448,31 @@ async def export_db() -> Response:
     with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("piscope.sql", sql_dump)
         zf.writestr("exported_at.txt", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + "\n")
-    bio.seek(0)
+    return bio.getvalue()
+
+
+@router.get("/export")
+async def export_db() -> Response:
+    """Return the entire database as a downloadable ZIP. Settings + events + history."""
+    db_path = Path(settings_store.DB_PATH)
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="No database file yet")
+    content = await run_in_threadpool(_build_export_zip, db_path)
     fname = f"piscope-backup-{time.strftime('%Y%m%d-%H%M%S')}.zip"
     return Response(
-        content=bio.getvalue(),
+        content=content,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+def _build_restore_db(sql: str, tmp_path: Path) -> None:
+    """Execute the backup's SQL dump into a fresh temp DB. Synchronous; threadpool'd."""
+    if tmp_path.exists():
+        tmp_path.unlink()
+    with sqlite3.connect(tmp_path) as fresh:
+        fresh.executescript(sql)
+        fresh.commit()
 
 
 @router.post("/import")
@@ -478,15 +495,12 @@ async def import_db(file: UploadFile = File(...)) -> dict[str, Any]:
             sql = zf.read(sql_name).decode("utf-8", errors="replace")
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="Not a valid zip file")
-    # Build a fresh DB at a sibling path, then atomically swap.
+    # Build a fresh DB at a sibling path, then atomically swap. executescript on a
+    # restore can be heavy (whole-DB rebuild) so it runs in a threadpool (iter 11).
     db_path = Path(settings_store.DB_PATH)
     tmp_path = db_path.with_suffix(".import.tmp")
-    if tmp_path.exists():
-        tmp_path.unlink()
     try:
-        with sqlite3.connect(tmp_path) as fresh:
-            fresh.executescript(sql)
-            fresh.commit()
+        await run_in_threadpool(_build_restore_db, sql, tmp_path)
     except sqlite3.Error as exc:
         tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"Could not restore: {exc}")
