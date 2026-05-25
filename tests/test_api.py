@@ -113,3 +113,55 @@ def test_aircraft_snapshot_shape(client):
     body = r.json()
     assert body["type"] == "aircraft_update"
     assert "aircraft" in body
+
+
+def test_bookmarks_roundtrip_via_api(client):
+    r = client.post("/piscope/api/bookmarks/abc123", json={"label": "fave", "callsign": "BAW1"})
+    assert r.status_code == 200
+    listed = client.get("/piscope/api/bookmarks").json()["bookmarks"]
+    assert any(b["hex"] == "abc123" for b in listed)
+    assert client.delete("/piscope/api/bookmarks/abc123").status_code == 200
+    assert client.get("/piscope/api/bookmarks").json()["bookmarks"] == []
+
+
+def test_bookmarks_reject_bad_hex(client):
+    assert client.post("/piscope/api/bookmarks/NOTAHEX", json={}).status_code == 400
+
+
+def test_notes_roundtrip_via_api(client):
+    r = client.put("/piscope/api/notes/abc123", json={"note": "seen over the bridge"})
+    assert r.status_code == 200
+    got = client.get("/piscope/api/notes/abc123").json()
+    assert got["note"] == "seen over the bridge"
+
+
+def test_notes_reject_bad_hex(client):
+    assert client.put("/piscope/api/notes/ZZZ", json={"note": "x"}).status_code == 400
+
+
+def test_webhooks_save_coerces_and_cleans(client):
+    # Lenient save: a bogus kind coerces to "generic", a non-http url entry is dropped,
+    # types are filtered to the known set.
+    r = client.post("/piscope/api/webhooks", json={"webhooks": [
+        {"kind": "weird", "url": "https://discord.com/x", "types": ["emergency", "nonsense"]},
+        {"kind": "discord", "url": "ftp://nope"},   # dropped (bad scheme)
+    ]})
+    assert r.status_code == 200
+    saved = r.json()["webhooks"]
+    assert len(saved) == 1
+    assert saved[0]["kind"] == "generic"
+    assert saved[0]["types"] == ["emergency"]
+
+
+def test_metrics_prometheus_format(client):
+    r = client.get("/piscope/api/metrics")
+    assert r.status_code == 200
+    assert "piscope_uptime_seconds" in r.text
+    assert r.headers["content-type"].startswith("text/plain")
+
+
+def test_dashboard_events_stats_shape(client):
+    r = client.get("/piscope/api/dashboard/events/stats")
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) >= {"subscribers", "ring_size", "latest_event_id"}
