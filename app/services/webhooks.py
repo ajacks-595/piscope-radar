@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import settings as settings_store
-from ._http import get_client
+from ._http import get_client, validate_external_url
 
 
 log = logging.getLogger("piscope.webhooks")
@@ -69,6 +69,14 @@ async def _post_one(endpoint: dict[str, Any], message: str, ac: dict[str, Any]) 
     url = endpoint.get("url")
     kind_endpoint = (endpoint.get("kind") or "generic").lower()
     if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return
+    # SSRF guard — same validation the tar1090/feed URLs get. resolve=True
+    # because webhook URLs are user-supplied and we post to them on demand,
+    # so the DNS-rebind-to-metadata vector is worth the lookup cost here.
+    try:
+        validate_external_url(url, resolve=True)
+    except ValueError as exc:
+        log.info("webhook to %s blocked by SSRF guard: %s", url, exc)
         return
     try:
         content_type, body = _body_for(kind_endpoint, message, ac)

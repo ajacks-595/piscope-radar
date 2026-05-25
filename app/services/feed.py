@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import logging
 import time
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Optional
-from urllib.parse import urlparse
 
 import httpx
 
@@ -21,39 +19,15 @@ from . import insights as insights_store
 from . import records as records_store
 from . import settings as settings_store
 from . import webhooks as webhooks_service
+from ._http import validate_external_url, _BLOCKED_METADATA_HOSTS  # SSRF guard (shared)  # noqa: F401
 
 
 log = logging.getLogger("piscope.feed")
 
 ADSB_LOL_URL = "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{nm}"
-
-# Block link-local + the AWS/cloud instance-metadata addresses as a defense-in-depth measure.
-# Other private ranges are allowed since the user genuinely wants to point at LAN tar1090 hosts.
-_BLOCKED_METADATA_HOSTS = {"169.254.169.254", "fd00:ec2::254", "metadata.google.internal"}
-
-
-def validate_external_url(raw: str) -> str:
-    """Return a sanitised http(s) URL, or raise ValueError. Used wherever user-supplied URLs
-    are about to be fetched by the server (SSRF protection)."""
-    raw = (raw or "").strip()
-    if not raw:
-        raise ValueError("URL is empty")
-    parsed = urlparse(raw)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(f"Unsupported scheme: {parsed.scheme!r}; only http/https are allowed")
-    host = (parsed.hostname or "").strip()
-    if not host:
-        raise ValueError("URL has no host component")
-    if host in _BLOCKED_METADATA_HOSTS:
-        raise ValueError("Refusing to fetch cloud-metadata endpoint")
-    # If the host looks like a literal IP, block link-local + AWS metadata range explicitly.
-    try:
-        ip = ipaddress.ip_address(host)
-        if ip.is_link_local:
-            raise ValueError("Link-local IPs are not allowed")
-    except ValueError:
-        pass  # not an IP literal; that's fine
-    return raw
+# NB: validate_external_url is imported from _http above (shared with webhooks.py
+# to avoid an import cycle). feed's callers use the default resolve=False — the
+# feed URL is admin-set and polled every cycle, so no per-poll DNS lookup.
 
 
 class FeedService:
@@ -714,7 +688,8 @@ class FeedService:
     # --- helpers used by REST endpoints --------------------------------------
 
     async def test_connection(self, base_url: str) -> dict[str, Any]:
-        base = validate_external_url(base_url).rstrip("/")
+        # resolve=True: user-supplied URL hit on demand from the settings UI.
+        base = validate_external_url(base_url, resolve=True).rstrip("/")
         url = f"{base}/data/aircraft.json"
         async with httpx.AsyncClient(timeout=6.0) as client:
             r = await client.get(url)
