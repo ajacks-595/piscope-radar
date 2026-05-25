@@ -62,5 +62,7 @@ async def aircraft_ws(ws: WebSocket) -> None:
         feed_service.unsubscribe(queue)
         try:
             await ws.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            # Best-effort close — an already-closed/errored socket raises here and there's
+            # nothing to recover. Log at debug so it's visible under --debug but not noisy.
+            log.debug("ws close on cleanup raised (already closed?): %s", exc)

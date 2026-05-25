@@ -103,7 +103,10 @@ def build_digest(now_ts: Optional[float] = None, window_hours: int = 24) -> dict
                     item["display_name"] = p.get("display_name")
                     if p.get("squawk"):
                         item["squawk"] = p["squawk"]
-                except Exception:
+                except (json.JSONDecodeError, TypeError, KeyError, AttributeError):
+                    # Best-effort enrichment of a display row; a malformed payload just
+                    # means this callout shows without the extra fields. Narrowed from a
+                    # bare Exception so a real bug here wouldn't be silently swallowed.
                     pass
             callouts.append(item)
 
