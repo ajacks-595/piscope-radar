@@ -149,7 +149,7 @@ static/
   index.html               # Single-page shell
   app.js / app.css         # All client logic + styles
   radar.js                 # Canvas radar-sweep overlay
-  sw.js                    # Service worker — CACHE bumps every release
+  sw.js                    # Service worker — CACHE auto-derived on the wire (iter 9.4)
   themes.css               # 11 themes
   data/airports.json       # Bundled airport overlay
 docs/screenshots/          # README screenshots
@@ -177,12 +177,11 @@ ssh piaware 'sudo systemctl restart piscope'
 `/opt/piscope/piscope.db` and the venv at `/opt/piscope/venv` are outside these dirs and
 untouched.
 
-**Every release** bumps two things in lockstep:
-- `app/main.py` → `VERSION = "X.Y.Z"`
-- `static/sw.js` → `CACHE = 'piscope-shell-vN'`
-
-Both are needed for the frontend's version-bump toast to fire and for the service worker
-to evict the old shell cache. Skip either and users keep getting stale assets.
+**Every release** bumps `app/main.py` → `VERSION = "X.Y.Z"`. That single bump drives the
+frontend's version-bump toast AND the service-worker cache: since iter 9.4 the `sw.js`
+`CACHE` constant is rewritten on the wire to `piscope-shell-<version>-<content-hash>`
+(see `_shell_cache_tag` in `main.py`), so you no longer hand-edit `sw.js` — changing
+`VERSION` (or any static asset) invalidates the shell cache automatically.
 
 **First-time install on a new Pi** (rare): use `sudo bash install.sh` in the repo root
 *on the Pi*. Idempotent — re-running upgrades files in `INSTALL_DIR` and restarts the
@@ -190,6 +189,14 @@ service; existing `piscope.db` is backed up to `piscope.db.bak` first.
 
 ## Key conventions
 
+- **Versioning is semver.** Patch (`1.5.1`) = bugfix / security / small feature; minor
+  (`1.6.0`) = a notable feature drop; major (`2.0.0`) = a breaking or epoch change
+  (rewrite, DB-incompatible migration, dropping the LAN-only model). In-app `VERSION`
+  (`app/main.py`) and the git tag move in lockstep — bump `VERSION` as part of the work,
+  tag on `main` at promotion. `dev` rides ahead of `main` between releases and they
+  converge at each promotion; that divergence is by design, not drift. (Historical note:
+  pre-v1.5.0, in-app `VERSION` ran `1.<iteration>.0` ahead of the tags — realigned at
+  v1.5.0, so old commit messages mention 1.6.0–1.11.0 that no longer correspond to tags.)
 - **No new dependencies without a strong reason.** The Pi stack is fastapi / uvicorn /
   httpx / websockets / python-multipart and nothing else. The shim is stdlib-only.
   Both choices are load-bearing.
@@ -241,9 +248,11 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
    you've already committed with the wrong email, rewrite with
    `git filter-branch --env-filter` over `origin/<branch>..HEAD`.
 
-6. **Service worker cache name is THE invalidation mechanism.** Forgetting to bump
-   `CACHE = 'piscope-shell-vN'` in `static/sw.js` after a release means clients
-   serve stale JS/CSS forever. Always bump in lockstep with `VERSION`.
+6. **Service-worker cache invalidation is automatic (since iter 9.4).** The `sw.js`
+   `CACHE` constant is rewritten on the wire to `piscope-shell-<version>-<content-hash>`
+   by `_shell_cache_tag` in `main.py`, so bumping `VERSION` (or changing any static
+   asset) evicts the old shell cache on its own. Don't hand-edit the `CACHE` literal in
+   `static/sw.js` — it's just a placeholder the route overwrites.
 
 7. **`piscope.db` on the Pi is live data.** Never rsync over it. The standard deploy
    block excludes it implicitly by only touching `app/` and `static/`.
