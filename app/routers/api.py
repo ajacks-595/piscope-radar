@@ -834,6 +834,17 @@ async def dashboard_categorize_stats() -> dict[str, Any]:
     }
 
 
+def _require_valid_observer(lat: Optional[float], lon: Optional[float]) -> None:
+    """Raise HTTP 400 if a supplied observer lat/lon is out of range. Both are optional
+    on the events stream (absent = no location filter), so validate only what's given.
+    Longitude spans the full -180..180; an earlier -90 lower bound wrongly rejected the
+    western hemisphere (the Americas / Pacific)."""
+    if lat is not None and not (-90 <= lat <= 90):
+        raise HTTPException(status_code=400, detail="lat out of range")
+    if lon is not None and not (-180 <= lon <= 180):
+        raise HTTPException(status_code=400, detail="lon out of range")
+
+
 @router.get("/dashboard/events")
 async def dashboard_events(
     request: Request,
@@ -854,10 +865,7 @@ async def dashboard_events(
     from ..services import events_bus
     from ..services.dashboard import haversine_km
 
-    if lat is not None and not (-90 <= lat <= 90):
-        raise HTTPException(status_code=400, detail="lat out of range")
-    if lon is not None and not (-90 <= lon <= 180):
-        raise HTTPException(status_code=400, detail="lon out of range")
+    _require_valid_observer(lat, lon)
     radius_km = max(0.1, min(float(radius_km), 1000.0))
 
     # Last-Event-ID for replay-after-reconnect. Header is preferred; query
