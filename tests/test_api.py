@@ -165,3 +165,28 @@ def test_dashboard_events_stats_shape(client):
     assert r.status_code == 200
     body = r.json()
     assert set(body) >= {"subscribers", "ring_size", "latest_event_id"}
+
+
+def test_dashboard_events_rejects_out_of_range_coords(client):
+    # Validation happens before the SSE stream starts, so these return 400 immediately.
+    assert client.get("/piscope/api/dashboard/events", params={"lat": 91, "lon": 0}).status_code == 400
+    assert client.get("/piscope/api/dashboard/events", params={"lat": 0, "lon": 200}).status_code == 400
+    assert client.get("/piscope/api/dashboard/events", params={"lat": 0, "lon": -200}).status_code == 400
+
+
+def test_require_valid_observer_bounds():
+    # Regression for B1: the observer-coord validator must accept ALL valid longitudes,
+    # including the western hemisphere [-180, -90) that the old -90 lower bound rejected
+    # (San Francisco -122.4, Honolulu -157.8, etc). Tested directly so we never open the
+    # (infinite) SSE stream — keeps the suite fast.
+    import pytest
+    from fastapi import HTTPException
+    from app.routers.api import _require_valid_observer
+
+    for lat, lon in [(None, None), (0, 0), (37.6, -122.4), (21.3, -157.8), (-89.9, -179.9), (90, 180), (-90, -180)]:
+        _require_valid_observer(lat, lon)   # in range → must not raise
+
+    for lat, lon in [(91, 0), (-91, 0), (0, 200), (0, -200)]:
+        with pytest.raises(HTTPException) as ei:
+            _require_valid_observer(lat, lon)
+        assert ei.value.status_code == 400
