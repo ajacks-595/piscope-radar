@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/home/dev/projects/piscope-radar/deploy-piscope.sh:*)"
+    ]
+  }
+}
