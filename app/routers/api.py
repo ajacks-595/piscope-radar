@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import io
 import json
 import re
+import shutil
 import sqlite3
 import time
 import zipfile
@@ -597,13 +598,34 @@ async def import_db(file: UploadFile = File(...)) -> dict[str, Any]:
     except sqlite3.Error as exc:
         tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"Could not restore: {exc}")
-    # Pause feed writes for a moment by stopping it, then swap files, then restart.
+    # Pause the feed so nothing writes while we swap the file out from under it.
     await feed_service.stop()
     try:
-        db_path.unlink(missing_ok=True)
-        tmp_path.rename(db_path)
-        # Make sure the schema is at the version we expect (older backups may need migration).
+        if db_path.exists():
+            # Flush the old WAL into the main file, then snapshot it as a recovery point so a
+            # mistaken import is reversible and the .bak is internally consistent. Best-effort.
+            try:
+                old = sqlite3.connect(db_path)
+                try:
+                    old.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                finally:
+                    old.close()
+                shutil.copy2(db_path, db_path.with_name(db_path.name + ".pre-import.bak"))
+            except (sqlite3.Error, OSError) as exc:
+                log.warning("pre-import backup failed (continuing with restore): %s", exc)
+        # Atomically replace the live DB. Path.replace is a single rename — unlike the old
+        # unlink-then-rename it never leaves a window with no database at all.
+        tmp_path.replace(db_path)
+        # The old WAL/SHM sidecars are stale relative to the freshly-restored DB; leaving them
+        # would let SQLite try to replay an unrelated WAL onto it. Remove them — init_db()
+        # re-creates fresh ones when it re-enables WAL mode.
+        for sidecar in (db_path.name + "-wal", db_path.name + "-shm"):
+            db_path.with_name(sidecar).unlink(missing_ok=True)
+        # Re-apply schema/pragmas/migrations, then drop the now-stale in-memory caches so
+        # reads reflect the restored data rather than the pre-import values.
         settings_store.init_db()
+        settings_store.reload_cache()
+        insights_store._KNOWN_TYPES = None
     finally:
         await feed_service.start()
     return {"ok": True, "message": "Database restored; please refresh the page."}

@@ -346,6 +346,16 @@ def cache_version() -> int:
     return _CACHE_VERSION
 
 
+def reload_cache() -> None:
+    """Discard and rebuild the in-memory settings cache from disk, bumping the version.
+    Needed after the DB file is swapped underneath us (import/restore): otherwise readers
+    keep serving the pre-restore values and the feed loop never notices the new settings."""
+    global _CACHE, _CACHE_VERSION
+    _CACHE = None
+    _CACHE_VERSION += 1
+    _populate_cache()
+
+
 def get(key: str) -> Any:
     if _CACHE is None:
         _populate_cache()
