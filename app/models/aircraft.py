@@ -54,7 +54,14 @@ class Aircraft:
 
     @property
     def heading(self) -> Optional[float]:
-        return self.true_heading or self.mag_heading or self.track
+        # Prefer true heading, then magnetic, then ground track. Use explicit None
+        # checks rather than `or`: 0.0 (due north) is a valid heading but falsy, so
+        # `true_heading or mag_heading or track` would wrongly skip a 0.0 in favour
+        # of a less-preferred source.
+        for h in (self.true_heading, self.mag_heading, self.track):
+            if h is not None:
+                return h
+        return None
 
     @property
     def is_emergency_squawk(self) -> bool:

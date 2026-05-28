@@ -39,6 +39,19 @@ def test_to_json_shape_and_derived_fields():
     assert d["squawk"] == "7700"
 
 
+def test_heading_prefers_present_source_including_zero():
+    # Regression for B3: 0.0 is a valid heading (due north) but falsy, so the old
+    # `true_heading or mag_heading or track` skipped it in favour of a fallback.
+    from app.models.aircraft import Aircraft
+    assert Aircraft(hex="a", true_heading=0.0, mag_heading=270.0, track=90.0).heading == 0.0
+    assert Aircraft(hex="a", true_heading=None, mag_heading=0.0).heading == 0.0
+    assert Aircraft(hex="a", true_heading=None, mag_heading=None, track=0.0).heading == 0.0
+    # Priority order still honoured when a higher-priority source is present.
+    assert Aircraft(hex="a", true_heading=120.0, mag_heading=270.0).heading == 120.0
+    # All absent → None.
+    assert Aircraft(hex="a").heading is None
+
+
 # --- SSRF validator ---------------------------------------------------------
 
 def test_validate_external_url_allows_lan():
