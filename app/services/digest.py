@@ -22,7 +22,7 @@ import logging
 import smtplib
 import ssl
 import time
-from datetime import datetime, time as dtime, timedelta
+from datetime import datetime, time as dtime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import formatdate
 from typing import Any, Optional
@@ -117,7 +117,9 @@ def build_digest(now_ts: Optional[float] = None, window_hours: int = 24) -> dict
 
         # daily_stats row for today gives unique aircraft count + max range without us
         # having to rescan every snapshot — the feed loop maintains it incrementally.
-        today = datetime.now(tz=None).strftime("%Y-%m-%d")
+        # MUST be UTC: events.update_daily_stats / feed key these rows by the UTC date,
+        # so a local-date lookup here misses the row near midnight on non-UTC hosts (B6).
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         ds = conn.execute(
             "SELECT total_polls, unique_aircraft, max_range_nm, emergencies, military_seen "
             "FROM daily_stats WHERE date = ?", (today,)
