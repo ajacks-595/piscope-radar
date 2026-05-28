@@ -187,6 +187,34 @@ def test_export_returns_zip_without_secrets(client):
     assert "EXPORT-SECRET-FA" not in sql
 
 
+def test_import_restores_db_and_invalidates_cache(client, monkeypatch):
+    # Regression for S2: a real export round-tripped back through import must take effect.
+    # Pre-fix the swap was unlink-then-rename (a no-DB window) and the in-memory settings
+    # cache was never invalidated, so reads kept returning pre-import values. Stub the feed
+    # lifecycle so the real poll loop doesn't start during the test.
+    import os
+    from app.services import feed as feed_mod
+    from app.services import settings as settings_store
+
+    async def _noop():
+        return None
+    monkeypatch.setattr(feed_mod.feed_service, "stop", _noop)
+    monkeypatch.setattr(feed_mod.feed_service, "start", _noop)
+
+    client.post("/piscope/api/settings", json={"theme": "nord"})
+    exp = client.get("/piscope/api/export")
+    assert exp.status_code == 200
+    # Mutate AFTER export so we can prove the import overwrote it and refreshed the cache.
+    client.post("/piscope/api/settings", json={"theme": "radar"})
+
+    r = client.post("/piscope/api/import",
+                    files={"file": ("backup.zip", exp.content, "application/zip")})
+    assert r.status_code == 200, r.text
+    assert client.get("/piscope/api/settings").json()["theme"] == "nord"
+    # The recovery snapshot of the pre-import DB was written.
+    assert os.path.exists(str(settings_store.DB_PATH) + ".pre-import.bak")
+
+
 def test_dashboard_events_stats_shape(client):
     r = client.get("/piscope/api/dashboard/events/stats")
     assert r.status_code == 200
