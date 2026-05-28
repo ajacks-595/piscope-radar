@@ -398,6 +398,27 @@ def set_one(key: str, value: Any) -> None:
     set_many({key: value})
 
 
+def redacted_sql_dump(db_path: Path) -> str:
+    """Return a full SQL dump of the DB with every SECRET_KEYS value blanked.
+
+    Shared by the manual /api/export AND the automated daily backup so neither writes
+    plaintext API keys / SMTP password / provider tokens into a zip that may be emailed
+    or cloud-stored — and so the two paths can never drift. Runs against a throwaway
+    in-memory copy via SQLite's online backup, so the live DB is never modified."""
+    with sqlite3.connect(db_path) as src, sqlite3.connect(":memory:") as mem:
+        src.backup(mem)
+        secret_keys = sorted(SECRET_KEYS)
+        if secret_keys:
+            # Values are JSON-encoded in the settings table; '""' is an empty JSON string.
+            placeholders = ",".join("?" * len(secret_keys))
+            mem.execute(
+                f"UPDATE settings SET value = '\"\"' WHERE key IN ({placeholders})",
+                tuple(secret_keys),
+            )
+            mem.commit()
+        return "\n".join(mem.iterdump())
+
+
 # --- FlightAware monthly budget bucket ---------------------------------------
 
 
