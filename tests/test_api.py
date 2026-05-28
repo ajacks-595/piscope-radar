@@ -153,6 +153,20 @@ def test_webhooks_save_coerces_and_cleans(client):
     assert saved[0]["types"] == ["emergency"]
 
 
+def test_webhooks_save_keeps_system_event_types(client):
+    # Regression for B4: feed_down / feed_recovered / digest must survive the save filter.
+    # The UI offers these checkboxes and the watchdog + digest fan out to them; previously
+    # they were silently stripped, so those notifications never fired.
+    r = client.post("/piscope/api/webhooks", json={"webhooks": [
+        {"kind": "discord", "url": "https://discord.com/api/webhooks/x",
+         "types": ["emergency", "feed_down", "feed_recovered", "digest", "bogus"]},
+    ]})
+    assert r.status_code == 200
+    saved = r.json()["webhooks"]
+    assert len(saved) == 1
+    assert set(saved[0]["types"]) == {"emergency", "feed_down", "feed_recovered", "digest"}
+
+
 def test_metrics_prometheus_format(client):
     r = client.get("/piscope/api/metrics")
     assert r.status_code == 200
