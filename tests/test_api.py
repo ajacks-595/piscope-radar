@@ -174,6 +174,19 @@ def test_metrics_prometheus_format(client):
     assert r.headers["content-type"].startswith("text/plain")
 
 
+def test_export_returns_zip_without_secrets(client):
+    # Guards the S1 refactor end-to-end: /api/export must still produce a zip, and the
+    # bundled SQL must not contain stored secret values.
+    import io, zipfile
+    client.post("/piscope/api/settings/fa-key", json={"key": "EXPORT-SECRET-FA"})
+    r = client.get("/piscope/api/export")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        sql = zf.read("piscope.sql").decode("utf-8")
+    assert "EXPORT-SECRET-FA" not in sql
+
+
 def test_dashboard_events_stats_shape(client):
     r = client.get("/piscope/api/dashboard/events/stats")
     assert r.status_code == 200

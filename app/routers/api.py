@@ -527,20 +527,10 @@ def _build_export_zip(db_path: Path) -> bytes:
     restore those keys come back blank and must be re-entered in Settings.
     """
     bio = io.BytesIO()
-    # SQLite's online backup API gives us a consistent file even with the feed loop writing.
-    with sqlite3.connect(db_path) as src, sqlite3.connect(":memory:") as mem:
-        src.backup(mem)
-        secret_keys = sorted(settings_store.SECRET_KEYS)
-        if secret_keys:
-            # Values are JSON-encoded in the settings table; '""' is an empty string.
-            placeholders = ",".join("?" * len(secret_keys))
-            mem.execute(
-                f"UPDATE settings SET value = '\"\"' WHERE key IN ({placeholders})",
-                tuple(secret_keys),
-            )
-            mem.commit()
-        rows = list(mem.iterdump())
-    sql_dump = "\n".join(rows)
+    # SQLite's online backup API gives us a consistent file even with the feed loop writing;
+    # secret values are blanked in the in-memory copy by redacted_sql_dump (shared with the
+    # daily backup so the two can't drift).
+    sql_dump = settings_store.redacted_sql_dump(db_path)
     with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("piscope.sql", sql_dump)
         zf.writestr("exported_at.txt", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + "\n")

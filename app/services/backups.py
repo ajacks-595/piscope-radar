@@ -8,7 +8,6 @@ from __future__ import annotations
 import io
 import logging
 import os
-import sqlite3
 import time
 import zipfile
 from datetime import datetime, timezone
@@ -34,10 +33,10 @@ def _write_backup(dir_path: Path) -> Optional[Path]:
         return None
     dir_path.mkdir(parents=True, exist_ok=True)
     target = _backup_path(dir_path)
-    # Use SQLite's online backup so we don't race with the feed loop's writes.
-    with sqlite3.connect(db_path) as src, sqlite3.connect(":memory:") as mem:
-        src.backup(mem)
-        dump = "\n".join(mem.iterdump())
+    # Online backup + secret-stripping (shared with /api/export): the daily zip lands on
+    # disk and may be synced/emailed, so it must NOT carry plaintext API keys / SMTP pass /
+    # provider tokens. redacted_sql_dump blanks them in a throwaway in-memory copy.
+    dump = settings_store.redacted_sql_dump(db_path)
     bio = io.BytesIO()
     with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("piscope.sql", dump)
