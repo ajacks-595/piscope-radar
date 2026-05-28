@@ -331,6 +331,16 @@ async def put_note(hex_id: str, body: dict[str, str] = Body(...)) -> dict[str, A
 
 # --- Webhooks management ----------------------------------------------------
 
+# Event kinds an endpoint may subscribe to. Beyond the four aircraft kinds this includes
+# the watchdog system kinds (feed_down/feed_recovered) and the daily digest: the Settings
+# UI offers checkboxes for all of these and the feed loop / digest service fan out to them,
+# so they MUST survive the save filter. (Previously only the four aircraft kinds were kept,
+# which silently disabled receiver-offline alerts and digest-to-webhook delivery.)
+WEBHOOK_EVENT_TYPES = {
+    "emergency", "military", "watchlist", "rare",
+    "feed_down", "feed_recovered", "digest",
+}
+
 
 @router.get("/webhooks")
 async def list_webhooks() -> dict[str, Any]:
@@ -359,7 +369,7 @@ async def save_webhooks(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
             kind_ep = "generic"
         if not isinstance(types, list):
             types = []
-        types = [t for t in types if t in {"emergency", "military", "watchlist", "rare"}]
+        types = [t for t in types if t in WEBHOOK_EVENT_TYPES]
         clean.append({"kind": kind_ep, "url": url, "types": types, "label": (ep.get("label") or "")[:60]})
     settings_store.set_one("webhooks_json", json.dumps(clean))
     return {"webhooks": clean}
