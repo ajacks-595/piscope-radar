@@ -158,6 +158,29 @@ def _strip(v: Any) -> Optional[str]:
     return s if s else None
 
 
+def _num(v: Any) -> Optional[float]:
+    """Coerce a wire value to a finite float, else None. ADS-B rows are RF-sourced (and
+    adsb.lol is an external service), so a field may arrive as a string, NaN, or the wrong
+    type entirely — we drop it to None rather than let it crash downstream maths."""
+    if isinstance(v, bool):
+        return None                      # bool is an int subclass; a flag is never a measurement
+    if isinstance(v, (int, float)):
+        return float(v) if math.isfinite(v) else None
+    if isinstance(v, str):
+        try:
+            f = float(v.strip())
+        except ValueError:
+            return None
+        return f if math.isfinite(f) else None
+    return None
+
+
+def _intn(v: Any) -> Optional[int]:
+    """Like _num but returns an int (truncated) or None."""
+    f = _num(v)
+    return int(f) if f is not None else None
+
+
 def _data_source_label(raw: Optional[str]) -> str:
     raw = (raw or "").lower()
     if raw in ("adsb_icao", "adsb_other"):
@@ -174,61 +197,63 @@ def _data_source_label(raw: Optional[str]) -> str:
 
 
 def aircraft_from_wire(row: dict[str, Any], observed_at: float) -> Optional[Aircraft]:
-    hex_id = (row.get("hex") or "").lower()
+    # Feeds are RF-sourced (and adsb.lol is external): a row may be missing fields, carry
+    # the wrong types, or be actively malformed. Parse defensively — every numeric goes
+    # through _num/_intn (string/NaN/wrong-type → None) so a single bad row can never raise
+    # out of the poll loop and abort the whole cycle (which would freeze the live view).
+    if not isinstance(row, dict):
+        return None
+    hex_id = str(row.get("hex") or "").strip().lower()
     if not hex_id:
         return None
 
     alt_baro_raw = row.get("alt_baro")
-    if isinstance(alt_baro_raw, int):
-        alt_baro: Optional[int] = alt_baro_raw
-        on_ground = False
-    elif isinstance(alt_baro_raw, str) and alt_baro_raw.lower() == "ground":
-        alt_baro = None
+    if isinstance(alt_baro_raw, str) and alt_baro_raw.strip().lower() == "ground":
+        alt_baro: Optional[int] = None
         on_ground = True
     else:
-        alt_baro = None
+        alt_baro = _intn(alt_baro_raw)
         on_ground = False
 
-    db_flags = row.get("dbFlags") or 0
-    military = bool(db_flags & 0x01)
+    military = bool((_intn(row.get("dbFlags")) or 0) & 0x01)
 
     return Aircraft(
         hex=hex_id,
         callsign=_strip(row.get("flight")),
         registration=_strip(row.get("r")),
         type_code=_strip(row.get("t")),
-        category=row.get("category"),
+        category=_strip(row.get("category")),
         military=military,
-        data_source=(row.get("type") or "other"),
-        lat=row.get("lat"),
-        lon=row.get("lon"),
+        data_source=_strip(row.get("type")) or "other",
+        lat=_num(row.get("lat")),
+        lon=_num(row.get("lon")),
         altitude_baro=alt_baro,
         on_ground=on_ground,
-        altitude_geom=row.get("alt_geom"),
-        ground_speed=row.get("gs"),
-        ias=row.get("ias"),
-        tas=row.get("tas"),
-        mach=row.get("mach"),
-        track=row.get("track"),
-        mag_heading=row.get("mag_heading"),
-        true_heading=row.get("true_heading"),
-        baro_rate=row.get("baro_rate"),
-        geom_rate=row.get("geom_rate"),
-        squawk=row.get("squawk"),
-        emergency=row.get("emergency") or "none",
-        wind_direction=row.get("wd"),
-        wind_speed=row.get("ws"),
-        oat=row.get("oat"),
-        tat=row.get("tat"),
-        roll=row.get("roll"),
-        track_rate=row.get("track_rate"),
-        nav_altitude_mcp=row.get("nav_altitude_mcp"),
-        nav_qnh=row.get("nav_qnh"),
-        rssi=row.get("rssi"),
-        distance_nm=row.get("dst"),
-        seen=row.get("seen"),
-        seen_pos=row.get("seen_pos"),
-        messages=row.get("messages"),
+        altitude_geom=_intn(row.get("alt_geom")),
+        ground_speed=_num(row.get("gs")),
+        ias=_num(row.get("ias")),
+        tas=_num(row.get("tas")),
+        mach=_num(row.get("mach")),
+        track=_num(row.get("track")),
+        mag_heading=_num(row.get("mag_heading")),
+        true_heading=_num(row.get("true_heading")),
+        baro_rate=_intn(row.get("baro_rate")),
+        geom_rate=_intn(row.get("geom_rate")),
+        squawk=_strip(row.get("squawk")),
+        emergency=_strip(row.get("emergency")) or "none",
+        wind_direction=_intn(row.get("wd")),
+        wind_speed=_intn(row.get("ws")),
+        oat=_intn(row.get("oat")),
+        tat=_intn(row.get("tat")),
+        roll=_num(row.get("roll")),
+        track_rate=_num(row.get("track_rate")),
+        nav_altitude_mcp=_intn(row.get("nav_altitude_mcp")),
+        nav_qnh=_num(row.get("nav_qnh")),
+        rssi=_num(row.get("rssi")),
+        distance_nm=_num(row.get("dst")),
+        seen=_num(row.get("seen")),
+        seen_pos=_num(row.get("seen_pos")),
+        messages=_intn(row.get("messages")),
         observed_at=observed_at,
     )
 
