@@ -22,13 +22,12 @@ import logging
 import smtplib
 import ssl
 import time
-import zlib
-from collections import Counter
 from datetime import datetime, time as dtime, timedelta
 from email.message import EmailMessage
 from email.utils import formatdate
 from typing import Any, Optional
 
+from . import events as events_store
 from . import settings as settings_store
 from . import webhooks
 from .settings import _connect  # type: ignore[attr-defined]
@@ -43,23 +42,11 @@ _LATEST_KEY = "digest_latest_json"
 # ---------- Aggregation ----------
 
 
-def _decode_snapshot(payload: str) -> Optional[dict[str, Any]]:
-    """feed_snapshots.payload is stored either as plain JSON OR as `Z1` + zlib(JSON).
-    Decoders for both layouts so historical rows still parse."""
-    if not payload:
-        return None
-    try:
-        # Older rows: plain JSON
-        if payload.startswith("{"):
-            return json.loads(payload)
-        # Newer rows: stored as bytes(zlib...) but written to TEXT column → mojibake.
-        # In practice the events module writes the magic prefix as text; treat as bytes.
-        raw = payload.encode("latin-1", errors="ignore")
-        if raw.startswith(b"Z1"):
-            return json.loads(zlib.decompress(raw[2:]).decode("utf-8"))
-    except Exception:
-        return None
-    return None
+# Snapshot decoding is shared with the events module (events._decode_snapshot), which
+# understands both the legacy plain-JSON rows and the current `Z1` + zlib BLOB format.
+# This module previously carried its own copy that only handled `str` payloads — but
+# SQLite returns the compressed snapshot as `bytes`, so that copy silently returned None
+# for every modern row and `peak_concurrent_aircraft` was always 0 (B5).
 
 
 def build_digest(now_ts: Optional[float] = None, window_hours: int = 24) -> dict[str, Any]:
@@ -144,7 +131,7 @@ def build_digest(now_ts: Optional[float] = None, window_hours: int = 24) -> dict
         ).fetchmany(2880)  # 24h at 30s granularity ceiling; LIMIT-by-fetchmany is fine for ring buffer
         peak_aircraft = 0
         for r in snap_rows[::6]:  # every ~6th sample to bound CPU
-            snap = _decode_snapshot(r["payload"])
+            snap = events_store._decode_snapshot(r["payload"])
             if snap and isinstance(snap.get("aircraft"), list):
                 peak_aircraft = max(peak_aircraft, len(snap["aircraft"]))
 
