@@ -208,7 +208,8 @@ def test_import_restores_db_and_invalidates_cache(client, monkeypatch):
     client.post("/piscope/api/settings", json={"theme": "radar"})
 
     r = client.post("/piscope/api/import",
-                    files={"file": ("backup.zip", exp.content, "application/zip")})
+                    files={"file": ("backup.zip", exp.content, "application/zip")},
+                    headers={"X-PiScope-Import": "1"})
     assert r.status_code == 200, r.text
     assert client.get("/piscope/api/settings").json()["theme"] == "nord"
     # The recovery snapshot of the pre-import DB was written.

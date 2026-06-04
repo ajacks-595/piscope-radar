@@ -308,7 +308,11 @@ async def run_digest(*, with_ai: bool = True) -> dict[str, Any]:
         except Exception as exc:
             delivery["webhook"] = f"error: {exc}"
     if settings_store.get("digest_deliver_email"):
-        ok, err = _send_email(text)
+        # _send_email is blocking (smtplib connect + STARTTLS + send, up to a
+        # 15 s timeout). run_digest is awaited on the event loop — from the daily
+        # scheduler AND the "Send test digest" button — so offload it to a worker
+        # thread or the whole server (feed/WS/SSE) freezes for the SMTP duration.
+        ok, err = await asyncio.to_thread(_send_email, text)
         delivery["email"] = "ok" if ok else f"error: {err}"
 
     digest["delivery"] = delivery

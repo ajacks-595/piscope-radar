@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import secrets
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
@@ -77,10 +79,21 @@ async def root() -> RedirectResponse:
 # Read fresh from settings on each request — cheap, and means an admin's
 # `frame_ancestors` change takes effect without restart.
 
-def _csp_header() -> str:
-    """Build the Content-Security-Policy header value from the user's
-    frame_ancestors setting. Defaults to `'self'` (no cross-origin embedding)
-    so a fresh deployment is safe by default."""
+def _csp_header(nonce: Optional[str] = None) -> str:
+    """Build the Content-Security-Policy header value.
+
+    `frame-ancestors` comes from the user's setting (defaults to `'self'` — no
+    cross-origin embedding). `object-src 'none'` + `base-uri 'self'` are cheap,
+    always-safe hardening.
+
+    When a `nonce` is supplied (the dynamically-served `/piscope` HTML) we also
+    emit a real `script-src`: same-origin scripts, the Leaflet CDN, and this
+    response's inline bootstrap (carrying the nonce). No `'unsafe-inline'`, so an
+    injected `<script>` without the per-response nonce won't execute — a CSP
+    backstop behind the app's hand-rolled output escaping. We deliberately do NOT
+    set `default-src`, leaving styles / images / fonts / tiles / WebSocket
+    connections unrestricted (the app pulls map tiles and inline styles from many
+    places); locking those down is a larger, separate change."""
     raw = (settings_store.get("frame_ancestors") or "'self'").strip()
     # The setting is a free-form comma-separated string. Strip whitespace,
     # drop blanks, but otherwise pass tokens through verbatim — the admin
@@ -88,7 +101,14 @@ def _csp_header() -> str:
     tokens = [t.strip() for t in raw.split(",") if t.strip()]
     if not tokens:
         tokens = ["'self'"]
-    return "frame-ancestors " + " ".join(tokens)
+    directives = [
+        "frame-ancestors " + " ".join(tokens),
+        "object-src 'none'",
+        "base-uri 'self'",
+    ]
+    if nonce:
+        directives.append(f"script-src 'self' https://unpkg.com 'nonce-{nonce}'")
+    return "; ".join(directives)
 
 
 # --- Service-worker cache tag (iter 9.4) ------------------------------------
@@ -134,11 +154,19 @@ async def index() -> HTMLResponse:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     for asset in ("themes.css", "app.css", "radar.js", "app.js"):
         html = html.replace(f'"/piscope/static/{asset}"', f'"/piscope/static/{asset}?v={VERSION}"')
+    # Stamp a per-response nonce onto the single inline bootstrap <script> so it's
+    # allowed under the script-src nonce policy. The external scripts (Leaflet CDN,
+    # local radar.js/app.js) match 'self'/host-source and need no nonce; an injected
+    # inline <script> has no nonce and is blocked. There is exactly one bare
+    # "<script>" in index.html (the others are "<script src=...>").
+    nonce = secrets.token_urlsafe(16)
+    html = html.replace("<script>", f'<script nonce="{nonce}">', 1)
     # `no-store` is stronger than `no-cache` — the browser won't keep the HTML at all, so an
     # upgrade always delivers the freshly-versioned asset URLs on the very next navigation.
     return HTMLResponse(html, headers={
         "Cache-Control": "no-store, must-revalidate",
-        "Content-Security-Policy": _csp_header(),
+        "Content-Security-Policy": _csp_header(nonce),
+        "X-Content-Type-Options": "nosniff",
     })
 
 
@@ -165,6 +193,7 @@ async def service_worker() -> Response:
             "Service-Worker-Allowed": "/piscope",
             "Cache-Control": "no-cache",
             "Content-Security-Policy": _csp_header(),
+            "X-Content-Type-Options": "nosniff",
         },
     )
 

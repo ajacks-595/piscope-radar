@@ -19,7 +19,7 @@ from . import insights as insights_store
 from . import records as records_store
 from . import settings as settings_store
 from . import webhooks as webhooks_service
-from ._http import validate_external_url, _BLOCKED_METADATA_HOSTS, LRUCache  # noqa: F401
+from ._http import validate_external_url, validate_external_url_async, _BLOCKED_METADATA_HOSTS, LRUCache  # noqa: F401
 
 
 log = logging.getLogger("piscope.feed")
@@ -696,7 +696,8 @@ class FeedService:
 
     async def test_connection(self, base_url: str) -> dict[str, Any]:
         # resolve=True: user-supplied URL hit on demand from the settings UI.
-        base = validate_external_url(base_url, resolve=True).rstrip("/")
+        # _async so the blocking getaddrinfo doesn't stall the event loop.
+        base = (await validate_external_url_async(base_url, resolve=True)).rstrip("/")
         url = f"{base}/data/aircraft.json"
         async with httpx.AsyncClient(timeout=6.0) as client:
             r = await client.get(url)

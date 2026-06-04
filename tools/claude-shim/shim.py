@@ -37,6 +37,7 @@ SHIM_TIMEOUT_SECONDS     default 60
 """
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -154,7 +155,11 @@ class Handler(BaseHTTPRequestHandler):
         if not BEARER_TOKEN:
             return None
         got = self.headers.get("Authorization", "")
-        if got != f"Bearer {BEARER_TOKEN}":
+        # Constant-time compare — this token guards full Claude Code account
+        # access, so don't leak its length/prefix via early-exit `!=` timing.
+        # Compare as bytes so a non-ASCII Authorization header can't raise.
+        expected = f"Bearer {BEARER_TOKEN}"
+        if not hmac.compare_digest(got.encode("utf-8", "replace"), expected.encode("utf-8")):
             return 401, {"error": "invalid or missing bearer token"}
         return None
 

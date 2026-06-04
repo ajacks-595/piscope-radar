@@ -33,6 +33,9 @@ def temp_db(monkeypatch):
     # Reset insights' in-process known-type ledger so rare-type state doesn't leak between tests.
     from app.services import insights as insights_store
     insights_store._KNOWN_TYPES = None
+    # Reset the global rate-limiter buckets so per-test request counts don't leak.
+    from app.services import ratelimit
+    ratelimit.reset()
     yield path
     try:
         os.unlink(path)

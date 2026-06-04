@@ -70,18 +70,29 @@ def publish(kind: str, *, hex: str, lat: Optional[float] = None,
 async def subscribe(start_after_id: int = 0) -> AsyncIterator[BusEvent]:
     """Async iterator: yield missed events from the ring buffer first (per
     Last-Event-ID semantics), then yield each live event as it arrives. Cleans
-    the subscriber list up on consumer-side cancellation."""
-    # Drain ring-buffer replay first. Done before we attach the subscriber
-    # queue so we can't race against a new publish() landing in both places.
-    for ev in list(_ring):
-        if ev.id > start_after_id:
-            yield ev
+    the subscriber list up on consumer-side cancellation.
 
+    Ordering is deliberate: we attach the live queue BEFORE snapshotting the
+    ring. If we drained the ring first (as this used to), an event published in
+    the gap between the drain and the attach would land in neither and be lost.
+    Attaching first means every post-attach event reaches the queue; we then
+    replay the ring and de-dup by id so an event that lands in both the ring
+    snapshot and the queue is yielded exactly once."""
     q: asyncio.Queue[BusEvent] = asyncio.Queue(maxsize=128)
     _subscribers.append(q)
     try:
+        # Replay the ring (everything newer than the client's Last-Event-ID),
+        # tracking the highest id we replay so the same event arriving on the
+        # queue can be dropped as a duplicate.
+        replayed_through = start_after_id
+        for ev in list(_ring):
+            if ev.id > start_after_id:
+                replayed_through = max(replayed_through, ev.id)
+                yield ev
         while True:
             ev = await q.get()
+            if ev.id <= replayed_through:
+                continue  # already delivered during ring replay
             yield ev
     finally:
         try:

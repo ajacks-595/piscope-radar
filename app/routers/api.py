@@ -30,6 +30,7 @@ from ..services.ai import cloud_api as _cloud_api_provider
 from ..services.ai import claude_cli as _claude_cli_provider
 from ..services import digest as digest_svc
 from ..services import dashboard as dashboard_svc
+from ..services import ratelimit
 from ..services._http import LRUCache, get_client, reset_client
 from ..services.feed import feed_service
 
@@ -37,6 +38,14 @@ from ..services.feed import feed_service
 log = logging.getLogger("piscope.api")
 
 router = APIRouter(prefix="/api")
+
+# Global (process-wide) rate caps for the unauthenticated endpoints that cost
+# real CPU or real money. Generous — interactive use and a dashboard polling
+# every 5 s never trip these; only a scripted flood does. Global rather than
+# per-IP because lighttpd proxies every LAN client from 127.0.0.1, so per-IP
+# would be ineffective here (see services/ratelimit.py).
+_AI_CALLS_PER_MIN = 60            # /api/explain (miss), /api/explain/followup, /api/digest/run
+_DASHBOARD_RECOMPUTES_PER_MIN = 120   # /api/dashboard/summary cache MISSES only
 
 
 # --- Request models (iter 11) -----------------------------------------------
@@ -560,22 +569,48 @@ async def export_db() -> Response:
     )
 
 
+def _deny_attach_authorizer(action: int, arg1, arg2, db_name, source):
+    """SQLite authorizer used during restore. The backup SQL is fully attacker-
+    controlled on this no-auth box (and /api/import is reachable cross-origin via
+    a multipart form — see import_db). `executescript` would happily run
+    `ATTACH DATABASE '/some/path' AS x; ...`, which is a file-write primitive
+    outside the intended DB. Deny ATTACH/DETACH; allow everything a real dump
+    needs (transactions, CREATE TABLE/INDEX, INSERT, PRAGMA)."""
+    if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
 def _build_restore_db(sql: str, tmp_path: Path) -> None:
-    """Execute the backup's SQL dump into a fresh temp DB. Synchronous; threadpool'd."""
+    """Execute the backup's SQL dump into a fresh temp DB. Synchronous; threadpool'd.
+    An authorizer blocks ATTACH/DETACH so a malicious dump can't reach outside the
+    temp file."""
     if tmp_path.exists():
         tmp_path.unlink()
     with sqlite3.connect(tmp_path) as fresh:
-        fresh.executescript(sql)
-        fresh.commit()
+        fresh.set_authorizer(_deny_attach_authorizer)
+        try:
+            fresh.executescript(sql)
+            fresh.commit()
+        finally:
+            fresh.set_authorizer(None)
 
 
 @router.post("/import")
-async def import_db(file: UploadFile = File(...)) -> dict[str, Any]:
+async def import_db(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     """Restore from a PiScope Radar backup .zip (the file produced by /api/export).
 
     Strategy: load the SQL dump into a brand-new SQLite file in a temp location, atomically
     move it over the live DB, and ask the feed service to re-init. Caller should reload the UI.
     """
+    # CSRF hardening. multipart/form-data is a CORS "simple request" — a hostile
+    # page could otherwise auto-submit a <form> that wipes/replaces the whole DB
+    # with no JS, no auth, cross-origin. Requiring a non-safelisted header forces
+    # the browser to send a CORS preflight first, which this no-CORS box never
+    # answers, so cross-origin reaches die at the preflight. Same-origin callers
+    # (the real UI) set the header freely; see static/app.js.
+    if request.headers.get("x-piscope-import", "").strip() != "1":
+        raise HTTPException(status_code=403, detail="Missing X-PiScope-Import header")
     payload = await file.read(20 * 1024 * 1024)   # 20 MB cap; way more than we need
     if not payload:
         raise HTTPException(status_code=400, detail="Empty file")
@@ -683,6 +718,9 @@ async def explain_status() -> dict[str, Any]:
 @router.post("/explain")
 async def explain(body: AircraftBrief) -> dict[str, Any]:
     """Generate a short natural-language brief for one aircraft."""
+    # Bound how fast this unauthenticated endpoint can drive (billed) AI calls.
+    if not ratelimit.allow("ai", limit=_AI_CALLS_PER_MIN, window_s=60.0):
+        raise HTTPException(status_code=429, detail="AI rate limit exceeded; try again shortly")
     if not ai_svc.is_configured():
         raise HTTPException(status_code=503, detail="AI explanations not configured")
     # Model already validated shape + required hex; extra keys dropped. Nones trimmed so
@@ -709,6 +747,8 @@ async def explain_followup(body: FollowupBody) -> dict[str, Any]:
     answer to a follow-up would be more confusing than helpful. Token cost is
     bounded by the `ai_chat_max_turns` setting (default 5 exchanges).
     """
+    if not ratelimit.allow("ai", limit=_AI_CALLS_PER_MIN, window_s=60.0):
+        raise HTTPException(status_code=429, detail="AI rate limit exceeded; try again shortly")
     if not ai_svc.is_configured():
         raise HTTPException(status_code=503, detail="AI explanations not configured")
 
@@ -767,6 +807,10 @@ async def digest_latest() -> dict[str, Any]:
 @router.post("/digest/run")
 async def digest_run() -> dict[str, Any]:
     """Build and deliver a digest right now — used by the "Send test digest" button."""
+    # Digest runs AI commentary + (optionally) SMTP — share the AI spend cap so
+    # this can't be hammered to burn tokens / mailserver connections.
+    if not ratelimit.allow("ai", limit=_AI_CALLS_PER_MIN, window_s=60.0):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded; try again shortly")
     try:
         d = await digest_svc.run_digest(with_ai=True)
         return {"ok": True, "digest": d}
@@ -816,6 +860,15 @@ async def dashboard_summary(
     if cached is not None:
         return JSONResponse(content={"success": True, "data": cached, "error": None},
                             headers={"Cache-Control": "public, max-age=5"})
+
+    # Cache miss → we're about to do the expensive single-pass recompute
+    # (haversine + overhead projection over the whole feed). Cheap cache hits
+    # above don't count; only genuine recomputes do, so an attacker jittering
+    # coords to dodge the cache gets capped while real dashboards (stable coords,
+    # one recompute per 5 s TTL) sail through.
+    if not ratelimit.allow("dashboard_recompute", limit=_DASHBOARD_RECOMPUTES_PER_MIN, window_s=60.0):
+        return JSONResponse(status_code=429,
+                            content={"success": False, "data": None, "error": "rate_limited"})
 
     # Pull live state from feed_service. snapshot() builds full aircraft dicts;
     # we iterate them once to build the summary.

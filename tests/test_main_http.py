@@ -14,7 +14,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 def test_index_default_csp_is_self(client):
     r = client.get("/piscope")
     assert r.status_code == 200
-    assert r.headers.get("content-security-policy") == "frame-ancestors 'self'"
+    csp = r.headers.get("content-security-policy")
+    # frame-ancestors defaults to 'self' (no cross-origin embedding), plus the
+    # always-on hardening directives and a per-response script-src nonce.
+    assert csp.startswith("frame-ancestors 'self'")
+    assert "object-src 'none'" in csp
+    assert "base-uri 'self'" in csp
+    assert "script-src 'self' https://unpkg.com 'nonce-" in csp
 
 
 def test_index_csp_reflects_frame_ancestors_setting(client):

@@ -608,7 +608,7 @@ function updateSidebarRow(row, ac) {
 function badgesFor(ac) {
   const out = [];
   if (ac.military) out.push('<span class="badge mil" title="Military">MIL</span>');
-  if (ac.is_emergency_squawk) out.push(`<span class="badge emg" title="Squawk ${ac.squawk}">EMG</span>`);
+  if (ac.is_emergency_squawk) out.push(`<span class="badge emg" title="Squawk ${escapeHtml(ac.squawk)}">EMG</span>`);
   if (isWatchlisted(ac)) out.push('<span class="badge wch" title="Watchlist">WCH</span>');
   return out.join('');
 }
@@ -3294,7 +3294,9 @@ async function handleDbImport(e) {
   status.textContent = 'Uploading…'; status.className = 'hint';
   const fd = new FormData(); fd.append('file', f);
   try {
-    const res = await fetch(API.importDb, { method: 'POST', body: fd });
+    // X-PiScope-Import marks this as a same-origin request; the server rejects
+    // imports without it so a cross-origin form can't restore over the DB.
+    const res = await fetch(API.importDb, { method: 'POST', headers: { 'X-PiScope-Import': '1' }, body: fd });
     const data = await res.json();
     if (!res.ok) { status.textContent = `Failed: ${data.detail || res.statusText}`; status.className = 'hint err'; return; }
     status.textContent = 'Restored! Reloading…'; status.className = 'hint ok';
@@ -3769,7 +3771,7 @@ function installDropHandler() {
     toast(`Restoring ${f.name}…`);
     const fd = new FormData(); fd.append('file', f);
     try {
-      const res = await fetch(API.importDb, { method: 'POST', body: fd });
+      const res = await fetch(API.importDb, { method: 'POST', headers: { 'X-PiScope-Import': '1' }, body: fd });
       const data = await res.json();
       if (!res.ok) { toast(`Restore failed: ${data.detail || res.statusText}`); return; }
       toast('Restored! Reloading…');
