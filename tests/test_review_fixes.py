@@ -227,21 +227,24 @@ def test_index_csp_has_nonce_and_hardening(client):
     r = client.get("/piscope")
     assert r.status_code == 200
     csp = r.headers.get("content-security-policy", "")
+    # Enforced policy: the always-safe directives only.
     assert "object-src 'none'" in csp
     assert "base-uri 'self'" in csp
     assert "frame-ancestors" in csp
+    assert "script-src" not in csp   # script-src is Report-Only for now
     assert r.headers.get("x-content-type-options") == "nosniff"
-    # script-src must carry a nonce, and that exact nonce must be stamped on the
-    # one inline bootstrap <script>.
-    m = re.search(r"script-src[^;]*'nonce-([A-Za-z0-9_-]+)'", csp)
-    assert m, f"no nonce in script-src: {csp!r}"
+    # script-src ships Report-Only and must carry a nonce; that exact nonce must
+    # be stamped on the one inline bootstrap <script>.
+    ro = r.headers.get("content-security-policy-report-only", "")
+    m = re.search(r"script-src[^;]*'nonce-([A-Za-z0-9_-]+)'", ro)
+    assert m, f"no nonce in report-only script-src: {ro!r}"
     nonce = m.group(1)
     assert f'<script nonce="{nonce}">' in r.text
 
 
 def test_index_csp_nonce_is_per_response(client):
-    n1 = client.get("/piscope").headers["content-security-policy"]
-    n2 = client.get("/piscope").headers["content-security-policy"]
+    n1 = client.get("/piscope").headers["content-security-policy-report-only"]
+    n2 = client.get("/piscope").headers["content-security-policy-report-only"]
     assert n1 != n2, "CSP nonce should be unique per response"
 
 

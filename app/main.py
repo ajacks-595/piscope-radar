@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 
 # Version stamp. Bump whenever you ship a notable user-facing change — the frontend reads
 # this via /piscope/api/version and pops a "✨ What's new" toast on first load after a bump.
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 
 app = FastAPI(title="PiScope Radar", version=VERSION, lifespan=lifespan)
 
@@ -79,21 +79,17 @@ async def root() -> RedirectResponse:
 # Read fresh from settings on each request — cheap, and means an admin's
 # `frame_ancestors` change takes effect without restart.
 
-def _csp_header(nonce: Optional[str] = None) -> str:
-    """Build the Content-Security-Policy header value.
+def _csp_header() -> str:
+    """Build the ENFORCED Content-Security-Policy header value.
 
-    `frame-ancestors` comes from the user's setting (defaults to `'self'` — no
-    cross-origin embedding). `object-src 'none'` + `base-uri 'self'` are cheap,
-    always-safe hardening.
+    Only directives that cannot break a working deployment go here:
+    `frame-ancestors` (from the user's setting; defaults to `'self'` — no
+    cross-origin embedding) plus `object-src 'none'` + `base-uri 'self'`, which
+    are cheap and universally safe. We deliberately do NOT set `default-src`,
+    leaving styles / images / fonts / tiles / WebSocket connections unrestricted.
 
-    When a `nonce` is supplied (the dynamically-served `/piscope` HTML) we also
-    emit a real `script-src`: same-origin scripts, the Leaflet CDN, and this
-    response's inline bootstrap (carrying the nonce). No `'unsafe-inline'`, so an
-    injected `<script>` without the per-response nonce won't execute — a CSP
-    backstop behind the app's hand-rolled output escaping. We deliberately do NOT
-    set `default-src`, leaving styles / images / fonts / tiles / WebSocket
-    connections unrestricted (the app pulls map tiles and inline styles from many
-    places); locking those down is a larger, separate change."""
+    The `script-src` policy is shipped separately, Report-Only — see
+    `_script_csp_report_only`."""
     raw = (settings_store.get("frame_ancestors") or "'self'").strip()
     # The setting is a free-form comma-separated string. Strip whitespace,
     # drop blanks, but otherwise pass tokens through verbatim — the admin
@@ -101,14 +97,25 @@ def _csp_header(nonce: Optional[str] = None) -> str:
     tokens = [t.strip() for t in raw.split(",") if t.strip()]
     if not tokens:
         tokens = ["'self'"]
-    directives = [
+    return "; ".join([
         "frame-ancestors " + " ".join(tokens),
         "object-src 'none'",
         "base-uri 'self'",
-    ]
-    if nonce:
-        directives.append(f"script-src 'self' https://unpkg.com 'nonce-{nonce}'")
-    return "; ".join(directives)
+    ])
+
+
+def _script_csp_report_only(nonce: str) -> str:
+    """The `script-src` policy for the dynamically-served `/piscope` HTML, emitted
+    via `Content-Security-Policy-Report-Only` (NOT enforced) for now.
+
+    `'self'` + the Leaflet CDN + this response's inline bootstrap (carrying the
+    per-response nonce); no `'unsafe-inline'`, so an injected `<script>` without
+    the nonce would be *reported* as a violation. Report-Only because the app's
+    JS hasn't yet been browser-verified under an enforced script-src — shipping it
+    enforced risks breaking the live UI if any source was missed. Watch the
+    browser console on the Pi for a release, then promote this directive into the
+    enforced `_csp_header` (it's wired and tested to flip cleanly)."""
+    return f"script-src 'self' https://unpkg.com 'nonce-{nonce}'"
 
 
 # --- Service-worker cache tag (iter 9.4) ------------------------------------
@@ -165,7 +172,10 @@ async def index() -> HTMLResponse:
     # upgrade always delivers the freshly-versioned asset URLs on the very next navigation.
     return HTMLResponse(html, headers={
         "Cache-Control": "no-store, must-revalidate",
-        "Content-Security-Policy": _csp_header(nonce),
+        "Content-Security-Policy": _csp_header(),
+        # script-src ships Report-Only until verified in a real browser (see
+        # _script_csp_report_only). Promote into the enforced header above after.
+        "Content-Security-Policy-Report-Only": _script_csp_report_only(nonce),
         "X-Content-Type-Options": "nosniff",
     })
 

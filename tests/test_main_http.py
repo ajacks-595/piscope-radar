@@ -15,12 +15,15 @@ def test_index_default_csp_is_self(client):
     r = client.get("/piscope")
     assert r.status_code == 200
     csp = r.headers.get("content-security-policy")
-    # frame-ancestors defaults to 'self' (no cross-origin embedding), plus the
-    # always-on hardening directives and a per-response script-src nonce.
+    # Enforced CSP: frame-ancestors defaults to 'self' (no cross-origin embedding)
+    # plus the always-safe hardening directives. script-src is NOT enforced yet —
+    # it ships Report-Only until browser-verified.
     assert csp.startswith("frame-ancestors 'self'")
     assert "object-src 'none'" in csp
     assert "base-uri 'self'" in csp
-    assert "script-src 'self' https://unpkg.com 'nonce-" in csp
+    assert "script-src" not in csp
+    ro = r.headers.get("content-security-policy-report-only")
+    assert "script-src 'self' https://unpkg.com 'nonce-" in ro
 
 
 def test_index_csp_reflects_frame_ancestors_setting(client):
@@ -37,9 +40,9 @@ def test_sw_js_cache_tag_rewritten(client):
     assert r.status_code == 200
     body = r.text
     # The literal placeholder must have been replaced with the content-hash tag,
-    # which embeds the current version (1_5_0).
+    # which embeds the current version (1_5_1).
     assert "piscope-shell-rewritten" not in body
-    assert "piscope-shell-1_5_0-" in body
+    assert "piscope-shell-1_5_1-" in body
     assert r.headers.get("service-worker-allowed") == "/piscope"
 
 
