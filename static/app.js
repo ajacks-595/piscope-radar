@@ -3481,7 +3481,7 @@ async function loadEvents(tab) {
       <span class="ev-kind ${escapeHtml(ev.kind)}">${escapeHtml(ev.kind)}</span>
       <span class="ev-info">
         <span class="callsign">${escapeHtml(ev.callsign || ev.registration || ev.hex || '—')}</span>
-        <span class="meta">${escapeHtml(ev.registration || ev.hex || '')}${ev.payload?.altitude ? ` · ${ev.payload.altitude} ft` : ''}${ev.payload?.squawk ? ` · sq ${ev.payload.squawk}` : ''}</span>
+        <span class="meta">${escapeHtml(ev.registration || ev.hex || '')}${ev.payload?.altitude ? ` · ${escapeHtml(ev.payload.altitude)} ft` : ''}${ev.payload?.squawk ? ` · sq ${escapeHtml(ev.payload.squawk)}` : ''}</span>
       </span>
       <span class="ev-distance">${ev.distance_nm != null ? ev.distance_nm.toFixed(0) + ' nm' : '—'}</span>
     `;
