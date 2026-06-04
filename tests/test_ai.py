@@ -72,6 +72,32 @@ def test_cloud_api_vendor_defaults(temp_db):
     assert cloud_api.is_configured() is True
 
 
+def test_ai_provider_urls_reject_link_local_keep_lan(temp_db):
+    # S4: user-set provider URLs go through the SSRF guard — link-local/metadata blocked,
+    # LAN and loopback still allowed (Ollama/shim commonly run on a LAN box or same host).
+    from app.services import settings as s
+    from app.services.ai import ollama, claude_cli
+
+    s.set_many({"ollama_enabled": True, "ollama_url": "http://169.254.169.254:11434"})
+    assert ollama.is_configured() is False
+    s.set_one("ollama_url", "http://10.0.0.5:11434")
+    assert ollama.is_configured() is True
+
+    s.set_many({"claude_cli_enabled": True, "claude_cli_url": "http://169.254.169.254:8090"})
+    assert claude_cli.is_configured() is False
+    s.set_one("claude_cli_url", "http://127.0.0.1:8090")   # loopback intentionally allowed
+    assert claude_cli.is_configured() is True
+
+
+def test_ollama_ping_reports_blocked_url(temp_db):
+    import asyncio
+    from app.services import settings as s
+    from app.services.ai import ollama
+    s.set_many({"ollama_enabled": True, "ollama_url": "http://169.254.169.254"})
+    res = asyncio.run(ollama.ping())   # returns before any network call
+    assert res["ok"] is False and "blocked" in res["error"].lower()
+
+
 def test_explain_cache_roundtrip():
     from app.services.ai import _common
     _common.cache_clear()

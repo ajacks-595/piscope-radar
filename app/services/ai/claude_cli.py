@@ -28,7 +28,7 @@ import logging
 from typing import Any, Optional
 
 from .. import settings as settings_store
-from .._http import get_client
+from .._http import get_client, validate_external_url
 
 
 log = logging.getLogger("piscope.ai.claude_cli")
@@ -46,17 +46,31 @@ def _headers() -> dict[str, str]:
     return h
 
 
-def is_configured() -> bool:
-    if not bool(settings_store.get("claude_cli_enabled")):
-        return False
+def _validated_url() -> Optional[str]:
+    """Configured shim URL, or None if unset / wrong-scheme / blocked (link-local or
+    cloud-metadata). LAN and loopback stay allowed — the shim usually runs on a LAN box."""
     url = _url()
-    return url.startswith(("http://", "https://"))
+    if not url.startswith(("http://", "https://")):
+        return None
+    try:
+        validate_external_url(url)
+    except ValueError:
+        return None
+    return url
+
+
+def is_configured() -> bool:
+    return bool(settings_store.get("claude_cli_enabled")) and _validated_url() is not None
 
 
 async def ping() -> dict[str, Any]:
     url = _url()
     if not url.startswith(("http://", "https://")):
         return {"ok": False, "error": "URL must start with http:// or https://"}
+    try:
+        validate_external_url(url)
+    except ValueError as exc:
+        return {"ok": False, "error": f"URL blocked: {exc}"}
     try:
         client = await get_client()
         r = await client.get(f"{url}/health", headers=_headers(), timeout=8.0)
@@ -77,8 +91,8 @@ async def ping() -> dict[str, Any]:
 
 async def generate(prompt: str, *, num_predict: int = 360, temperature: float = 0.5) -> Optional[str]:
     """Single-shot call to the shim. Returns text or None."""
-    url = _url()
-    if not url.startswith(("http://", "https://")):
+    url = _validated_url()
+    if url is None:
         return None
     try:
         client = await get_client()
