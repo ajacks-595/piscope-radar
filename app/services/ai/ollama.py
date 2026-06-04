@@ -11,16 +11,28 @@ import logging
 from typing import Any, Optional
 
 from .. import settings as settings_store
-from .._http import get_client
+from .._http import get_client, validate_external_url
 
 
 log = logging.getLogger("piscope.ai.ollama")
 
 
+def _validated_url() -> Optional[str]:
+    """Configured Ollama base URL (trailing slash trimmed), or None if it's unset, the wrong
+    scheme, or points at a blocked address. The SSRF guard rejects link-local / cloud-metadata
+    while still allowing LAN and loopback — Ollama commonly runs on a LAN box or the same host."""
+    url = (settings_store.get("ollama_url") or "").strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        return None
+    try:
+        validate_external_url(url)
+    except ValueError:
+        return None
+    return url
+
+
 def is_configured() -> bool:
-    url = (settings_store.get("ollama_url") or "").strip()
-    enabled = bool(settings_store.get("ollama_enabled"))
-    return enabled and url.startswith(("http://", "https://"))
+    return bool(settings_store.get("ollama_enabled")) and _validated_url() is not None
 
 
 async def ping() -> dict[str, Any]:
@@ -28,6 +40,10 @@ async def ping() -> dict[str, Any]:
     model = (settings_store.get("ollama_model") or "").strip()
     if not url.startswith(("http://", "https://")):
         return {"ok": False, "error": "URL must start with http:// or https://"}
+    try:
+        validate_external_url(url)
+    except ValueError as exc:
+        return {"ok": False, "error": f"URL blocked: {exc}"}
     try:
         client = await get_client()
         r = await client.get(f"{url.rstrip('/')}/api/tags", timeout=5.0)
@@ -52,7 +68,9 @@ async def generate(prompt: str, *, num_predict: int = 360, temperature: float = 
     Gemma 4 family, harmless for older models. `think: false` keeps reasoning
     models from burning the predict budget on internal monologue.
     """
-    url = (settings_store.get("ollama_url") or "").strip().rstrip("/")
+    url = _validated_url()
+    if url is None:
+        return None
     model = (settings_store.get("ollama_model") or "gemma4:latest").strip()
     body = {
         "model": model,
