@@ -1357,3 +1357,7 @@ html[data-embed][data-embed-expand="1"] .embed-expand-link { display: inline-blo
 .ana-badge { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 4px; vertical-align: middle; }
 .ana-badge.new { background: var(--accent); color: var(--bg, #000); }
 .ana-badge.mil { background: var(--band-emergency, #ff3030); color: #fff; }
+
+/* Sparse column charts (e.g. 24h view with 3 hours of data): cap column width so
+   a handful of bars doesn't stretch to fill the whole chart. */
+.col-chart .col { max-width: 56px; }

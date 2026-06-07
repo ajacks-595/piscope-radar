@@ -168,10 +168,14 @@ def classify_sighting(row: dict[str, Any]) -> list[dict[str, str]]:
 _MILITARY_RULES = {"military_db_flag", "military_hex_range", "military_callsign"}
 
 
-def _candidate_filter() -> tuple[str, list[Any]]:
-    """SQL OR-filter selecting every sighting that COULD match a rule, so the
-    Python classification pass only touches candidates. Mirrors
-    classify_sighting — keep the two in sync when adding rules."""
+def military_where() -> tuple[str, list[Any]]:
+    """SQL filter for military/government sightings: live dbFlags bit OR a hex
+    allocation range OR a military callsign prefix. Unlike the unusual rules,
+    this SQL is EXACT (not a superset) — fixed-width lowercase hex sorts like
+    its numeric value, and the GLOB+IN prefix test matches classify_sighting's
+    logic precisely — so analytics.overview uses it directly for the military
+    totals chip, keeping the chip and the notable panel counting the same
+    aircraft by construction."""
     ors = ["military = 1"]
     params: list[Any] = []
     for r in _RULES["military_hex_ranges"]:
@@ -183,6 +187,15 @@ def _candidate_filter() -> tuple[str, list[Any]]:
         ors.append(f"(substr(callsign, 1, 3) IN ({marks}) "
                    "AND callsign GLOB '[A-Z][A-Z][A-Z][0-9]*')")
         params.extend(prefixes)
+    return "(" + " OR ".join(ors) + ")", params
+
+
+def _candidate_filter() -> tuple[str, list[Any]]:
+    """SQL OR-filter selecting every sighting that COULD match a rule, so the
+    Python classification pass only touches candidates. Mirrors
+    classify_sighting — keep the two in sync when adding rules."""
+    mil_sql, params = military_where()
+    ors = [mil_sql]
     u = _RULES["unusual"]
     if u["helicopter"]:
         helis = sorted(categorize.types_for_category("helicopter"))

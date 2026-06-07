@@ -505,12 +505,23 @@ def overview(range_key: str) -> dict[str, Any]:
         }
 
         # --- totals ---
-        uniq, mil_uniq = conn.execute(
-            "SELECT COUNT(DISTINCT hex), "
-            "COUNT(DISTINCT CASE WHEN military = 1 THEN hex END) "
-            f"FROM aircraft_sightings WHERE {sight_where}",
+        uniq = conn.execute(
+            f"SELECT COUNT(DISTINCT hex) FROM aircraft_sightings WHERE {sight_where}",
             sight_params,
-        ).fetchone()
+        ).fetchone()[0]
+        # Military counted with the SAME classification the notable panel uses
+        # (dbFlags bit OR hex-allocation range OR callsign-prefix rules), so the
+        # chip and the panel can never disagree — counting only the dbFlags bit
+        # here read 0 while the panel showed four C-17s/A330s whose feeds don't
+        # set dbFlags. Lazy import: notable imports this module's window helpers
+        # at module level, so importing it at call time avoids the cycle.
+        from . import notable as notable_rules
+        mil_where, mil_params = notable_rules.military_where()
+        mil_uniq = conn.execute(
+            "SELECT COUNT(DISTINCT hex) FROM aircraft_sightings "
+            f"WHERE {sight_where} AND {mil_where}",
+            [*sight_params, *mil_params],
+        ).fetchone()[0]
         if since_ts is None:
             ev_rows = conn.execute(
                 "SELECT kind, COUNT(*) AS n FROM events GROUP BY kind").fetchall()
