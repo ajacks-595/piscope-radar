@@ -69,19 +69,72 @@ def test_buffer_creates_and_merges_sighting_rows(temp_db):
     assert row["max_gs"] == 400.0
     assert row["max_range_nm"] == 50.0 and row["min_range_nm"] == 50.0
 
-    # Second flush: extremes widen, polls accumulate, None never erases a value.
-    buf.observe_poll([_ac(altitude_baro=30000, ground_speed=250.0, distance_nm=120.0)],
+    # Second flush: extremes widen (frame-continuous steps — the spike gate
+    # ignores jumps > 5,000 ft/poll), polls accumulate, None never erases a value.
+    buf.observe_poll([_ac(altitude_baro=14000, ground_speed=250.0, distance_nm=120.0)],
                      ts + 10)
-    buf.observe_poll([_ac(altitude_baro=2000, distance_nm=5.0)], ts + 20)
+    buf.observe_poll([_ac(altitude_baro=9500, distance_nm=5.0)], ts + 20)
     _flush(buf)
     row = _rows("SELECT * FROM aircraft_sightings")[0]
     assert row["polls"] == 3
     assert row["callsign"] == "BAW123"           # COALESCE kept the stored value
-    assert row["max_alt"] == 30000 and row["min_alt"] == 2000
+    assert row["max_alt"] == 14000 and row["min_alt"] == 9500
     assert row["max_gs"] == 400.0
     assert row["max_range_nm"] == 120.0 and row["min_range_nm"] == 5.0
     assert row["first_ts"] == pytest.approx(ts)
     assert row["last_ts"] == pytest.approx(ts + 20)
+
+
+def test_buffer_rejects_implausible_extremes(temp_db):
+    """A single garbage frame (decode glitch) must never poison a sighting's
+    min/max — observed live: an A319 'at' 72,000 ft, an ATR 'doing' 1,885 kts."""
+    buf = SightingsBuffer()
+    ts = time.time()
+    buf.observe_poll([_ac(altitude_baro=37000, ground_speed=450.0, distance_nm=80.0)], ts)
+    buf.observe_poll([_ac(altitude_baro=90800, ground_speed=1885.4, distance_nm=4000.0)], ts + 2)
+    _flush(buf)
+    row = _rows("SELECT max_alt, max_gs, max_range_nm FROM aircraft_sightings")[0]
+    assert row["max_alt"] == 37000
+    assert row["max_gs"] == 450.0
+    assert row["max_range_nm"] == 80.0
+
+
+def test_buffer_altitude_spike_gate(temp_db):
+    """In-envelope single-frame spikes (live example: A339 'at' 46,675 ft) must
+    not register as extremes; the gate self-heals within one frame."""
+    buf = SightingsBuffer()
+    ts = time.time()
+    buf.observe_poll([_ac(altitude_baro=37000)], ts)
+    buf.observe_poll([_ac(altitude_baro=46675)], ts + 2)   # spike — gated
+    buf.observe_poll([_ac(altitude_baro=37200)], ts + 4)   # lag frame (vs spike) — gated
+    buf.observe_poll([_ac(altitude_baro=37400)], ts + 6)   # continuous again — accepted
+    _flush(buf)
+    row = _rows("SELECT max_alt FROM aircraft_sightings")[0]
+    assert row["max_alt"] == 37400                          # never 46675
+
+    # Coverage gap: extremes lag exactly one frame, then catch up.
+    buf2 = SightingsBuffer()
+    buf2.observe_poll([_ac("bbb222", altitude_baro=10000)], ts)
+    buf2.observe_poll([_ac("bbb222", altitude_baro=25000)], ts + 600)  # gap jump — gated
+    buf2.observe_poll([_ac("bbb222", altitude_baro=25100)], ts + 602)  # accepted
+    _flush(buf2)
+    row = _rows("SELECT max_alt FROM aircraft_sightings WHERE hex='bbb222'")[0]
+    assert row["max_alt"] == 25100
+
+
+def test_records_reject_implausible_extremes(temp_db):
+    from app.services import records as records_store
+    legit = _ac("aaa111", altitude_baro=41000, ground_speed=520.0, distance_nm=200.0)
+    junk = _ac("bbb222", altitude_baro=126500, ground_speed=1885.4, distance_nm=3000.0)
+    records_store.update_records_bulk([legit, junk])
+    recs = {r["category"]: r for r in records_store.all_records()}
+    assert recs["highest"]["value"] == 41000
+    assert recs["fastest"]["value"] == 520.0
+    assert recs["longest_range"]["value"] == 200.0
+    # Direct (non-bulk) path applies the same envelope.
+    records_store.update_records(junk)
+    recs = {r["category"]: r for r in records_store.all_records()}
+    assert recs["highest"]["value"] == 41000
 
 
 def test_buffer_min_alt_floor_and_ground_skip(temp_db):

@@ -33,6 +33,8 @@ const API = {
   heatmap: '/piscope/api/heatmap?top=3000',
   leaderboard: '/piscope/api/leaderboard?limit=30',
   analytics: (range) => `/piscope/api/analytics?range=${encodeURIComponent(range)}`,
+  analyticsNotable: (range) => `/piscope/api/analytics/notable?range=${encodeURIComponent(range)}`,
+  analyticsReturning: (range) => `/piscope/api/analytics/returning?range=${encodeURIComponent(range)}&min_days=2`,
   notes: (hex) => `/piscope/api/notes/${encodeURIComponent(hex)}`,
   webhooks: '/piscope/api/webhooks',
   webhookTest: '/piscope/api/webhooks/test',
@@ -3151,16 +3153,69 @@ function _anaChip(label, value, title = '') {
   return `<div class="ana-chip" title="${escapeHtml(title)}"><span class="chip-value">${value}</span><span class="chip-label">${escapeHtml(label)}</span></div>`;
 }
 
+function _anaName(x) {
+  return escapeHtml(x.callsign || x.registration || (x.hex || '').toUpperCase() || '—');
+}
+
+function _anaNotableList(entries, emptyText) {
+  if (!entries || !entries.length) return `<p class="hint">${escapeHtml(emptyText)}</p>`;
+  return `<ul class="notable-list">${entries.slice(0, 12).map((e) => {
+    const chips = (e.reasons || []).map((r) => `<span class="reason-chip" title="rule: ${escapeHtml(r.rule)}">${escapeHtml(r.label)}</span>`).join('');
+    const type = e.type_code ? ` <code>${escapeHtml(e.type_code)}</code>` : '';
+    const when = e.last_seen ? new Date(e.last_seen * 1000).toLocaleString() : '—';
+    return `<li><div class="notable-head"><strong>${_anaName(e)}</strong>${type}<span class="hint" style="margin-left:auto">${escapeHtml(when)}</span></div><div class="notable-chips">${chips}</div></li>`;
+  }).join('')}</ul>`;
+}
+
+function _anaEmergencies(list) {
+  if (!list || !list.length) return '<p class="hint">No emergency squawks in this window. Good.</p>';
+  return `<ul class="ana-records">${list.slice(0, 8).map((e) => {
+    const sq = e.squawk ? ` squawk <code>${escapeHtml(e.squawk)}</code>` : '';
+    return `<li>🚨 <strong>${_anaName(e)}</strong>${sq} — ${new Date(e.ts * 1000).toLocaleString()}</li>`;
+  }).join('')}</ul>`;
+}
+
+function _anaReturning(data) {
+  const list = (data && data.aircraft) || [];
+  if (!list.length) {
+    return '<p class="hint">Nothing seen on 2+ distinct days yet — this fills in as the sighting ledger accumulates history.</p>';
+  }
+  const rows = list.slice(0, 20).map((r) => `
+    <tr>
+      <td><code>${escapeHtml((r.hex || '').toUpperCase())}</code></td>
+      <td>${_anaName(r)}${r.is_new ? ' <span class="ana-badge new" title="Became a returning visitor in this window">NEW</span>' : ''}${r.military ? ' <span class="ana-badge mil">MIL</span>' : ''}</td>
+      <td>${escapeHtml(r.type_code || '—')}</td>
+      <td>${r.days_seen}</td>
+      <td>${r.first_seen ? new Date(r.first_seen * 1000).toLocaleDateString() : '—'}</td>
+      <td>${r.last_seen ? new Date(r.last_seen * 1000).toLocaleString() : '—'}</td>
+    </tr>`).join('');
+  return `<table class="stats-table"><thead><tr><th>Hex</th><th>Aircraft</th><th>Type</th><th>Days</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function _fetchJsonOrNull(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) { return null; }
+}
+
 async function renderAnalytics() {
   const body = document.getElementById('analytics-body');
   const caption = document.getElementById('analytics-caption');
   if (!body) return;
   body.innerHTML = '<div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div>';
-  let d;
+  let d, notable, returning;
   try {
-    const r = await fetch(API.analytics(analyticsRange));
+    const [r, nt, rt] = await Promise.all([
+      fetch(API.analytics(analyticsRange)),
+      _fetchJsonOrNull(API.analyticsNotable(analyticsRange)),
+      _fetchJsonOrNull(API.analyticsReturning(analyticsRange)),
+    ]);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     d = await r.json();
+    notable = nt;
+    returning = rt;
   } catch (e) {
     body.innerHTML = `<p class="hint" style="color:var(--alert)">Failed to load analytics: ${escapeHtml(e.message)}</p>`;
     if (caption) caption.textContent = '';
@@ -3263,6 +3318,17 @@ async function renderAnalytics() {
       }).join('')}</ul>`
     : '<p class="hint">No all-time records broken in this window. See the Records tab for the standing bests.</p>';
 
+  // --- notable + returning (phase 3 — rule matches + multi-day visitors) -----
+  const notableHtml = notable ? `
+    <div class="ana-grid2">
+      <div class="ana-section"><h4>Military / government</h4>${_anaNotableList(notable.military, 'No military or government contacts matched in this window.')}</div>
+      <div class="ana-section"><h4>Unusual</h4>${_anaNotableList(notable.unusual, 'Nothing unusual matched in this window.')}</div>
+    </div>
+    <div class="ana-section"><h4>Emergency squawks</h4>${_anaEmergencies(notable.emergencies)}</div>`
+    : '<p class="hint">Notable-aircraft data unavailable.</p>';
+  const returningHtml = `
+    <div class="ana-section"><h4>Returning aircraft (2+ distinct days, active in window)</h4>${_anaReturning(returning)}</div>`;
+
   body.innerHTML = `
     <div class="ana-chips">${chips}</div>
     <div class="ana-section"><h4>${trafficTitle}</h4>${trafficChart}</div>
@@ -3275,6 +3341,8 @@ async function renderAnalytics() {
       <div class="ana-section"><h4>Altitude bands (observation-weighted)</h4>${bandBars}</div>
       <div class="ana-section"><h4>Range distribution (per-aircraft best, nm)</h4>${histBars}${rangeNote}</div>
     </div>
+    ${notableHtml}
+    ${returningHtml}
     <div class="ana-section"><h4>Records broken in window</h4>${recordsHtml}</div>
   `;
 }

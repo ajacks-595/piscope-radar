@@ -23,6 +23,7 @@ from fastapi import UploadFile, File
 
 from ..services import adsbdb, events as events_store, flightaware, hexdb, insights as insights_store, planespotters
 from ..services import analytics as analytics_store
+from ..services import notable as notable_store
 from ..services import records as records_store
 from ..services import settings as settings_store
 from ..services import ai as ai_svc
@@ -356,6 +357,44 @@ async def analytics_overview(range: str = "7d") -> dict[str, Any]:  # noqa: A002
         return analytics_store.overview(range)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/analytics/notable")
+async def analytics_notable(range: str = "7d", limit: int = 80) -> dict[str, Any]:  # noqa: A002
+    """Military/government + unusual aircraft in the window (rule matches from
+    app/data/notable_rules.json, each with human-readable reasons) plus
+    emergency-squawk events from the events pipeline."""
+    try:
+        since = notable_store.window_since(range)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return notable_store.notable_in_window(since, limit=limit)
+
+
+@router.get("/analytics/returning")
+async def analytics_returning(range: str = "7d", min_days: int = 2,  # noqa: A002
+                              limit: int = 100) -> dict[str, Any]:
+    """Aircraft seen on ≥ min_days distinct days (whole retained ledger) that were
+    active in the window. `is_new` flags ones that became returning during it."""
+    try:
+        since = notable_store.window_since(range)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"aircraft": notable_store.returning_in_window(since, min_days=min_days, limit=limit),
+            "min_days": max(2, min(int(min_days or 2), 365))}
+
+
+@router.get("/analytics/rules")
+async def analytics_rules() -> dict[str, Any]:
+    """The active notable-aircraft rule set (validated view of
+    app/data/notable_rules.json). Read-only by design — this box has no auth,
+    so rule edits happen on disk, not over the wire."""
+    from ..services import categorize
+    return {
+        "rules": notable_store.rules(),
+        "source": "app/data/notable_rules.json",
+        "helicopter_types": sorted(categorize.types_for_category("helicopter")),
+    }
 
 
 # --- Webhooks management ----------------------------------------------------

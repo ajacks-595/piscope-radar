@@ -1343,3 +1343,17 @@ html[data-embed][data-embed-expand="1"] .embed-expand-link { display: inline-blo
 
 /* Records-broken list */
 .ana-records { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+
+/* Notable + returning aircraft (iteration 12, phase 3) */
+.notable-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.notable-list li { border: 1px solid var(--separator); border-radius: 6px; padding: 6px 10px; font-size: 12px; }
+.notable-head { display: flex; align-items: baseline; gap: 6px; }
+.notable-head code { font-family: var(--font-mono); color: var(--secondary-text); }
+.notable-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.reason-chip {
+  font-size: 10px; padding: 1px 7px; border-radius: 8px;
+  background: var(--separator); color: var(--primary-text); white-space: nowrap;
+}
+.ana-badge { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 4px; vertical-align: middle; }
+.ana-badge.new { background: var(--accent); color: var(--bg, #000); }
+.ana-badge.mil { background: var(--band-emergency, #ff3030); color: #fff; }

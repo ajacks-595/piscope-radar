@@ -1,0 +1,52 @@
+{
+  "_meta": {
+    "schema_version": 1,
+    "description": "Notable-aircraft classification rules, evaluated by app/services/notable.py over the aircraft_sightings ledger. Everything here is meant to be edited — add ranges/prefixes for your local traffic, tune the unusual thresholds, then restart the service (or hit reload in a future admin endpoint). GET /api/analytics/rules shows the active set.",
+    "_notes": {
+      "military_hex_ranges": "ICAO 24-bit allocation blocks operated by military/government. Six lowercase hex digits, inclusive. This curated set is deliberately conservative — the live `military` flag from tar1090's aircraft DB (dbFlags) remains the PRIMARY military signal and these ranges are a transparent, extensible fallback for contacts that database misses.",
+      "military_callsign_prefixes": "3-letter ICAO callsign designators flown by military/government operators. Keys must be exactly three uppercase letters; values are display labels.",
+      "emergency_squawks": "7500/7600/7700 are handled by the live events pipeline (events.py fires + stores them as they happen, including the squawk in the payload) — they surface in the notable view from there, not from this file.",
+      "unusual": "Thresholds for the 'unusual' bucket. low_altitude uses the sighting's min_alt, which already excludes on-ground reports and carries a >500 ft floor against spurious ground squitters, so low_alt_max_ft means 'sustained genuinely-airborne low flight'. no_callsign_min_polls filters transient mode-S echoes — only contacts tracked for at least this many poll cycles (150 ≈ 5 min at the default 2 s interval) count as deliberate no-callsign. no_callsign_ignore_commercial additionally skips airframes categorized 'commercial' in type_categories.json: an airliner with no decoded ident is almost always a fringe-of-coverage reception artifact (ident messages are sent less often than position), not an anomaly."
+    }
+  },
+  "military_hex_ranges": [
+    { "start": "ae0000", "end": "afffff", "label": "United States (DoD allocation)" },
+    { "start": "43c000", "end": "43cfff", "label": "United Kingdom (military)" },
+    { "start": "7cf800", "end": "7cfaff", "label": "Australia (military)" }
+  ],
+  "military_callsign_prefixes": {
+    "RRR": "Royal Air Force (Ascot)",
+    "RFR": "Royal Air Force (Rafair)",
+    "SHF": "Royal Air Force (Vortex)",
+    "NVY": "Royal Navy",
+    "KRF": "UK Royal / VIP flight (Kittyhawk)",
+    "RCH": "USAF Air Mobility Command (Reach)",
+    "CNV": "US Navy (Convoy)",
+    "PAT": "US Army Priority Air Transport",
+    "CFC": "Canadian Forces (Canforce)",
+    "GAF": "German Air Force",
+    "BAF": "Belgian Air Force",
+    "AYB": "Belgian Army",
+    "FAF": "French Air Force",
+    "CTM": "French military transport (Cotam)",
+    "FNY": "French Navy",
+    "IAM": "Italian Air Force",
+    "PLF": "Polish Air Force",
+    "DAF": "Danish Air Force",
+    "SVF": "Swedish Armed Forces",
+    "NOW": "Royal Norwegian Air Force",
+    "NAF": "Royal Netherlands Air Force",
+    "MMF": "NATO MRTT Unit (Multi)",
+    "AME": "Spanish Air Force",
+    "HUF": "Hungarian Air Force",
+    "ROF": "Romanian Air Force",
+    "ASY": "Royal Australian Air Force (Aussie)"
+  },
+  "unusual": {
+    "helicopter": true,
+    "low_alt_max_ft": 2000,
+    "high_alt_min_ft": 45000,
+    "no_callsign_min_polls": 150,
+    "no_callsign_ignore_commercial": true
+  }
+}

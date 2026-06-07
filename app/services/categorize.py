@@ -99,6 +99,12 @@ def is_emergency(ac: dict[str, Any]) -> bool:
     return False
 
 
+def types_for_category(category: str) -> set[str]:
+    """All type_codes mapped to `category` — e.g. the helicopter set used by the
+    notable-aircraft rules to pre-filter sightings in SQL."""
+    return {code for code, cat in _TABLE.items() if cat == category}
+
+
 def reload_table() -> int:
     """Re-read the categories file from disk. Returns the number of entries
     loaded. Useful for an admin endpoint or interactive editing."""
