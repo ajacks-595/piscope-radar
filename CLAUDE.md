@@ -64,8 +64,10 @@ When asked to review for bugs, vulnerabilities, or code quality:
 Self-hosted ADS-B flight tracker for a Raspberry Pi. Sits alongside `tar1090` / PiAware,
 serves a polished LAN web UI on `http://<pi>/piscope`: live map with Leaflet, themed radar
 sweep, detail panel with route + photo + AI brief, events log, polar coverage diagram,
-heatmap, webhooks, replay, PWA install. No auth — LAN-only by design. Currently
-`VERSION = "1.5.0"` (see `app/main.py`), tagged `v1.5.0`.
+heatmap, historical analytics (traffic patterns, operators, notable/returning aircraft,
+weekly Mattermost-ready summary), webhooks, replay, PWA install. No auth — LAN-only by
+design. Currently `VERSION = "1.6.0"` (see `app/main.py`); latest tag `v1.5.0` — converges
+at next `main` promotion.
 
 ## Architecture & tech stack
 
@@ -139,7 +141,8 @@ app/
     events.py              # Event log (military/emergency/watchlist/rare)
     insights.py            # Polar coverage, heatmap, leaderboard, notes
     records.py             # All-time records + bookmarks
-    webhooks.py            # Discord/Slack/ntfy/generic fan-out
+    webhooks.py            # Discord/Slack/Mattermost/ntfy/generic fan-out
+    notable.py             # Notable-aircraft rules engine (app/data/notable_rules.json)
     backups.py             # Daily DB snapshot
     flightaware.py         # FA AeroAPI client + monthly budget tracker
     hexdb.py adsbdb.py planespotters.py   # Enrichment clients

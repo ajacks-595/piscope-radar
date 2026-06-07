@@ -1,10 +1,16 @@
 """Outbound webhook fan-out for events (military / emergency / watchlist / rare) plus
-the receiver-health system events (feed_down / feed_recovered).
+the receiver-health system events (feed_down / feed_recovered) and the daily/weekly
+digests.
 
 Configured by the user as a JSON list in the `webhooks_json` setting. Each entry:
-    { "kind": "discord" | "slack" | "ntfy" | "generic",
+    { "kind": "discord" | "slack" | "mattermost" | "ntfy" | "generic",
       "url": "https://...",
-      "types": ["emergency", "military", "watchlist", "rare", "feed_down", "feed_recovered"] }
+      "types": ["emergency", "military", "watchlist", "rare",
+                "feed_down", "feed_recovered", "digest", "weekly_digest"] }
+
+Mattermost incoming webhooks accept the Slack payload shape ({"text": ...}), so the
+two kinds share a body builder — the separate kind exists so the Settings dropdown
+is self-documenting.
 
 Posts run via `fire_and_forget` so the feed loop never blocks waiting on a third party.
 """
@@ -30,9 +36,12 @@ def _format_text(kind: str, ac: dict[str, Any]) -> str:
     if kind in ("feed_down", "feed_recovered"):
         label = "📡 Receiver offline" if kind == "feed_down" else "✅ Receiver back online"
         return f"{label}: {ac.get('message', '(no detail)')} at {when}"
-    # Daily digest — payload's `message` is the already-rendered text body.
+    # Digests — payload's `message` is the already-rendered text body. The weekly
+    # renderer includes its own header line, so it passes through verbatim.
     if kind == "digest":
         return f"📋 PiScope Daily Digest ({when})\n\n{ac.get('message', '(empty digest)')}"
+    if kind == "weekly_digest":
+        return ac.get("message", "(empty weekly digest)")
     name = ac.get("display_name") or ac.get("hex", "?")
     type_code = ac.get("type_code") or "?"
     dist = ac.get("distance_nm")
@@ -56,7 +65,8 @@ def _body_for(kind_endpoint: str, message: str, ac: dict[str, Any]) -> tuple[str
     """Return (content_type, body_dict) tailored to the endpoint flavour."""
     if kind_endpoint == "discord":
         return "application/json", {"content": message}
-    if kind_endpoint == "slack":
+    if kind_endpoint in ("slack", "mattermost"):
+        # Mattermost incoming webhooks are Slack-payload-compatible.
         return "application/json", {"text": message}
     if kind_endpoint == "ntfy":
         # ntfy uses plain text in the body and headers for title/tags.

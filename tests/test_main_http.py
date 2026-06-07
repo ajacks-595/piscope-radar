@@ -36,13 +36,14 @@ def test_index_csp_reflects_frame_ancestors_setting(client):
 
 
 def test_sw_js_cache_tag_rewritten(client):
+    from app.main import VERSION
     r = client.get("/piscope/sw.js")
     assert r.status_code == 200
     body = r.text
     # The literal placeholder must have been replaced with the content-hash tag,
-    # which embeds the current version (1_5_1).
+    # which embeds the running version (derived, so version bumps can't break this).
     assert "piscope-shell-rewritten" not in body
-    assert "piscope-shell-1_5_1-" in body
+    assert f"piscope-shell-{VERSION.replace('.', '_')}-" in body
     assert r.headers.get("service-worker-allowed") == "/piscope"
 
 

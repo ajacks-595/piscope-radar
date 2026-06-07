@@ -406,7 +406,7 @@ async def analytics_rules() -> dict[str, Any]:
 # which silently disabled receiver-offline alerts and digest-to-webhook delivery.)
 WEBHOOK_EVENT_TYPES = {
     "emergency", "military", "watchlist", "rare",
-    "feed_down", "feed_recovered", "digest",
+    "feed_down", "feed_recovered", "digest", "weekly_digest",
 }
 
 
@@ -433,7 +433,7 @@ async def save_webhooks(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         types = ep.get("types") or []
         if not url.startswith(("http://", "https://")):
             continue
-        if kind_ep not in {"discord", "slack", "ntfy", "generic"}:
+        if kind_ep not in {"discord", "slack", "mattermost", "ntfy", "generic"}:
             kind_ep = "generic"
         if not isinstance(types, list):
             types = []
@@ -874,6 +874,22 @@ async def digest_run() -> dict[str, Any]:
         return {"ok": True, "digest": d}
     except Exception as exc:
         log.exception("digest run failed")
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+
+
+@router.post("/digest/weekly/run")
+async def weekly_digest_run() -> dict[str, Any]:
+    """Build and deliver the weekly summary right now — Settings → Digest →
+    "Send weekly summary now". Templated-only (no AI spend), but shares the
+    same rate bucket so the unauthenticated endpoint can't be hammered into
+    webhook spam."""
+    if not ratelimit.allow("ai", limit=_AI_CALLS_PER_MIN, window_s=60.0):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded; try again shortly")
+    try:
+        d = await digest_svc.run_weekly_digest()
+        return {"ok": True, "digest": d}
+    except Exception as exc:
+        log.exception("weekly digest run failed")
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 
 
