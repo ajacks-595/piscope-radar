@@ -11,6 +11,7 @@ from typing import Any, Optional
 import httpx
 
 from ..models.aircraft import Aircraft, aircraft_from_wire, haversine_nm
+from . import analytics as analytics_store
 from . import backups as backups_store
 from . import events as events_store
 from . import events_bus
@@ -112,6 +113,9 @@ class FeedService:
         # Types discovered by the enrichment loop but not yet written to seen_types. Drained
         # into the poll batch so we don't open competing write transactions on SQLite.
         self._pending_type_records: list[str] = []
+        # Analytics ledger buffer (analytics feature): coalesces per-(hex, day) sighting
+        # rows + per-hour traffic counters in memory; flushed inside the poll batch.
+        self._analytics = analytics_store.SightingsBuffer()
 
     # --- lifecycle -----------------------------------------------------------
 
@@ -138,6 +142,13 @@ class FeedService:
         self._task = None
         self._enrich_task = None
         self._client = None
+        # Flush any buffered sighting rows so a clean shutdown doesn't lose the
+        # last ~30 s of dwell / last-seen data. Best-effort — never block shutdown.
+        try:
+            with settings_store.batch() as conn:
+                self._analytics.flush(conn, force=True)
+        except Exception as exc:
+            log.warning("final analytics flush failed: %s", exc)
 
     async def _enrichment_loop(self) -> None:
         """Drain `_enrich_pending` slowly so we don't hammer hexdb. ~one lookup per 0.2 s."""
@@ -577,6 +588,11 @@ class FeedService:
                     type_counts_this_poll[code] = type_counts_this_poll.get(code, 0) + 1
             # One executemany per distinct type instead of two SQL ops per aircraft.
             insights_store.flush_type_sightings(type_counts_this_poll, conn=poll_conn)
+            # Analytics ledger: observe the DE-DUPED store (multi-feed echoes of the
+            # same hex already merged), then flush within this same transaction. The
+            # hourly row writes every poll; the sightings batch every ~15 polls.
+            self._analytics.observe_poll(new_store.values(), now_ts)
+            self._analytics.flush(poll_conn)
         self.last_sql_ms = (time.time() - sql_started) * 1000
 
         # Trail GC + re-arm event de-dup once aircraft drop out of coverage for ≥120 s.
@@ -645,6 +661,8 @@ class FeedService:
             self._next_prune_at = now_ts + 300
             retention_s = float(s.get("replay_retention_minutes") or 60) * 60
             events_store.prune_old_snapshots(retention_s)
+            # Analytics retention — sightings/hourly rows beyond the configured window.
+            analytics_store.prune_old_analytics(s.get("analytics_retention_days"))
             # Daily backup check — only writes if the date has rolled over and `daily_backup_dir` is set.
             backups_store.maybe_run_daily()
 

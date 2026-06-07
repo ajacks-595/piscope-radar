@@ -159,6 +159,12 @@ DEFAULTS: dict[str, Any] = {
     # and read by /api/digest. Keyed in DEFAULTS so set_many's whitelist accepts it; the value
     # is intentionally public (same data exposed via /api/digest), so no SECRET_KEYS entry.
     "digest_latest_json": None,
+    # ---- Analytics (analytics feature, phase 1) ----
+    # How long to keep the per-(hex, day) sighting ledger and hourly traffic stats.
+    # ~1,000 unique aircraft/day ≈ 50 MB/year of sightings, so a year keeps the DB
+    # comfortably bounded on SD storage while still allowing year-over-year views.
+    # 0 = keep forever. Pruned alongside the snapshot prune in the feed loop.
+    "analytics_retention_days": 365,
 }
 
 # Settings the user should never read back over the wire.
@@ -181,7 +187,7 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-SCHEMA_VERSION = 2  # bump and add an `if v < N: …` block below whenever the schema changes
+SCHEMA_VERSION = 3  # bump and add an `if v < N: …` block below whenever the schema changes
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -206,6 +212,41 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "recorded_at REAL NOT NULL)"
         )
         conn.execute("PRAGMA user_version = 2")
+    # v2 → v3: analytics feature — per-(hex, UTC-day) sighting ledger + per-UTC-hour
+    # traffic stats. Both are DERIVED tables fed incrementally by the feed loop
+    # (services/analytics.py); raw ingestion and all pre-existing tables are untouched.
+    if v < 3:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS aircraft_sightings ("
+            "hex TEXT NOT NULL, "
+            "date TEXT NOT NULL, "                 # UTC YYYY-MM-DD
+            "first_ts REAL NOT NULL, "
+            "last_ts REAL NOT NULL, "
+            "polls INTEGER NOT NULL DEFAULT 0, "   # poll cycles the hex appeared in (≈ dwell)
+            "callsign TEXT, registration TEXT, type_code TEXT, "
+            "military INTEGER NOT NULL DEFAULT 0, "
+            "max_alt INTEGER, min_alt INTEGER, max_gs REAL, "
+            "max_range_nm REAL, min_range_nm REAL, "
+            "PRIMARY KEY(hex, date))"
+        )
+        # Window queries scan by date; hex lookups use the PK prefix.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sightings_date ON aircraft_sightings(date)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS hourly_stats ("
+            "hour TEXT PRIMARY KEY, "              # UTC YYYY-MM-DDTHH
+            "unique_aircraft INTEGER NOT NULL DEFAULT 0, "
+            "obs INTEGER NOT NULL DEFAULT 0, "     # sum of per-poll contact counts
+            "max_range_nm REAL NOT NULL DEFAULT 0, "
+            "military INTEGER NOT NULL DEFAULT 0, "
+            # Observation-weighted altitude-band counters (one increment per
+            # aircraft per poll) — powers the altitude-distribution chart.
+            "alt_ground INTEGER NOT NULL DEFAULT 0, "
+            "alt_low INTEGER NOT NULL DEFAULT 0, "
+            "alt_mid INTEGER NOT NULL DEFAULT 0, "
+            "alt_high INTEGER NOT NULL DEFAULT 0, "
+            "alt_very_high INTEGER NOT NULL DEFAULT 0)"
+        )
+        conn.execute("PRAGMA user_version = 3")
     conn.commit()
 
 
