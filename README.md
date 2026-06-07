@@ -21,7 +21,13 @@
 - **AI aircraft briefings + chat** — generate a short natural-language brief for any aircraft and ask follow-up questions. Pick your backend: a local **Ollama** model, a **cloud API** (Anthropic / OpenAI / Google, bring your own key), or your own **Claude Code subscription** via a tiny LAN shim — see [`tools/claude-shim/`](tools/claude-shim/)
 - **Daily digest** — a once-a-day rollup (event totals, top types, rare callouts, optional AI commentary) delivered in-app, by webhook, or email
 - **Event log** for military / emergency / watchlist / rare-type sightings
-- **Webhook fan-out** to Discord / Slack / ntfy.sh / generic JSON endpoints
+- **Analytics tab** — traffic over time, busiest hour×weekday heatmap, aircraft-type and
+  operator/airline breakdowns (full ICAO designator list bundled), altitude & range
+  distributions, military/unusual contacts with an editable rule file, returning aircraft,
+  records — all with a 24h/7d/30d/all range picker
+- **Weekly summary** — a Sunday-evening (configurable) 7-day rollup pushed to any webhook,
+  Mattermost-ready out of the box
+- **Webhook fan-out** to Discord / Slack / Mattermost / ntfy.sh / generic JSON endpoints
 - **All-time records** — closest pass, lowest altitude, fastest, longest range, highest
 - **Polar coverage diagram** — see your antenna's weakest direction at a glance
 - **Type leaderboard** — what flies past most often

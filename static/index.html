@@ -683,6 +683,32 @@
           <div class="field"><label for="setting-smtp-from">From</label><input id="setting-smtp-from" type="email" placeholder="piscope@yourdomain" /></div>
           <div class="field"><label for="setting-smtp-to">To</label><input id="setting-smtp-to" type="email" placeholder="you@yourdomain" /></div>
           <label class="checkbox-row"><input id="setting-smtp-starttls" type="checkbox" /> Use STARTTLS (recommended)</label>
+          <hr style="border:0;border-top:1px solid var(--separator);margin:14px 0;" />
+          <h3>Weekly summary</h3>
+          <p class="hint">Once a week, a 7-day rollup (traffic, busiest hour/day, top types and operators, notable + new returning aircraft, records broken) is posted to every webhook subscribed to <code>weekly_digest</code> under Notifications. For Mattermost, add a <em>Mattermost webhook</em> there pointing at your channel's incoming-webhook URL and tick <em>Weekly</em>.</p>
+          <label class="checkbox-row"><input id="setting-weekly-enabled" type="checkbox" /> Enable weekly summary</label>
+          <div class="field-row">
+            <div class="field">
+              <label for="setting-weekly-day">Day</label>
+              <select id="setting-weekly-day">
+                <option value="mon">Monday</option>
+                <option value="tue">Tuesday</option>
+                <option value="wed">Wednesday</option>
+                <option value="thu">Thursday</option>
+                <option value="fri">Friday</option>
+                <option value="sat">Saturday</option>
+                <option value="sun">Sunday</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="setting-weekly-time">Time (HH:MM, 24h, local)</label>
+              <input id="setting-weekly-time" type="text" placeholder="19:00" pattern="^[0-2][0-9]:[0-5][0-9]$" />
+            </div>
+          </div>
+          <div class="fa-action-row" style="margin-top:8px">
+            <button id="run-weekly-digest" class="secondary">Send weekly summary now</button>
+            <span class="hint" id="weekly-digest-status"></span>
+          </div>
         </section>
 
         <section class="tab-section" data-section="general">

@@ -165,6 +165,14 @@ DEFAULTS: dict[str, Any] = {
     # comfortably bounded on SD storage while still allowing year-over-year views.
     # 0 = keep forever. Pruned alongside the snapshot prune in the feed loop.
     "analytics_retention_days": 365,
+    # ---- Weekly summary (analytics feature, phase 4) ----
+    # Posts a 7-day rollup (traffic, busiest hour/day, top types/operators,
+    # notable + new returning aircraft, records broken) to every webhook
+    # subscribed to the "weekly_digest" event type — point a `mattermost`-kind
+    # webhook at a Mattermost incoming-webhook URL for channel delivery.
+    "weekly_digest_enabled": False,
+    "weekly_digest_day": "sun",            # mon..sun, local time
+    "weekly_digest_local_time": "19:00",
 }
 
 # Settings the user should never read back over the wire.

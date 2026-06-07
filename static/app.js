@@ -2323,6 +2323,9 @@ function populateSettingsModal() {
   if (el('setting-digest-inapp'))    el('setting-digest-inapp').checked = s.digest_deliver_in_app !== false;
   if (el('setting-digest-webhook'))  el('setting-digest-webhook').checked = !!s.digest_deliver_webhook;
   if (el('setting-digest-email'))    el('setting-digest-email').checked = !!s.digest_deliver_email;
+  if (el('setting-weekly-enabled'))  el('setting-weekly-enabled').checked = !!s.weekly_digest_enabled;
+  if (el('setting-weekly-day'))      el('setting-weekly-day').value = s.weekly_digest_day || 'sun';
+  if (el('setting-weekly-time'))     el('setting-weekly-time').value = s.weekly_digest_local_time || '19:00';
   if (el('setting-smtp-host'))       el('setting-smtp-host').value = s.smtp_host || '';
   if (el('setting-smtp-port'))       el('setting-smtp-port').value = s.smtp_port || 587;
   if (el('setting-smtp-user'))       el('setting-smtp-user').value = s.smtp_user || '';
@@ -2413,6 +2416,9 @@ async function saveSettings() {
     digest_deliver_in_app:   !!document.getElementById('setting-digest-inapp')?.checked,
     digest_deliver_webhook:  !!document.getElementById('setting-digest-webhook')?.checked,
     digest_deliver_email:    !!document.getElementById('setting-digest-email')?.checked,
+    weekly_digest_enabled:    !!document.getElementById('setting-weekly-enabled')?.checked,
+    weekly_digest_day:        document.getElementById('setting-weekly-day')?.value || 'sun',
+    weekly_digest_local_time: document.getElementById('setting-weekly-time')?.value.trim() || '19:00',
     smtp_host:    document.getElementById('setting-smtp-host')?.value.trim() || '',
     smtp_port:    parseInt(document.getElementById('setting-smtp-port')?.value, 10) || 587,
     smtp_user:    document.getElementById('setting-smtp-user')?.value.trim() || '',
@@ -2916,6 +2922,7 @@ function renderWebhookList() {
       <select class="wh-kind">
         <option value="discord">Discord webhook</option>
         <option value="slack">Slack webhook</option>
+        <option value="mattermost">Mattermost webhook</option>
         <option value="ntfy">ntfy.sh</option>
         <option value="generic">Generic JSON POST</option>
       </select>
@@ -2928,6 +2935,7 @@ function renderWebhookList() {
         <label><input type="checkbox" class="wh-t-feed_down" title="Watchdog: receiver offline"> Feed down</label>
         <label><input type="checkbox" class="wh-t-feed_recovered" title="Watchdog: receiver back online"> Recovered</label>
         <label><input type="checkbox" class="wh-t-digest" title="Daily digest"> Digest</label>
+        <label><input type="checkbox" class="wh-t-weekly_digest" title="Weekly summary"> Weekly</label>
       </div>
       <div class="controls-row">
         <button class="secondary wh-test">Test</button>
@@ -2943,6 +2951,7 @@ function renderWebhookList() {
     row.querySelector('.wh-t-feed_down').checked      = types.includes('feed_down');
     row.querySelector('.wh-t-feed_recovered').checked = types.includes('feed_recovered');
     row.querySelector('.wh-t-digest').checked         = types.includes('digest');
+    row.querySelector('.wh-t-weekly_digest').checked  = types.includes('weekly_digest');
     row.querySelector('.wh-remove').onclick = () => { webhooksCache.splice(idx, 1); renderWebhookList(); };
     row.querySelector('.wh-test').onclick = async () => {
       const url = row.querySelector('.wh-url').value.trim();
@@ -2974,6 +2983,7 @@ function collectWebhooks() {
         row.querySelector('.wh-t-feed_down').checked      ? 'feed_down'      : null,
         row.querySelector('.wh-t-feed_recovered').checked ? 'feed_recovered' : null,
         row.querySelector('.wh-t-digest').checked         ? 'digest'         : null,
+        row.querySelector('.wh-t-weekly_digest').checked  ? 'weekly_digest'  : null,
       ].filter(Boolean),
     });
   });
@@ -3444,6 +3454,35 @@ async function runDigestNow() {
   }
 }
 
+async function runWeeklyDigestNow() {
+  const btn = document.getElementById('run-weekly-digest');
+  const status = document.getElementById('weekly-digest-status');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = 'Sending…';
+  if (status) status.textContent = '';
+  try {
+    const res = await fetch('/piscope/api/digest/weekly/run', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok && data.digest) {
+      const delivery = data.digest.delivery || {};
+      const summary = Object.entries(delivery).map(([k, v]) => `${k}: ${v}`).join(' · ') || 'built';
+      if (status) status.textContent = `Sent — ${summary}. Check webhooks subscribed to weekly_digest.`;
+      toast('Weekly summary sent.');
+    } else {
+      if (status) status.textContent = `Failed: ${data.detail || res.statusText}`;
+      toast('Weekly summary failed.');
+    }
+  } catch (e) {
+    if (status) status.textContent = `Failed: ${e.message}`;
+    toast('Weekly summary failed.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
 /* ---------- Records panel ------------------------------------------------- */
 async function renderRecords() {
   const tbody = document.getElementById('records-rows');
@@ -3905,6 +3944,7 @@ function bindUI() {
   for (const t of document.querySelectorAll('.tab[data-stats-tab]')) t.addEventListener('click', () => switchStatsTab(t.dataset.statsTab));
   for (const b of document.querySelectorAll('#analytics-range .range-btn')) b.addEventListener('click', () => setAnalyticsRange(b.dataset.range));
   document.getElementById('today-refresh')?.addEventListener('click', runDigestNow);
+  document.getElementById('run-weekly-digest')?.addEventListener('click', runWeeklyDigestNow);
   document.getElementById('test-ollama-btn')?.addEventListener('click', testOllamaConnection);
   document.getElementById('test-cloud-api-btn')?.addEventListener('click', testCloudApiConnection);
   document.getElementById('test-claude-cli-btn')?.addEventListener('click', testClaudeCliConnection);

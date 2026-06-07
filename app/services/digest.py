@@ -325,6 +325,162 @@ def get_latest() -> Optional[dict[str, Any]]:
     return settings_store.get(_LATEST_KEY)
 
 
+# ---------- Weekly summary (analytics feature, phase 4) ----------
+#
+# A 7-day rollup built from the analytics layer, delivered to webhooks subscribed
+# to the "weekly_digest" event type (a `mattermost`-kind webhook posts straight
+# into a Mattermost channel). Deliberately templated-only — no AI commentary —
+# so the weekly numbers are deterministic and the job is free to run.
+
+_DOW_TOKENS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+_DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]   # strftime %w order
+
+
+def build_weekly_digest() -> dict[str, Any]:
+    """Assemble the weekly summary from the analytics/notable layers. Pure
+    aggregation — delivery happens in run_weekly_digest."""
+    from . import analytics as analytics_store
+    from . import notable as notable_store
+
+    overview = analytics_store.overview("7d")
+    since = overview["since"]
+    notable = notable_store.notable_in_window(since, limit=20)
+    returning = notable_store.returning_in_window(since, min_days=2, limit=50)
+
+    return {
+        "generated_at": overview["generated_at"],
+        "window_days": 7,
+        "totals": overview["totals"],
+        "busiest_hour": overview["traffic"]["busiest_hour"],
+        "busiest_dow": overview["traffic"]["busiest_dow"],
+        "busiest_day": overview["traffic"]["busiest_day"],
+        "top_types": overview["types"][:5],
+        "top_operators": overview["operators"][:5],
+        "notable_military": notable["military"][:8],
+        "notable_unusual": notable["unusual"][:8],
+        "emergencies": notable["emergencies"][:5],
+        "new_returning": [r for r in returning if r.get("is_new")][:8],
+        "records_broken": overview["records"]["broken_in_window"],
+    }
+
+
+def _weekly_name(entry: dict[str, Any]) -> str:
+    return entry.get("callsign") or entry.get("registration") or \
+        (entry.get("hex") or "?").upper()
+
+
+def render_weekly_text(d: dict[str, Any]) -> str:
+    """Markdown body for the weekly post. Mattermost/Slack render the markdown;
+    plain-text consumers still read fine."""
+    end = datetime.fromtimestamp(d["generated_at"])
+    start = datetime.fromtimestamp(d["generated_at"] - d["window_days"] * 86400)
+    t = d["totals"]
+    lines = [
+        f"📊 **PiScope Radar — Weekly Summary** ({start.strftime('%b %-d')} – {end.strftime('%b %-d')})",
+        "",
+        f"**Traffic:** {t['aircraft_days']:,} aircraft-days · "
+        f"{t['unique_aircraft']:,} unique aircraft tracked · max range {t['max_range_nm']:.0f} nm",
+    ]
+    busy_bits = []
+    if d.get("busiest_day"):
+        busy_bits.append(f"peak day {d['busiest_day']['date']} "
+                         f"({d['busiest_day']['unique_aircraft']:,} aircraft)")
+    if d.get("busiest_hour") is not None and d["busiest_hour"]:
+        busy_bits.append(f"busiest hour {d['busiest_hour']['hod']:02d}:00 UTC")
+    if d.get("busiest_dow"):
+        busy_bits.append(f"busiest weekday {_DOW_LABELS[d['busiest_dow']['dow']]}")
+    if busy_bits:
+        lines.append("**Busiest:** " + " · ".join(busy_bits))
+
+    if d["top_types"]:
+        lines.append("**Top types:** " + " · ".join(
+            f"{x['type_code']} ×{x['unique_aircraft']}" for x in d["top_types"]))
+    if d["top_operators"]:
+        lines.append("**Top operators:** " + " · ".join(
+            f"{x['name'] or x['prefix']} ×{x['unique_aircraft']}" for x in d["top_operators"]))
+
+    if d["notable_military"]:
+        lines.append("**Military/government:** " + " · ".join(
+            f"{_weekly_name(e)} ({e.get('type_code') or '?'})" for e in d["notable_military"]))
+    if d["notable_unusual"]:
+        lines.append("**Unusual:** " + " · ".join(
+            f"{_weekly_name(e)} — {e['reasons'][0]['label']}" if e.get("reasons") else _weekly_name(e)
+            for e in d["notable_unusual"]))
+    if d["emergencies"]:
+        lines.append("**Emergencies:** " + " · ".join(
+            f"{_weekly_name(e)} squawk {e.get('squawk') or '?'}" for e in d["emergencies"]))
+
+    if d["new_returning"]:
+        lines.append("**New returning aircraft:** " + " · ".join(
+            f"{_weekly_name(r)} ({r['days_seen']} days)" for r in d["new_returning"]))
+    if d["records_broken"]:
+        units = {"lowest_alt": "ft", "highest": "ft", "fastest": "kts"}
+        lines.append("**Records broken:** " + " · ".join(
+            f"{r.get('label') or r['category']}: {r['value']:,.0f} {units.get(r['category'], 'nm')}"
+            for r in d["records_broken"]))
+    if not (d["notable_military"] or d["notable_unusual"] or d["emergencies"]
+            or d["new_returning"] or d["records_broken"]):
+        lines.append("_A quiet week — no notable contacts, new regulars, or records._")
+    return "\n".join(lines)
+
+
+async def run_weekly_digest() -> dict[str, Any]:
+    """Build + deliver the weekly summary to webhooks subscribed to
+    `weekly_digest`. Used by the scheduler and the Settings "Send now" button."""
+    digest = build_weekly_digest()
+    text = render_weekly_text(digest)
+    try:
+        webhooks.fan_out("weekly_digest", {"message": text, "digest": digest})
+        digest["delivery"] = {"webhook": "queued"}
+    except Exception as exc:
+        digest["delivery"] = {"webhook": f"error: {exc}"}
+    digest["rendered_text"] = text
+    return digest
+
+
+def _seconds_until_weekly(day_token: str, hhmm: str,
+                          now: Optional[datetime] = None) -> float:
+    """Seconds until the next local occurrence of <weekday HH:MM>. Garbage input
+    falls back to Sunday 19:00. `now` is injectable for tests."""
+    dow = _DOW_TOKENS.get((day_token or "").strip().lower()[:3], 6)
+    try:
+        hh, mm = hhmm.split(":")
+        target_t = dtime(int(hh), int(mm))
+    except Exception:
+        target_t = dtime(19, 0)
+    now = now or datetime.now()
+    days_ahead = (dow - now.weekday()) % 7
+    candidate = datetime.combine(now.date() + timedelta(days=days_ahead), target_t)
+    if candidate <= now:
+        candidate += timedelta(days=7)
+    return max(60.0, (candidate - now).total_seconds())
+
+
+async def _weekly_scheduler_loop() -> None:
+    """Same shape as the daily loop: sleep until the configured weekday+time,
+    fire, repeat. Settings are re-read each cycle so changes apply without a
+    restart (on the NEXT cycle, as with the daily digest)."""
+    log.info("weekly digest scheduler started")
+    while True:
+        try:
+            if not settings_store.get("weekly_digest_enabled"):
+                await asyncio.sleep(600)
+                continue
+            wait = _seconds_until_weekly(
+                settings_store.get("weekly_digest_day") or "sun",
+                settings_store.get("weekly_digest_local_time") or "19:00")
+            log.info("weekly digest: next fire in %.0f s", wait)
+            await asyncio.sleep(wait)
+            await run_weekly_digest()
+            await asyncio.sleep(60)   # same double-fire guard as the daily loop
+        except asyncio.CancelledError:
+            log.info("weekly digest scheduler stopping")
+            raise
+        except Exception as exc:
+            log.warning("weekly digest scheduler error (continuing): %s", exc)
+            await asyncio.sleep(60)
+
+
 # ---------- Scheduler ----------
 
 
@@ -344,6 +500,7 @@ def _seconds_until(hhmm: str) -> float:
 
 
 _TASK: Optional[asyncio.Task[None]] = None
+_WEEKLY_TASK: Optional[asyncio.Task[None]] = None
 
 
 async def _scheduler_loop() -> None:
@@ -372,19 +529,23 @@ async def _scheduler_loop() -> None:
 
 
 def start_scheduler() -> None:
-    global _TASK
-    if _TASK is not None and not _TASK.done():
-        return
-    _TASK = asyncio.create_task(_scheduler_loop(), name="piscope-digest-scheduler")
+    global _TASK, _WEEKLY_TASK
+    if _TASK is None or _TASK.done():
+        _TASK = asyncio.create_task(_scheduler_loop(), name="piscope-digest-scheduler")
+    if _WEEKLY_TASK is None or _WEEKLY_TASK.done():
+        _WEEKLY_TASK = asyncio.create_task(_weekly_scheduler_loop(),
+                                           name="piscope-weekly-digest-scheduler")
 
 
 async def stop_scheduler() -> None:
-    global _TASK
-    if _TASK is None:
-        return
-    _TASK.cancel()
-    try:
-        await _TASK
-    except (asyncio.CancelledError, Exception):
-        pass
+    global _TASK, _WEEKLY_TASK
+    for task in (_TASK, _WEEKLY_TASK):
+        if task is None:
+            continue
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
     _TASK = None
+    _WEEKLY_TASK = None
