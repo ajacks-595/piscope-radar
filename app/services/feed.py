@@ -124,9 +124,34 @@ class FeedService:
             return
         self._client = httpx.AsyncClient(timeout=8.0)
         self._stop.clear()
+        self._seed_daily_counters()
         self._task = asyncio.create_task(self._run(), name="feed-poll-loop")
         self._enrich_task = asyncio.create_task(self._enrichment_loop(), name="feed-type-enrich")
         log.info("FeedService started")
+
+    def _seed_daily_counters(self) -> None:
+        """Restore today's in-memory daily aggregates from durable state after a
+        restart. Without this, every restart wiped `_daily_unique` and the next
+        `update_daily_stats` overwrote today's count with "aircraft seen since the
+        restart" (e.g. 674 → 46 observed during the analytics-phase-1 deploy).
+        The sighting ledger gives the unique set back; the events table gives the
+        emergency/military sets. `_daily_max_range` needs no seed — daily_stats
+        already MAXes that column on upsert. Best-effort: a failure just means the
+        old fresh-counter behaviour."""
+        try:
+            self._daily_unique |= analytics_store.seen_hexes_for_date(self._daily_date)
+            midnight_ts = datetime.strptime(self._daily_date, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc).timestamp()
+            self._daily_emergencies |= events_store.distinct_event_hexes_since(
+                midnight_ts, "emergency")
+            self._daily_military |= events_store.distinct_event_hexes_since(
+                midnight_ts, "military")
+            if self._daily_unique:
+                log.info("daily counters re-seeded: %d unique / %d emergency / %d military",
+                         len(self._daily_unique), len(self._daily_emergencies),
+                         len(self._daily_military))
+        except Exception as exc:
+            log.warning("daily counter seeding failed (continuing fresh): %s", exc)
 
     async def stop(self) -> None:
         self._stop.set()

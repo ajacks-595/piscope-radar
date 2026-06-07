@@ -185,6 +185,45 @@ def test_prune_old_analytics(temp_db):
     assert analytics.prune_old_analytics("garbage") == 0  # defensive
 
 
+# --- restart-safe daily counters (phase 2) ---------------------------------------
+
+
+def test_seen_hexes_for_date(temp_db):
+    buf = SightingsBuffer()
+    ts = time.time()
+    buf.observe_poll([_ac("aaa111"), _ac("bbb222")], ts)
+    _flush(buf)
+    assert analytics.seen_hexes_for_date(_utc_date(ts)) == {"aaa111", "bbb222"}
+    assert analytics.seen_hexes_for_date("1999-01-01") == set()
+
+
+def test_feed_seeds_daily_counters_after_restart(temp_db):
+    from app.services import events as events_store
+    from app.services.feed import FeedService
+
+    svc = FeedService()   # fresh instance — counters start empty
+    ts = time.time()
+    buf = SightingsBuffer()
+    buf.observe_poll([_ac("aaa111"), _ac("bbb222")], ts)
+    _flush(buf)
+    events_store.record_event("emergency", hex="aaa111")
+    events_store.record_event("military", hex="ccc333")
+
+    assert not svc._daily_unique
+    svc._seed_daily_counters()
+    assert svc._daily_unique == {"aaa111", "bbb222"}
+    assert svc._daily_emergencies == {"aaa111"}
+    assert svc._daily_military == {"ccc333"}
+
+
+def test_distinct_event_hexes_since_filters_kind_and_time(temp_db):
+    from app.services import events as events_store
+    events_store.record_event("military", hex="aaa111")
+    events_store.record_event("rare", hex="bbb222")
+    assert events_store.distinct_event_hexes_since(time.time() - 60, "military") == {"aaa111"}
+    assert events_store.distinct_event_hexes_since(time.time() + 60, "military") == set()
+
+
 # --- airline resolver -----------------------------------------------------------
 
 

@@ -87,6 +87,21 @@ def recent_events(limit: int = 100, kind: Optional[str] = None) -> list[dict[str
     return out
 
 
+def distinct_event_hexes_since(since_ts: float, kind: str) -> set[str]:
+    """Distinct hexes with an event of `kind` at/after `since_ts`. Used by the feed
+    loop to restore its daily emergency/military counters after a restart."""
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT hex FROM events WHERE kind = ? AND ts >= ? AND hex IS NOT NULL",
+                (kind, since_ts),
+            ).fetchall()
+        return {r["hex"] for r in rows}
+    except Exception as exc:
+        log.warning("distinct_event_hexes_since failed: %s", exc)
+        return set()
+
+
 def prune_old_events(max_age_seconds: float = 7 * 24 * 3600) -> int:
     """Trim events older than `max_age_seconds`. Returns rows removed."""
     cutoff = time.time() - max_age_seconds
