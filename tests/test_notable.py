@@ -121,6 +121,35 @@ def test_notable_merges_multi_day_reasons(temp_db):
     assert {r["rule"] for r in entry["reasons"]} == {"helicopter", "low_altitude"}
 
 
+def test_military_where_is_exact(temp_db):
+    """military_where() must match exactly what classify_sighting calls military —
+    it feeds the analytics chip, which must agree with the notable panel."""
+    now = time.time()
+    _seed_sighting("ae1234", now)                                  # US hex block
+    _seed_sighting("aaa001", now, callsign="RRR123")               # RAF prefix
+    _seed_sighting("bbb002", now, military=1)                      # dbFlags only
+    _seed_sighting("ccc003", now, callsign="BAW123")               # civilian
+    _seed_sighting("ddd004", now, callsign="RRRX")                 # prefix, no digit
+    sql, params = notable.military_where()
+    with _connect() as conn:
+        hexes = {r["hex"] for r in conn.execute(
+            f"SELECT hex FROM aircraft_sightings WHERE {sql}", params)}
+    assert hexes == {"ae1234", "aaa001", "bbb002"}
+
+
+def test_analytics_military_chip_matches_notable_panel(temp_db):
+    """Regression for the live finding: chip read 0 (dbFlags only) while the
+    panel listed rule-matched military aircraft."""
+    from app.services import analytics
+    now = time.time()
+    _seed_sighting("ae1234", now, callsign="RCH802", type_code="C17")   # no dbFlags!
+    _seed_sighting("ccc003", now, callsign="BAW123", type_code="A320")
+    data = analytics.overview("7d")
+    panel = notable.notable_in_window(data["since"])
+    assert data["totals"]["military_unique"] == 1
+    assert data["totals"]["military_unique"] == len(panel["military"])
+
+
 # --- returning_in_window ----------------------------------------------------------
 
 

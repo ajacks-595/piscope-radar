@@ -3248,7 +3248,7 @@ async function renderAnalytics() {
   const chips =
     _anaChip('unique aircraft', (t.unique_aircraft ?? 0).toLocaleString(), 'Distinct hexes in the window (sighting ledger)') +
     _anaChip('aircraft-days', (t.aircraft_days ?? 0).toLocaleString(), 'Sum of per-day unique counts — covers full day history') +
-    _anaChip('military', (t.military_unique ?? 0).toLocaleString(), 'Distinct military hexes in window') +
+    _anaChip('military', (t.military_unique ?? 0).toLocaleString(), 'Distinct military/government aircraft in window — DB flag, hex-allocation, or callsign rules (matches the Military panel)') +
     _anaChip('alerts', (t.events ?? 0).toLocaleString(), Object.entries(t.events_by_kind || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || 'No events in window') +
     _anaChip('max range', t.max_range_nm ? `${Math.round(t.max_range_nm)} nm` : null) +
     _anaChip('busiest hour', bh ? `${String(bh.hod).padStart(2, '0')}:00z` : null, bh ? `avg ${bh.avg_unique} aircraft` : '') +
@@ -3978,13 +3978,18 @@ function bindUI() {
     if (e.target?.id === 'setting-theme') applyTheme(e.target.value, { persist: true });
   });
 
-  // Tabs
-  document.querySelectorAll('.tab').forEach((tab) => {
+  // Settings-modal tabs. Scoped to `[data-tab]`: the Stats and Events modals have
+  // their own tab handlers, and the old unscoped `.tab` selector made THIS handler
+  // fire for their buttons too — `dataset.tab` is undefined there, so the section
+  // lookup returned null and threw on every Stats/Events tab click (and stripped
+  // `.active` from the other modals' tabs as collateral). Null-guard kept as
+  // defence-in-depth.
+  document.querySelectorAll('.tab[data-tab]').forEach((tab) => {
     tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
+      document.querySelectorAll('.tab[data-tab]').forEach((t) => t.classList.remove('active'));
       document.querySelectorAll('.tab-section').forEach((s) => s.classList.remove('active'));
       tab.classList.add('active');
-      document.querySelector(`.tab-section[data-section="${tab.dataset.tab}"]`).classList.add('active');
+      document.querySelector(`.tab-section[data-section="${tab.dataset.tab}"]`)?.classList.add('active');
     });
   });
 
