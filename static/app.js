@@ -32,6 +32,7 @@ const API = {
   coverage: '/piscope/api/coverage',
   heatmap: '/piscope/api/heatmap?top=3000',
   leaderboard: '/piscope/api/leaderboard?limit=30',
+  analytics: (range) => `/piscope/api/analytics?range=${encodeURIComponent(range)}`,
   notes: (hex) => `/piscope/api/notes/${encodeURIComponent(hex)}`,
   webhooks: '/piscope/api/webhooks',
   webhookTest: '/piscope/api/webhooks/test',
@@ -3079,9 +3080,209 @@ async function renderLeaderboard() {
   }
 }
 
+/* ---------- Analytics tab (iteration 12) ----------------------------------- */
+// All charts are plain HTML/CSS (divs sized by percentage + native title tooltips) —
+// no chart library, consistent with the hand-drawn polar canvas and theme-aware via
+// the existing CSS custom properties. Hour-of-day data is keyed in UTC server-side,
+// so axis labels say so.
+
+let analyticsRange = '7d';
+const DOW_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function setAnalyticsRange(range) {
+  analyticsRange = range;
+  for (const b of document.querySelectorAll('#analytics-range .range-btn')) {
+    b.classList.toggle('active', b.dataset.range === range);
+  }
+  renderAnalytics();
+}
+
+function _anaBar(label, value, max, { title = '', color = 'var(--accent)', valueText = null } = {}) {
+  const pct = max > 0 ? Math.max(1, Math.round((value / max) * 100)) : 0;
+  return `
+    <div class="bar-row" title="${escapeHtml(title)}">
+      <span class="bar-label">${label}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${pct}%; background:${color}"></div></div>
+      <span class="bar-value">${valueText != null ? valueText : value.toLocaleString()}</span>
+    </div>`;
+}
+
+function _anaColumns(points, { labelOf, valueOf, titleOf }) {
+  // Vertical column chart. `points` already ordered left→right.
+  const max = Math.max(1, ...points.map(valueOf));
+  const cols = points.map((p) => {
+    const v = valueOf(p);
+    const h = Math.max(2, Math.round((v / max) * 100));
+    return `<div class="col" title="${escapeHtml(titleOf(p))}">
+      <div class="col-fill" style="height:${h}%"></div>
+      <span class="col-label">${escapeHtml(labelOf(p))}</span>
+    </div>`;
+  }).join('');
+  return `<div class="col-chart">${cols}</div>`;
+}
+
+function _anaHeatmap(matrix) {
+  if (!matrix || !matrix.length) return '<p class="hint">No hourly data yet — accumulates from first run.</p>';
+  const byCell = new Map();
+  let max = 0;
+  for (const m of matrix) {
+    byCell.set(`${m.dow}:${m.hod}`, m);
+    if (m.avg_unique > max) max = m.avg_unique;
+  }
+  let html = '<div class="hm-grid"><span class="hm-corner"></span>';
+  for (let h = 0; h < 24; h++) html += `<span class="hm-head">${h % 3 === 0 ? h : ''}</span>`;
+  for (let d = 0; d < 7; d++) {
+    html += `<span class="hm-dow">${DOW_LABELS[d]}</span>`;
+    for (let h = 0; h < 24; h++) {
+      const m = byCell.get(`${d}:${h}`);
+      const v = m ? m.avg_unique : 0;
+      const op = max > 0 && v > 0 ? (0.12 + 0.88 * (v / max)).toFixed(2) : 0;
+      const title = m
+        ? `${DOW_LABELS[d]} ${String(h).padStart(2, '0')}:00 UTC — avg ${v} aircraft (${m.hours_counted}h sampled)`
+        : `${DOW_LABELS[d]} ${String(h).padStart(2, '0')}:00 UTC — no data`;
+      html += `<span class="hm-cell" title="${escapeHtml(title)}"><i style="opacity:${op}"></i></span>`;
+    }
+  }
+  return html + '</div>';
+}
+
+function _anaChip(label, value, title = '') {
+  if (value == null || value === '') return '';
+  return `<div class="ana-chip" title="${escapeHtml(title)}"><span class="chip-value">${value}</span><span class="chip-label">${escapeHtml(label)}</span></div>`;
+}
+
+async function renderAnalytics() {
+  const body = document.getElementById('analytics-body');
+  const caption = document.getElementById('analytics-caption');
+  if (!body) return;
+  body.innerHTML = '<div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div>';
+  let d;
+  try {
+    const r = await fetch(API.analytics(analyticsRange));
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    d = await r.json();
+  } catch (e) {
+    body.innerHTML = `<p class="hint" style="color:var(--alert)">Failed to load analytics: ${escapeHtml(e.message)}</p>`;
+    if (caption) caption.textContent = '';
+    return;
+  }
+
+  const t = d.totals || {};
+  const tr = d.traffic || {};
+
+  // --- toolbar caption: honest coverage note -------------------------------
+  if (caption) {
+    const bits = [];
+    if (d.meta?.sightings_coverage_start) bits.push(`per-aircraft data since ${d.meta.sightings_coverage_start}`);
+    bits.push(`generated ${new Date((d.generated_at || 0) * 1000).toLocaleTimeString()}`);
+    caption.textContent = bits.join(' · ');
+  }
+
+  // --- summary chips --------------------------------------------------------
+  const bh = tr.busiest_hour, bd = tr.busiest_dow, bday = tr.busiest_day;
+  const chips =
+    _anaChip('unique aircraft', (t.unique_aircraft ?? 0).toLocaleString(), 'Distinct hexes in the window (sighting ledger)') +
+    _anaChip('aircraft-days', (t.aircraft_days ?? 0).toLocaleString(), 'Sum of per-day unique counts — covers full day history') +
+    _anaChip('military', (t.military_unique ?? 0).toLocaleString(), 'Distinct military hexes in window') +
+    _anaChip('alerts', (t.events ?? 0).toLocaleString(), Object.entries(t.events_by_kind || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || 'No events in window') +
+    _anaChip('max range', t.max_range_nm ? `${Math.round(t.max_range_nm)} nm` : null) +
+    _anaChip('busiest hour', bh ? `${String(bh.hod).padStart(2, '0')}:00z` : null, bh ? `avg ${bh.avg_unique} aircraft` : '') +
+    _anaChip('busiest day', bd ? DOW_LABELS[bd.dow] : null, bd ? `avg ${bd.avg_obs_per_hour} obs/h` : '') +
+    _anaChip('peak date', bday ? bday.date : null, bday ? `${bday.unique_aircraft} unique aircraft` : '');
+
+  // --- traffic over time: hourly columns for 24h, daily columns otherwise ---
+  let trafficChart, trafficTitle;
+  if (analyticsRange === '24h') {
+    const hours = (tr.hourly || []).slice(-24);
+    trafficTitle = 'Traffic by hour (UTC)';
+    trafficChart = hours.length
+      ? _anaColumns(hours, {
+          labelOf: (h) => parseInt(h.hour.slice(11), 10) % 3 === 0 ? h.hour.slice(11) : '',
+          valueOf: (h) => h.unique_aircraft || 0,
+          titleOf: (h) => `${h.hour}:00 UTC — ${h.unique_aircraft} unique, ${h.obs.toLocaleString()} obs`,
+        })
+      : '<p class="hint">No hourly data yet.</p>';
+  } else {
+    const days = (tr.daily || []).slice(-90);
+    trafficTitle = days.length === (tr.daily || []).length ? 'Traffic by day' : 'Traffic by day (last 90 shown)';
+    trafficChart = days.length
+      ? _anaColumns(days, {
+          labelOf: (x) => x.date.slice(8),
+          valueOf: (x) => x.unique_aircraft || 0,
+          titleOf: (x) => `${x.date} — ${(x.unique_aircraft || 0).toLocaleString()} unique aircraft, max range ${Math.round(x.max_range_nm || 0)} nm`,
+        })
+      : '<p class="hint">No daily history yet.</p>';
+  }
+
+  // --- type + operator breakdowns -------------------------------------------
+  const types = (d.types || []).slice(0, 12);
+  const typeMax = Math.max(1, ...types.map((x) => x.sightings));
+  const typeBars = types.map((x) => _anaBar(
+    `<code>${escapeHtml(x.type_code)}</code>`, x.sightings, typeMax,
+    { title: `${x.type_code}: ${x.unique_aircraft} aircraft (${x.category})` },
+  )).join('') || '<p class="hint">No typed sightings in window yet.</p>';
+
+  const ops = (d.operators || []).slice(0, 12);
+  const opMax = Math.max(1, ...ops.map((x) => x.sightings));
+  const opBars = ops.map((x) => _anaBar(
+    escapeHtml(x.name || `${x.prefix} (unresolved)`), x.sightings, opMax,
+    { title: `${x.prefix} — ${x.name || 'unknown operator'}${x.country ? ', ' + x.country : ''} · ${x.unique_aircraft} aircraft` },
+  )).join('') || '<p class="hint">No airline-style callsigns in window yet.</p>';
+  const cov = d.operator_coverage || {};
+  const opNote = cov.airline_style
+    ? `<p class="hint">${cov.resolved.toLocaleString()} of ${cov.airline_style.toLocaleString()} airline-style sightings resolved (${cov.with_callsign.toLocaleString()} had any callsign).</p>` : '';
+
+  // --- altitude bands + range histogram --------------------------------------
+  const bands = d.altitude_bands || {};
+  const bandDefs = [
+    ['ground', 'GND'], ['low', '<10k'], ['mid', '10–25k'], ['high', '25–35k'], ['very_high', '35k+'],
+  ];
+  const bandMax = Math.max(1, ...bandDefs.map(([k]) => bands[k] || 0));
+  const bandBars = bandDefs.map(([k, label]) => _anaBar(
+    label, bands[k] || 0, bandMax,
+    { color: bandColorVar(k), title: `${label}: ${(bands[k] || 0).toLocaleString()} observations` },
+  )).join('');
+
+  const hist = (d.ranges?.histogram) || [];
+  const histMax = Math.max(1, ...hist.map((h) => h.count));
+  const histBars = hist.map((h) => _anaBar(
+    h.bucket_nm >= 250 ? '250+' : `${h.bucket_nm}–${h.bucket_nm + 25}`, h.count, histMax,
+    { title: `${h.count} aircraft peaked in this range band (nm)` },
+  )).join('') || '<p class="hint">No range data in window yet.</p>';
+  const rangeNote = (d.ranges?.max_nm)
+    ? `<p class="hint">Window extremes: furthest ${d.ranges.max_nm} nm · closest ${d.ranges.min_nm ?? '—'} nm</p>` : '';
+
+  // --- records broken in window ----------------------------------------------
+  const broken = (d.records?.broken_in_window) || [];
+  const recordsHtml = broken.length
+    ? `<ul class="ana-records">${broken.map((r) => {
+        const who = escapeHtml(r.callsign || r.registration || r.hex || '—');
+        const unit = (r.category === 'lowest_alt' || r.category === 'highest') ? ' ft'
+          : r.category === 'fastest' ? ' kts' : ' nm';
+        return `<li>🏆 <strong>${escapeHtml(r.label || r.category)}</strong> — ${Number(r.value).toLocaleString()}${unit} by ${who} (${new Date(r.recorded_at * 1000).toLocaleDateString()})</li>`;
+      }).join('')}</ul>`
+    : '<p class="hint">No all-time records broken in this window. See the Records tab for the standing bests.</p>';
+
+  body.innerHTML = `
+    <div class="ana-chips">${chips}</div>
+    <div class="ana-section"><h4>${trafficTitle}</h4>${trafficChart}</div>
+    <div class="ana-section"><h4>Busy hours — hour of day (UTC) × day of week</h4>${_anaHeatmap(tr.matrix)}</div>
+    <div class="ana-grid2">
+      <div class="ana-section"><h4>Top aircraft types</h4>${typeBars}</div>
+      <div class="ana-section"><h4>Top operators</h4>${opBars}${opNote}</div>
+    </div>
+    <div class="ana-grid2">
+      <div class="ana-section"><h4>Altitude bands (observation-weighted)</h4>${bandBars}</div>
+      <div class="ana-section"><h4>Range distribution (per-aircraft best, nm)</h4>${histBars}${rangeNote}</div>
+    </div>
+    <div class="ana-section"><h4>Records broken in window</h4>${recordsHtml}</div>
+  `;
+}
+
 function switchStatsTab(name) {
   for (const t of document.querySelectorAll('.tab[data-stats-tab]')) t.classList.toggle('active', t.dataset.statsTab === name);
   for (const s of document.querySelectorAll('.stats-section')) s.classList.toggle('active', s.dataset.statsSection === name);
+  if (name === 'analytics') renderAnalytics();
   if (name === 'today') renderTodayDigest();
   if (name === 'coverage') renderPolarCoverage();
   if (name === 'leaderboard') renderLeaderboard();
@@ -3634,6 +3835,7 @@ function bindUI() {
   for (const el of document.querySelectorAll('[data-close-views]')) el.addEventListener('click', closeViews);
   for (const el of document.querySelectorAll('[data-close-operator]')) el.addEventListener('click', closeOperatorProfile);
   for (const t of document.querySelectorAll('.tab[data-stats-tab]')) t.addEventListener('click', () => switchStatsTab(t.dataset.statsTab));
+  for (const b of document.querySelectorAll('#analytics-range .range-btn')) b.addEventListener('click', () => setAnalyticsRange(b.dataset.range));
   document.getElementById('today-refresh')?.addEventListener('click', runDigestNow);
   document.getElementById('test-ollama-btn')?.addEventListener('click', testOllamaConnection);
   document.getElementById('test-cloud-api-btn')?.addEventListener('click', testCloudApiConnection);

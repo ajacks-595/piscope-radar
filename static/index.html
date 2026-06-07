@@ -266,6 +266,7 @@
       <nav class="tabs">
         <button class="tab active" data-stats-tab="health">Health</button>
         <button class="tab" data-stats-tab="today">Today</button>
+        <button class="tab" data-stats-tab="analytics">Analytics</button>
         <button class="tab" data-stats-tab="daily">Daily</button>
         <button class="tab" data-stats-tab="coverage">Polar coverage</button>
         <button class="tab" data-stats-tab="leaderboard">Type leaderboard</button>
@@ -282,6 +283,18 @@
             <button class="secondary" id="today-refresh">Generate now</button>
           </div>
           <div id="today-card"><p class="hint">No digest yet — click Generate now or wait until the configured time.</p></div>
+        </section>
+        <section class="stats-section" data-stats-section="analytics">
+          <div class="analytics-toolbar">
+            <div class="range-picker" id="analytics-range" role="group" aria-label="Time range">
+              <button class="range-btn" data-range="24h">24h</button>
+              <button class="range-btn active" data-range="7d">7d</button>
+              <button class="range-btn" data-range="30d">30d</button>
+              <button class="range-btn" data-range="all">All</button>
+            </div>
+            <span class="hint" id="analytics-caption"></span>
+          </div>
+          <div id="analytics-body"><p class="hint">Loading…</p></div>
         </section>
         <section class="stats-section" data-stats-section="daily">
           <table class="stats-table"><thead><tr><th>Date</th><th>Polls</th><th>Unique</th><th>Max range (nm)</th><th>Emergencies</th><th>Military</th></tr></thead><tbody id="stats-rows"></tbody></table>

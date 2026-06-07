@@ -247,6 +247,21 @@ class SightingsBuffer:
         return len(self._pending)
 
 
+def seen_hexes_for_date(date_key: str) -> set[str]:
+    """Every hex with a sighting row on the given UTC date. Used by the feed loop
+    to re-seed its in-memory daily-unique set after a restart, so today's
+    daily_stats count no longer collapses to "aircraft seen since the restart"."""
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT hex FROM aircraft_sightings WHERE date = ?", (date_key,)
+            ).fetchall()
+        return {r["hex"] for r in rows}
+    except sqlite3.Error as exc:
+        log.warning("seen_hexes_for_date failed: %s", exc)
+        return set()
+
+
 def prune_old_analytics(max_age_days: Any) -> int:
     """Trim sightings + hourly rows older than the retention window. 0/None/garbage
     disables (keep forever). Own connection — called from the feed loop's 5-minute
