@@ -78,8 +78,11 @@ heatmap, webhooks, replay, PWA install. No auth — LAN-only by design. Currentl
 - **Storage** — single SQLite file at `/opt/piscope/piscope.db` on the Pi (live data,
   never overwrite via rsync). Tables: settings, events, daily_stats, feed_snapshots,
   aircraft_notes, seen_types, polar_coverage, position_heatmap, bookmarks, records,
-  fa_budget. Migrations live in `app/services/settings.py:_migrate` keyed off
-  `PRAGMA user_version`.
+  fa_budget, aircraft_sightings, hourly_stats. Migrations live in
+  `app/services/settings.py:_migrate` keyed off `PRAGMA user_version` (currently 3).
+  The two analytics tables (v3) are derived, fed by the feed loop via
+  `analytics.SightingsBuffer`, and pruned to `analytics_retention_days` (default 365);
+  `events` is deliberately never pruned — it doubles as notable-aircraft history.
 - **AI** — multi-provider (iter 7+8). `ai_provider` setting picks `ollama` /
   `cloud_api` (Anthropic/OpenAI/Google bring-your-own-key) / `claude_cli` (LAN HTTP
   shim talking to a real `claude` binary). Code in `app/services/ai/`.
@@ -130,6 +133,8 @@ app/
   services/
     feed.py                # Tar1090 poller + WS broadcaster
     settings.py            # DB-backed KV store; SCHEMA_VERSION migrations; DEFAULTS whitelist
+    analytics.py           # Sightings/hourly ledger (write) + /api/analytics queries (read)
+    airlines.py            # Callsign-prefix → operator (app/data/airline_codes.json)
     digest.py              # Daily digest scheduler + AI commentary
     events.py              # Event log (military/emergency/watchlist/rare)
     insights.py            # Polar coverage, heatmap, leaderboard, notes

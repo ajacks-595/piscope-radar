@@ -22,6 +22,7 @@ from pathlib import Path
 from fastapi import UploadFile, File
 
 from ..services import adsbdb, events as events_store, flightaware, hexdb, insights as insights_store, planespotters
+from ..services import analytics as analytics_store
 from ..services import records as records_store
 from ..services import settings as settings_store
 from ..services import ai as ai_svc
@@ -337,6 +338,24 @@ async def put_note(hex_id: str, body: dict[str, str] = Body(...)) -> dict[str, A
         raise HTTPException(status_code=400, detail="Invalid hex")
     insights_store.set_note(hex_id, body.get("note") or "")
     return {"ok": True, "hex": hex_id.lower(), "note": insights_store.get_note(hex_id) or ""}
+
+
+# --- Analytics (analytics feature, phase 1) -----------------------------------
+
+
+@router.get("/analytics")
+async def analytics_overview(range: str = "7d") -> dict[str, Any]:  # noqa: A002 — query-param name is user-facing
+    """Aggregated historical analytics for the Analytics tab and the weekly digest:
+    traffic over time (daily / hourly / hour×weekday matrix), type and operator
+    breakdowns, altitude/range distributions, records, window totals.
+
+    `range` is one of 24h / 7d / 30d / all. Per-aircraft detail only reaches back
+    to `meta.sightings_coverage_start` (the ledger ships with this feature);
+    per-day traffic backfills further via the long-standing daily_stats table."""
+    try:
+        return analytics_store.overview(range)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # --- Webhooks management ----------------------------------------------------
