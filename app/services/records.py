@@ -11,7 +11,13 @@ import sqlite3
 import time
 from typing import Any, Optional
 
-from ..models.aircraft import Aircraft
+from ..models.aircraft import (
+    Aircraft,
+    PLAUSIBLE_ALT_MAX_FT,
+    PLAUSIBLE_ALT_MIN_FT,
+    PLAUSIBLE_GS_MAX_KT,
+    PLAUSIBLE_RANGE_MAX_NM,
+)
 from .settings import _connect  # type: ignore[attr-defined]
 
 
@@ -71,15 +77,19 @@ def update_records(ac: Aircraft, conn: Optional[sqlite3.Connection] = None) -> N
     of aircraft count, vs ~5×N for this per-aircraft entry point.
     """
     with _conn_or_provided(conn) as c:
-        if ac.distance_nm is not None and ac.distance_nm > 0:
+        # Plausibility-bounded throughout: a single garbage frame (ATR at 1,885 kts,
+        # A330 at 126,500 ft — both observed live) would otherwise set an unbeatable
+        # all-time record that never self-corrects.
+        if ac.distance_nm is not None and 0 < ac.distance_nm <= PLAUSIBLE_RANGE_MAX_NM:
             _maybe_update("closest_pass", ac.distance_nm, ac=ac, conn=c)
             _maybe_update("longest_range", ac.distance_nm, ac=ac, conn=c)
-        if ac.altitude_baro is not None and not ac.on_ground:
+        if ac.altitude_baro is not None and not ac.on_ground \
+                and PLAUSIBLE_ALT_MIN_FT <= ac.altitude_baro <= PLAUSIBLE_ALT_MAX_FT:
             # Filter out spurious 0-ft reports from ground squitters.
             if ac.altitude_baro > 500:
                 _maybe_update("lowest_alt", ac.altitude_baro, ac=ac, conn=c)
             _maybe_update("highest", ac.altitude_baro, ac=ac, conn=c)
-        if ac.ground_speed is not None and ac.ground_speed > 0:
+        if ac.ground_speed is not None and 0 < ac.ground_speed <= PLAUSIBLE_GS_MAX_KT:
             _maybe_update("fastest", ac.ground_speed, ac=ac, conn=c)
 
 
@@ -97,14 +107,16 @@ def update_records_bulk(aircraft: list[Aircraft], conn: Optional[sqlite3.Connect
             bests[cat] = (float(value), ac)
 
     for ac in aircraft:
-        if ac.distance_nm is not None and ac.distance_nm > 0:
+        # Same plausibility envelope as update_records — see comment there.
+        if ac.distance_nm is not None and 0 < ac.distance_nm <= PLAUSIBLE_RANGE_MAX_NM:
             consider("closest_pass", ac.distance_nm, ac)
             consider("longest_range", ac.distance_nm, ac)
-        if ac.altitude_baro is not None and not ac.on_ground:
+        if ac.altitude_baro is not None and not ac.on_ground \
+                and PLAUSIBLE_ALT_MIN_FT <= ac.altitude_baro <= PLAUSIBLE_ALT_MAX_FT:
             if ac.altitude_baro > 500:
                 consider("lowest_alt", float(ac.altitude_baro), ac)
             consider("highest", float(ac.altitude_baro), ac)
-        if ac.ground_speed is not None and ac.ground_speed > 0:
+        if ac.ground_speed is not None and 0 < ac.ground_speed <= PLAUSIBLE_GS_MAX_KT:
             consider("fastest", float(ac.ground_speed), ac)
     if not bests:
         return

@@ -27,7 +27,13 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
-from ..models.aircraft import Aircraft
+from ..models.aircraft import (
+    Aircraft,
+    PLAUSIBLE_ALT_MAX_FT,
+    PLAUSIBLE_ALT_MIN_FT,
+    PLAUSIBLE_GS_MAX_KT,
+    PLAUSIBLE_RANGE_MAX_NM,
+)
 from . import airlines
 from . import categorize
 from . import records as records_store
@@ -40,6 +46,25 @@ log = logging.getLogger("piscope.analytics")
 # frequent enough that "last seen" feels live, rare enough that the per-poll write
 # load stays one statement (the hourly row).
 SIGHTINGS_FLUSH_POLLS = 15
+
+# Plausibility envelope for ledger extremes — a single garbage frame would
+# otherwise poison a sighting's min/max forever and false-positive the notable
+# high-altitude rule. Shared with records.py via the model module.
+_ALT_MIN_FT = PLAUSIBLE_ALT_MIN_FT
+_ALT_MAX_FT = PLAUSIBLE_ALT_MAX_FT
+_GS_MAX_KT = PLAUSIBLE_GS_MAX_KT
+_RANGE_MAX_NM = PLAUSIBLE_RANGE_MAX_NM
+
+# Second line of defence for altitude extremes: glitches INSIDE the envelope
+# (live example: an A339 "at" 46,675 ft for one frame) are single-frame spikes,
+# so min/max only accept a value continuous with the aircraft's previous frame
+# (|Δ| ≤ 5,000 ft — far beyond any real manoeuvre per poll, far below glitch
+# jumps). The previous-altitude map updates on EVERY frame regardless of the
+# verdict, which makes the gate self-healing: a spike poisons nothing (the
+# next real frame is discontinuous with the spike, but the one after that is
+# continuous again), and after a genuine jump — coverage gap, first contact —
+# extremes lag by exactly one frame, then catch up.
+_ALT_STEP_MAX_FT = 5000
 # Safety valve: a busy global feed can hold hundreds of aircraft; if the pending
 # map somehow balloons (e.g. user cranks the flush cadence later), flush early.
 MAX_PENDING_SIGHTINGS = 4000
@@ -140,6 +165,10 @@ class SightingsBuffer:
     def __init__(self) -> None:
         self._pending: dict[tuple[str, str], dict[str, Any]] = {}   # (hex, date) → row
         self._polls_since_flush = 0
+        # Per-hex previous altitude for the spike gate. Survives flushes (unlike
+        # `_pending`) so the gate keeps context across batches; size-capped as a
+        # leak backstop — a clear just re-opens the gate for one frame per hex.
+        self._last_alts: dict[str, int] = {}
         # Per-hour state (reset on hour rollover).
         self._hour: Optional[str] = None
         self._hourly_unique: set[str] = set()
@@ -191,18 +220,24 @@ class SightingsBuffer:
             if ac.military:
                 row["military"] = 1
             alt = ac.altitude_baro
-            if alt is not None and not ac.on_ground:
-                if row["max_alt"] is None or alt > row["max_alt"]:
-                    row["max_alt"] = alt
-                # >500 ft floor mirrors records.py — spurious 0-ft ground squitters
-                # would otherwise own every min-altitude slot.
-                if alt > 500 and (row["min_alt"] is None or alt < row["min_alt"]):
-                    row["min_alt"] = alt
+            if alt is not None and not ac.on_ground and _ALT_MIN_FT <= alt <= _ALT_MAX_FT:
+                prev = self._last_alts.get(ac.hex)
+                if len(self._last_alts) > 20000:
+                    self._last_alts.clear()
+                self._last_alts[ac.hex] = alt
+                # Spike gate: only frame-continuous altitudes may set extremes.
+                if prev is None or abs(alt - prev) <= _ALT_STEP_MAX_FT:
+                    if row["max_alt"] is None or alt > row["max_alt"]:
+                        row["max_alt"] = alt
+                    # >500 ft floor mirrors records.py — spurious 0-ft ground
+                    # squitters would otherwise own every min-altitude slot.
+                    if alt > 500 and (row["min_alt"] is None or alt < row["min_alt"]):
+                        row["min_alt"] = alt
             gs = ac.ground_speed
-            if gs is not None and gs > 0 and (row["max_gs"] is None or gs > row["max_gs"]):
+            if gs is not None and 0 < gs <= _GS_MAX_KT and (row["max_gs"] is None or gs > row["max_gs"]):
                 row["max_gs"] = gs
             dist = ac.distance_nm
-            if dist is not None and dist > 0:
+            if dist is not None and 0 < dist <= _RANGE_MAX_NM:
                 if row["max_range_nm"] is None or dist > row["max_range_nm"]:
                     row["max_range_nm"] = dist
                 if row["min_range_nm"] is None or dist < row["min_range_nm"]:

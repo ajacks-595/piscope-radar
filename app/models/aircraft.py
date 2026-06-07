@@ -7,6 +7,16 @@ from typing import Any, Optional
 
 EMERGENCY_SQUAWKS = {"7500", "7600", "7700"}
 
+# Plausibility envelope for RF-sourced measurements. ADS-B frames occasionally
+# decode to garbage (live examples from this receiver: an ATR-45 "doing" 1,885 kts,
+# an A330 "at" 126,500 ft) and a single bad frame would otherwise poison all-time
+# records and per-day sighting extremes forever. Bounds are deliberately generous —
+# above every transponder-equipped conventional aircraft, below the garbage.
+PLAUSIBLE_ALT_MIN_FT = -1500       # Death Valley + baro-offset headroom
+PLAUSIBLE_ALT_MAX_FT = 66_000      # Concorde ceiling 60k; U-2 ops are once-a-decade
+PLAUSIBLE_GS_MAX_KT = 1500         # fast jets supersonic at altitude stay well under
+PLAUSIBLE_RANGE_MAX_NM = 2500      # global-feed radius caps at 2000; beyond is CPR junk
+
 
 @dataclass
 class Aircraft:
