@@ -88,8 +88,11 @@ async def ping() -> dict[str, Any]:
                 return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:120]}"}
             models = [m.get("id") for m in (r.json().get("data") or [])]
         else:  # google
+            # Key goes in the x-goog-api-key header, NOT the URL query string —
+            # a key in the URL leaks into proxy/access logs and httpx error reprs.
             r = await client.get(
-                f"https://generativelanguage.googleapis.com/v1beta/models?key={key}",
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                headers={"x-goog-api-key": key},
                 timeout=8.0,
             )
             if r.status_code != 200:
@@ -167,7 +170,8 @@ async def generate(prompt: str, *, num_predict: int = 360, temperature: float = 
             return text or None
         else:  # google
             r = await client.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                headers={"x-goog-api-key": key},
                 json={
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {

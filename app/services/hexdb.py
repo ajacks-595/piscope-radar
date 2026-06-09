@@ -34,6 +34,12 @@ async def lookup(hex_id: str) -> Optional[dict[str, Any]]:
         log.info("hexdb lookup failed for %s: %s", hex_id, exc)
         return None
 
+    # Response shaping is OUTSIDE the try, so a schema-changed / hostile upstream
+    # returning a non-object body must not raise AttributeError past it (would 500
+    # the /api/enrich/hexdb endpoint instead of returning a clean envelope).
+    if not isinstance(data, dict):
+        _CACHE.set(hex_id, {})
+        return {}
     result = {
         "hex": hex_id,
         "registration": (data.get("Registration") or "").strip() or None,

@@ -38,12 +38,15 @@ SHIM_TIMEOUT_SECONDS     default 60
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 
@@ -66,6 +69,21 @@ ALLOW_IPS = {ip.strip() for ip in (os.environ.get("SHIM_ALLOW_IPS") or "").split
 MAX_PROMPT_BYTES = int(os.environ.get("SHIM_MAX_PROMPT_BYTES") or 32 * 1024)
 TIMEOUT_SECONDS = int(os.environ.get("SHIM_TIMEOUT_SECONDS") or 60)
 MAX_REQUEST_BYTES = MAX_PROMPT_BYTES + 4096   # JSON overhead
+# Bound concurrent `claude` subprocesses — each is a full node process, and this
+# runs on the dev box, not a server farm. Excess /generate calls queue on this.
+MAX_CONCURRENT = int(os.environ.get("SHIM_MAX_CONCURRENT") or 2)
+_CLAUDE_SEM = threading.BoundedSemaphore(MAX_CONCURRENT)
+
+
+def _is_loopback_bind(host: str) -> bool:
+    """True if the bind address is loopback-only (so no token is acceptable)."""
+    h = (host or "").strip()
+    if h in ("localhost", ""):
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
 
 
 # --- Subprocess helpers -----------------------------------------------------
@@ -101,18 +119,33 @@ def _run_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
     args = [bin_path, "--print"]
     if CLAUDE_MODEL:
         args += ["--model", CLAUDE_MODEL]
+    # Concurrency cap: don't fork unbounded node processes if many requests land
+    # at once. Acquire before spawning; release in finally.
+    _CLAUDE_SEM.acquire()
     try:
+        # start_new_session puts claude (and any node helpers it spawns) in their
+        # own process group, so a timeout can kill the WHOLE tree — otherwise
+        # subprocess.run only kills the direct child and node helpers linger.
         proc = subprocess.run(
             args,
             input=prompt,
             capture_output=True,
             text=True,
             timeout=TIMEOUT_SECONDS,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        pid = getattr(exc, "pid", None)
+        if pid:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
         return None, f"claude timed out after {TIMEOUT_SECONDS}s"
     except FileNotFoundError:
         return None, "claude binary disappeared mid-call"
+    finally:
+        _CLAUDE_SEM.release()
     if proc.returncode != 0:
         err = (proc.stderr or "").strip()[:500] or f"exit {proc.returncode}"
         log.warning("claude exited %d: %s", proc.returncode, err)
@@ -126,6 +159,11 @@ def _run_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
 # --- HTTP handler -----------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
+    # Socket read timeout: without it a client that opens a connection and dribbles
+    # headers holds a worker thread forever (pre-auth slow-loris). 30 s is ample for
+    # a legitimate LAN POST; StreamRequestHandler.setup() applies this via settimeout.
+    timeout = 30
+
     # Suppress the noisy default per-request stderr log; we log structured
     # events from the handlers themselves.
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
@@ -222,8 +260,21 @@ class Handler(BaseHTTPRequestHandler):
 # --- Entrypoint -------------------------------------------------------------
 
 def main() -> int:
+    # Fail CLOSED: the shim grants full Claude-account access, so an unauthenticated
+    # daemon must never listen on anything but loopback. Without a token, a bare
+    # `python3 shim.py` (default bind 0.0.0.0) used to serve open access on every
+    # interface — the one footgun that turns "recommended" into "owned". Require
+    # EITHER a token OR a loopback-only bind; otherwise refuse to start.
+    if not BEARER_TOKEN and not _is_loopback_bind(BIND_HOST):
+        log.error(
+            "REFUSING TO START: binding to %s with no SHIM_BEARER_TOKEN would expose "
+            "unauthenticated Claude access on the LAN. Set SHIM_BEARER_TOKEN, or set "
+            "SHIM_BIND_HOST=127.0.0.1 for a loopback-only (token-optional) daemon.",
+            BIND_HOST,
+        )
+        return 2
     if not BEARER_TOKEN:
-        log.warning("SHIM_BEARER_TOKEN not set — /generate is OPEN. Set it before exposing to LAN.")
+        log.warning("SHIM_BEARER_TOKEN not set — /generate is OPEN, but bind is loopback-only (%s).", BIND_HOST)
     log.info("claude-shim listening on %s:%d (claude=%r, model=%r, allow_ips=%s)",
              BIND_HOST, BIND_PORT, CLAUDE_BIN, CLAUDE_MODEL or "(default)",
              ",".join(sorted(ALLOW_IPS)) or "ALL")

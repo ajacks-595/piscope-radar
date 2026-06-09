@@ -35,11 +35,17 @@ async def lookup(callsign: str) -> Optional[dict[str, Any]]:
         log.info("adsbdb lookup failed for %s: %s", callsign, exc)
         return None
 
-    response = (data or {}).get("response") or {}
-    flightroute = response.get("flightroute") or {}
-    origin = flightroute.get("origin") or {}
-    dest = flightroute.get("destination") or {}
-    airline = flightroute.get("airline") or {}
+    # Shape-guard every level: a schema-changed / hostile upstream returning a
+    # list or scalar anywhere here would otherwise raise AttributeError out of
+    # lookup (parsing runs outside the try) and 500 the /api/enrich/adsbdb route.
+    def _d(v: Any) -> dict[str, Any]:
+        return v if isinstance(v, dict) else {}
+
+    response = _d(_d(data).get("response"))
+    flightroute = _d(response.get("flightroute"))
+    origin = _d(flightroute.get("origin"))
+    dest = _d(flightroute.get("destination"))
+    airline = _d(flightroute.get("airline"))
 
     result = {
         "callsign": flightroute.get("callsign") or callsign,

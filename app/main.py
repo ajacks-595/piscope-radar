@@ -10,11 +10,12 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .routers import api as api_router
 from .routers import ws as ws_router
+from .services import hostguard
 from .services import settings as settings_store
 from .services import digest as digest_svc
 from .services._http import close_client
@@ -48,7 +49,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 
 # Version stamp. Bump whenever you ship a notable user-facing change — the frontend reads
 # this via /piscope/api/version and pops a "✨ What's new" toast on first load after a bump.
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 
 app = FastAPI(title="PiScope Radar", version=VERSION, lifespan=lifespan)
 
@@ -61,6 +62,46 @@ async def version() -> dict[str, str]:
 # CORS, a malicious cross-origin page cannot POST to /piscope/api/settings (which has no auth).
 # If you need genuine cross-origin access (rare; Tailscale, custom DNS), add an explicit allow list
 # here rather than re-introducing a wildcard.
+
+
+# --- Host guard + baseline security headers (iteration 13) -------------------
+# Same-origin policy is the only privilege boundary on this no-auth box, and DNS
+# rebinding bypasses it: a hostile page re-points its own public hostname at the
+# Pi's private IP and then reads/writes the API "same-origin" (this also defeats
+# the WS Origin==Host check). The rebound request still carries the attacker's
+# public FQDN in Host, so rejecting non-LAN-shaped Hosts (421) closes the hole.
+# See services/hostguard.py for what passes; `allowed_hosts` extends it and
+# `host_guard_enabled=false` disables it. The header half adds the cheap,
+# break-nothing response headers to EVERY response (previously only the two
+# HTML/SW routes had nosniff, and static/API responses had none).
+
+_HOST_GUARD_LOGGED: set[str] = set()
+
+
+@app.middleware("http")
+async def _host_guard_and_headers(request, call_next):
+    if hostguard.enabled():
+        host = request.headers.get("host", "")
+        if not hostguard.host_allowed(host):
+            if host not in _HOST_GUARD_LOGGED and len(_HOST_GUARD_LOGGED) < 100:
+                _HOST_GUARD_LOGGED.add(host)
+                log.warning("host guard rejected Host: %r (add to allowed_hosts "
+                            "or set host_guard_enabled=false if legitimate)", host)
+            return PlainTextResponse(
+                "Misdirected request: this PiScope instance does not serve that host name.\n",
+                status_code=421,
+            )
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), camera=(), microphone=()")
+    # Versioned static assets (the ?v=<VERSION> stamp from the index route) are
+    # immutable by construction — a release bump changes the URL. Long-cache them
+    # so reloads stop re-validating every asset against the Pi.
+    if request.url.path.startswith("/piscope/static/") and "v" in request.query_params:
+        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+    return response
+
 
 app.include_router(ws_router.router, prefix="/piscope")
 app.include_router(api_router.router, prefix="/piscope")
@@ -79,43 +120,34 @@ async def root() -> RedirectResponse:
 # Read fresh from settings on each request — cheap, and means an admin's
 # `frame_ancestors` change takes effect without restart.
 
-def _csp_header() -> str:
+def _csp_header(script_nonce: Optional[str] = None) -> str:
     """Build the ENFORCED Content-Security-Policy header value.
 
-    Only directives that cannot break a working deployment go here:
-    `frame-ancestors` (from the user's setting; defaults to `'self'` — no
-    cross-origin embedding) plus `object-src 'none'` + `base-uri 'self'`, which
-    are cheap and universally safe. We deliberately do NOT set `default-src`,
-    leaving styles / images / fonts / tiles / WebSocket connections unrestricted.
+    Base directives are universally safe: `frame-ancestors` (from the user's
+    setting; defaults to `'self'` — no cross-origin embedding) plus
+    `object-src 'none'` + `base-uri 'self'`. We deliberately do NOT set
+    `default-src`, leaving styles / images / fonts / tiles / WebSocket
+    connections unrestricted.
 
-    The `script-src` policy is shipped separately, Report-Only — see
-    `_script_csp_report_only`."""
+    When `script_nonce` is given (the served HTML), `script-src` is enforced
+    too: `'self'` + the Leaflet CDN + the per-response nonce for the single
+    inline bootstrap script — no `'unsafe-inline'`, so an injected <script>
+    is blocked. Promoted from Report-Only in iteration 13 after a clean
+    real-browser verification pass on the Pi (iteration 12)."""
     raw = (settings_store.get("frame_ancestors") or "'self'").strip()
-    # The setting is a free-form comma-separated string. Strip whitespace,
-    # drop blanks, but otherwise pass tokens through verbatim — the admin
-    # writes valid CSP source expressions (`'self'`, schemes, origins).
+    # The setting is a comma-separated string of CSP source expressions; the
+    # settings layer restricts it to CSP-safe characters at write time.
     tokens = [t.strip() for t in raw.split(",") if t.strip()]
     if not tokens:
         tokens = ["'self'"]
-    return "; ".join([
+    directives = [
         "frame-ancestors " + " ".join(tokens),
         "object-src 'none'",
         "base-uri 'self'",
-    ])
-
-
-def _script_csp_report_only(nonce: str) -> str:
-    """The `script-src` policy for the dynamically-served `/piscope` HTML, emitted
-    via `Content-Security-Policy-Report-Only` (NOT enforced) for now.
-
-    `'self'` + the Leaflet CDN + this response's inline bootstrap (carrying the
-    per-response nonce); no `'unsafe-inline'`, so an injected `<script>` without
-    the nonce would be *reported* as a violation. Report-Only because the app's
-    JS hasn't yet been browser-verified under an enforced script-src — shipping it
-    enforced risks breaking the live UI if any source was missed. Watch the
-    browser console on the Pi for a release, then promote this directive into the
-    enforced `_csp_header` (it's wired and tested to flip cleanly)."""
-    return f"script-src 'self' https://unpkg.com 'nonce-{nonce}'"
+    ]
+    if script_nonce:
+        directives.append(f"script-src 'self' https://unpkg.com 'nonce-{script_nonce}'")
+    return "; ".join(directives)
 
 
 # --- Service-worker cache tag (iter 9.4) ------------------------------------
@@ -172,10 +204,9 @@ async def index() -> HTMLResponse:
     # upgrade always delivers the freshly-versioned asset URLs on the very next navigation.
     return HTMLResponse(html, headers={
         "Cache-Control": "no-store, must-revalidate",
-        "Content-Security-Policy": _csp_header(),
-        # script-src ships Report-Only until verified in a real browser (see
-        # _script_csp_report_only). Promote into the enforced header above after.
-        "Content-Security-Policy-Report-Only": _script_csp_report_only(nonce),
+        # script-src is ENFORCED as of iteration 13 (was Report-Only through two
+        # releases; the iteration-12 real-browser pass on the Pi was violation-free).
+        "Content-Security-Policy": _csp_header(script_nonce=nonce),
         "X-Content-Type-Options": "nosniff",
     })
 
@@ -209,5 +240,30 @@ async def service_worker() -> Response:
 
 
 @app.get("/piscope/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> Response:
+    """Liveness + feed-freshness probe for uptime monitors. Returns 200 while the
+    feed has polled recently, 503 (status "degraded") once the last successful
+    poll is older than a few poll intervals — so a monitor hitting /health alerts
+    when the receiver/poller wedges even though the process is still up."""
+    import json as _json
+    h = feed_service.health()
+    interval = max(1, int(settings_store.get("poll_interval") or 2))
+    last_poll = feed_service.last_poll_at
+    age = (time.time() - last_poll) if last_poll else None
+    # Stale once we've missed ~5 polls (min 30 s). last_poll==0 means "still
+    # starting up" — treat as ok so a monitor doesn't flap during boot.
+    stale_after = max(30.0, interval * 5)
+    degraded = age is not None and age > stale_after
+    body = {
+        "status": "degraded" if degraded else "ok",
+        "feed_state": h.get("connection_state"),
+        "last_poll_age_s": round(age, 1) if age is not None else None,
+        "aircraft": h.get("aircraft_count"),
+        "uptime_seconds": h.get("uptime_seconds"),
+        "version": VERSION,
+    }
+    return Response(
+        content=_json.dumps(body),
+        media_type="application/json",
+        status_code=503 if degraded else 200,
+    )

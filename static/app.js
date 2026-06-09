@@ -35,6 +35,8 @@ const API = {
   analytics: (range) => `/piscope/api/analytics?range=${encodeURIComponent(range)}`,
   analyticsNotable: (range) => `/piscope/api/analytics/notable?range=${encodeURIComponent(range)}`,
   analyticsReturning: (range) => `/piscope/api/analytics/returning?range=${encodeURIComponent(range)}&min_days=2`,
+  analyticsAircraft: (hex) => `/piscope/api/analytics/aircraft/${encodeURIComponent(hex)}`,
+  analyticsExport: (kind) => `/piscope/api/analytics/export?kind=${encodeURIComponent(kind)}`,
   notes: (hex) => `/piscope/api/notes/${encodeURIComponent(hex)}`,
   webhooks: '/piscope/api/webhooks',
   webhookTest: '/piscope/api/webhooks/test',
@@ -172,6 +174,7 @@ let radar = null;
 let radarCanvas = null;
 let radarCtx = null;
 let coordGridEl = null;
+let coordGridResize = null;   // bound resize handler, so it can be detached (see removeCoordinateGrid)
 let aircraftMarkers = new Map();
 let aircraftTrails = new Map();
 let detailPhotos = [];
@@ -350,6 +353,18 @@ function applyAircraftUpdate(data) {
   }
   state.lastRateAt = nowMs;
   state.totalMessages = newTotal;
+
+  // Replay mode owns the map/sidebar while it's active. A live WS frame arrives
+  // every ~2 s; without this guard it overwrote state.aircraft and re-rendered,
+  // so a scrubbed replay frame survived at most one poll before snapping back to
+  // live (clock still showing the old timestamp). Keep the latest live frame for
+  // the "return to live" path and refresh only the connection pill; leave the
+  // rendered replay frame untouched.
+  if (state.replayActive) {
+    state.replayLiveSnapshot = data;
+    updateConnectionPill();
+    return;
+  }
 
   state.aircraft.clear();
   for (const ac of data.aircraft || []) {
@@ -1011,10 +1026,16 @@ function drawCoordinateGrid() {
     }
   };
   render();
-  window.addEventListener('resize', render);
+  // Keep the handler reference so removeCoordinateGrid can detach it. Without
+  // this, every theme change / settings save while the terminal theme is active
+  // leaked another resize listener, and after leaving the theme each orphaned
+  // handler threw on the now-null coordGridEl on every window resize.
+  coordGridResize = render;
+  window.addEventListener('resize', coordGridResize);
 }
 
 function removeCoordinateGrid() {
+  if (coordGridResize) { window.removeEventListener('resize', coordGridResize); coordGridResize = null; }
   if (coordGridEl) { coordGridEl.remove(); coordGridEl = null; }
 }
 
@@ -1371,7 +1392,10 @@ function selectAircraft(hex, { pan }) {
 }
 
 function refreshRowSelection(hex, on) {
-  const row = document.querySelector(`.aircraft-row[data-hex="${hex}"]`);
+  // CSS.escape: in global/extra-feed mode the hex comes from an upstream we don't
+  // control, so a value containing a quote or backslash would otherwise throw a
+  // SyntaxError out of querySelector and break selection.
+  const row = document.querySelector(`.aircraft-row[data-hex="${CSS.escape(hex)}"]`);
   if (row) row.classList.toggle('selected', !!on);
 }
 
@@ -1596,6 +1620,10 @@ async function fetchEnrichment(ac) {
   const hex = ac.hex;
   cachedFetch('hexdb', hex, () => fetch(API.hexdb(hex)).then((r) => r.json())).then((data) => {
     if (!data) return;
+    // Guard against a slow lookup for a previously-selected aircraft repainting
+    // the now-current aircraft's subtitle (the photo/route callbacks below
+    // already guard via isConnected; this one didn't).
+    if (hex !== state.selectedHex) return;
     const subtitle = document.getElementById('detail-subtitle');
     if (subtitle && (data.manufacturer || data.type || data.registered_owners)) {
       const parts = [data.manufacturer && data.type ? `${data.manufacturer} ${data.type}` : (data.type || data.manufacturer), data.registration || ac.registration, data.registered_owners].filter(Boolean);
@@ -1613,6 +1641,9 @@ async function fetchEnrichment(ac) {
       renderPhotoGallery(photos);
     }).catch(() => { renderPhotoGallery([]); });
   }
+
+  // Sighting history from the analytics ledger (days seen, extremes).
+  renderSightingHistory(hex);
 
   // Personal note on this aircraft.
   renderNoteField(hex);
@@ -1654,12 +1685,22 @@ async function fetchEnrichment(ac) {
   }
 }
 
+const _ENRICH_CACHE_CAP = 2000;   // per kind (hexdb/adsbdb/photo)
 function cachedFetch(cacheKey, key, fn) {
   const cache = state.enrichmentCache[cacheKey];
   if (!cache) return fn();
-  if (cache.has(key)) return Promise.resolve(cache.get(key));
+  if (cache.has(key)) {
+    // Refresh recency (Map preserves insertion order → re-insert moves to newest).
+    const v = cache.get(key);
+    cache.delete(key); cache.set(key, v);
+    return Promise.resolve(v);
+  }
   return fn().then((data) => {
     cache.set(key, data);
+    // Bound growth: a busy receiver sees thousands of distinct hexes/callsigns a
+    // day, so an uncapped Map leaked tens of MB over a multi-day wall-dashboard
+    // session. Evict oldest beyond the cap (the backend caps its own at 8192).
+    while (cache.size > _ENRICH_CACHE_CAP) cache.delete(cache.keys().next().value);
     return data;
   });
 }
@@ -2025,12 +2066,22 @@ async function fetchFlightAware(ac) {
     btn.disabled = false;
     return;
   }
-  let payload = await res.json();
-  if (payload.blocked === 'over_budget') {
-    const ok = confirm(`Monthly FlightAware budget reached ($${(payload.budget.spent_cents / 100).toFixed(2)} of $${(payload.budget.limit_cents / 100).toFixed(2)}). Continue anyway?`);
-    if (!ok) { btn.disabled = false; hint.textContent = 'Cancelled'; return; }
-    res = await fetch(API.faLookup(ac.callsign, true), { method: 'POST' });
+  // Guard JSON parsing: a lighttpd 502/503 during a deploy restart returns an
+  // HTML error body, and an unguarded res.json() would throw past the finally-less
+  // path and leave the button stuck disabled at "Loading…".
+  let payload;
+  try {
     payload = await res.json();
+    if (payload.blocked === 'over_budget') {
+      const ok = confirm(`Monthly FlightAware budget reached ($${(payload.budget.spent_cents / 100).toFixed(2)} of $${(payload.budget.limit_cents / 100).toFixed(2)}). Continue anyway?`);
+      if (!ok) { btn.disabled = false; hint.textContent = 'Cancelled'; return; }
+      res = await fetch(API.faLookup(ac.callsign, true), { method: 'POST' });
+      payload = await res.json();
+    }
+  } catch (e) {
+    btn.disabled = false;
+    hint.textContent = 'FlightAware lookup failed';
+    return;
   }
   btn.disabled = false;
   hint.textContent = '';
@@ -2054,13 +2105,13 @@ function renderFlightAwareFlight(f) {
   `;
   return `
     <dl class="detail-grid">
-      <dt>Operator</dt><dd>${escapeHtml(f.operator || '—')}${f.operator_iata ? ` (${f.operator_iata})` : ''}</dd>
+      <dt>Operator</dt><dd>${escapeHtml(f.operator || '—')}${f.operator_iata ? ` (${escapeHtml(String(f.operator_iata))})` : ''}</dd>
       <dt>Aircraft</dt><dd>${escapeHtml(f.aircraft_type || '—')} · ${escapeHtml(f.registration || '—')}</dd>
-      <dt>Status</dt><dd>${escapeHtml(f.status || '—')}${f.progress_percent != null ? ` (${f.progress_percent}%)` : ''}</dd>
+      <dt>Status</dt><dd>${escapeHtml(f.status || '—')}${f.progress_percent != null ? ` (${Number(f.progress_percent)}%)` : ''}</dd>
       <dt>Origin</dt><dd>${escapeHtml(f.origin_code_icao || '—')}${f.gate_origin ? ' · gate ' + escapeHtml(f.gate_origin) : ''}${f.terminal_origin ? ' · term ' + escapeHtml(f.terminal_origin) : ''}</dd>
       <dt>Destination</dt><dd>${escapeHtml(f.destination_code_icao || '—')}${f.gate_destination ? ' · gate ' + escapeHtml(f.gate_destination) : ''}${f.terminal_destination ? ' · term ' + escapeHtml(f.terminal_destination) : ''}${f.baggage_claim ? ' · bag ' + escapeHtml(f.baggage_claim) : ''}</dd>
       <dt>Route</dt><dd>${escapeHtml(f.route || '—')}</dd>
-      <dt>Filed</dt><dd>${f.filed_altitude != null ? f.filed_altitude * 100 + ' ft' : '—'} · ${f.filed_airspeed != null ? f.filed_airspeed + ' kts' : '—'}</dd>
+      <dt>Filed</dt><dd>${f.filed_altitude != null ? Number(f.filed_altitude) * 100 + ' ft' : '—'} · ${f.filed_airspeed != null ? Number(f.filed_airspeed) + ' kts' : '—'}</dd>
       ${block('OUT (gate)', 'out')}
       ${block('OFF (wheels up)', 'off')}
       ${block('ON (wheels down)', 'on')}
@@ -2111,9 +2162,17 @@ function updateEventsBadge() {
  * We use the browser's existing canvas — the Leaflet tile pane is HTML, so we draw
  * everything we have into a fresh canvas (markers via dom-to-image would be heavy;
  * instead we save the marker locations + map URL into a metadata JSON the user can use). */
+let _emergencySnapshotCount = 0;
+const _EMERGENCY_SNAPSHOT_CAP = 10;   // per page session
 async function autoSnapshotEmergency(ac) {
+  // Emergency squawks (7500/7600/7700) and hex are RF-spoofable, so cap how many
+  // automatic file downloads a session can trigger — otherwise a spoofer cycling
+  // hexes could shower the user's downloads folder. The dedup in fireNotifications
+  // already limits this to one per hex; this bounds the distinct-hex flood too.
+  if (_emergencySnapshotCount >= _EMERGENCY_SNAPSHOT_CAP) return;
+  _emergencySnapshotCount += 1;
   try {
-    const url = `https://globe.adsb.fi/?icao=${ac.hex}`;
+    const url = `https://globe.adsb.fi/?icao=${encodeURIComponent(ac.hex)}`;
     const blob = new Blob([JSON.stringify({
       ts: new Date().toISOString(),
       aircraft: ac, receiver: state.receiver, external_link: url,
@@ -2437,8 +2496,22 @@ async function saveSettings() {
   if (cloudKey && cloudKey !== '***') body.cloud_api_key = cloudKey;
   const claudeTok = document.getElementById('setting-claude-cli-token')?.value;
   if (claudeTok && claudeTok !== '***') body.claude_cli_token = claudeTok;
-  const res = await fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  state.settings = await res.json();
+  let res;
+  try {
+    res = await fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  } catch (e) {
+    toast('Could not save settings (network error)');
+    return;
+  }
+  // Only adopt the response when it's a real settings object. On a non-2xx
+  // (e.g. 422 validation error, or a 502 mid-deploy) res.json() is an error
+  // envelope like {detail: …}; assigning that to state.settings would break
+  // theme/filter lookups until reload. Keep the existing settings instead.
+  if (res.ok) {
+    try { state.settings = await res.json(); } catch (e) { /* keep current */ }
+  } else {
+    toast('Settings save was rejected by the server');
+  }
   await saveWebhooks();  // persist whatever's in the settings modal's webhook editor
   applySettingsToUI();
   closeSettings();
@@ -2610,32 +2683,71 @@ function drawTerminator() {
 
 /* ---------- Notes (in detail panel) --------------------------------------- */
 let noteSaveTimer = null;
+async function renderSightingHistory(hex) {
+  const detail = document.getElementById('detail-content');
+  if (!detail) return;
+  // Drop any stale history section from a previously-selected aircraft.
+  detail.querySelectorAll('.detail-history').forEach((el) => el.remove());
+  let h;
+  try {
+    const res = await fetch(API.analyticsAircraft(hex));
+    if (res.status === 404) return;          // never logged — show nothing
+    if (!res.ok) return;
+    h = await res.json();
+  } catch (e) { return; }
+  // The fetch is async; bail if the user switched aircraft meanwhile.
+  if (hex !== state.selectedHex || !h || !h.days_seen) return;
+  const ex = h.extremes || {};
+  const fmtDate = (ts) => ts ? new Date(ts * 1000).toLocaleDateString() : '—';
+  const bits = [];
+  bits.push(`<dt>Days seen</dt><dd>${Number(h.days_seen)}</dd>`);
+  bits.push(`<dt>First seen</dt><dd>${escapeHtml(fmtDate(h.first_seen))}</dd>`);
+  bits.push(`<dt>Last seen</dt><dd>${escapeHtml(fmtDate(h.last_seen))}</dd>`);
+  if (ex.max_alt != null) bits.push(`<dt>Highest</dt><dd>${Number(ex.max_alt).toLocaleString()} ft</dd>`);
+  if (ex.max_gs != null) bits.push(`<dt>Fastest</dt><dd>${Math.round(Number(ex.max_gs))} kt</dd>`);
+  if (ex.max_range_nm != null) bits.push(`<dt>Max range</dt><dd>${Math.round(Number(ex.max_range_nm))} nm</dd>`);
+  const section = document.createElement('section');
+  section.className = 'detail-history';
+  section.innerHTML = `<h3>Sighting history</h3><dl class="detail-grid">${bits.join('')}</dl>`;
+  const ql = detail.querySelector('#quick-links')?.closest('section');
+  if (ql) detail.insertBefore(section, ql); else detail.appendChild(section);
+}
+
 async function renderNoteField(hex) {
   const detail = document.getElementById('detail-content');
-  if (!detail || detail.querySelector(`.detail-note[data-hex="${hex}"]`)) return;
+  if (!detail || detail.querySelector(`.detail-note[data-hex="${CSS.escape(hex)}"]`)) return;
   let existing = '';
   try { const data = await fetch(API.notes(hex)).then((r) => r.json()); existing = data.note || ''; } catch (e) {}
+  // The fetch above is async; if the user switched aircraft while it was in
+  // flight, the panel now belongs to a different hex. Bailing here stops a stale
+  // section being grafted onto the wrong aircraft's panel (which also caused
+  // duplicate note-area/note-status IDs and notes saved against the wrong hex).
+  if (hex !== state.selectedHex) return;
   const section = document.createElement('section');
   section.className = 'detail-note';
   section.dataset.hex = hex;
+  // No element IDs here — the panel can briefly hold more than one note section
+  // during rapid switching, and duplicate IDs make getElementById ambiguous.
+  // Scope every lookup to `section` instead.
   section.innerHTML = `
     <h3>Personal note</h3>
-    <textarea id="note-area" placeholder="Spot something notable? Add a private note attached to this aircraft."></textarea>
-    <span class="hint" id="note-status"></span>
+    <textarea class="note-area" placeholder="Spot something notable? Add a private note attached to this aircraft."></textarea>
+    <span class="hint note-status"></span>
   `;
   const ql = detail.querySelector('#quick-links')?.closest('section');
   if (ql) detail.insertBefore(section, ql); else detail.appendChild(section);
-  const area = section.querySelector('#note-area');
+  const area = section.querySelector('.note-area');
+  const status = section.querySelector('.note-status');
   area.value = existing;
   area.addEventListener('input', () => {
     clearTimeout(noteSaveTimer);
-    document.getElementById('note-status').textContent = 'Saving…';
+    status.textContent = 'Saving…';
     noteSaveTimer = setTimeout(async () => {
       try {
         await fetch(API.notes(hex), { method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ note: area.value }) });
-        document.getElementById('note-status').textContent = 'Saved.';
-      } catch (e) { document.getElementById('note-status').textContent = 'Save failed.'; }
+        status.textContent = 'Saved.';
+      } catch (e) { status.textContent = 'Save failed.'; }
     }, 500);
   });
 }
@@ -3648,6 +3760,10 @@ function hideContextMenu() { if (contextMenuEl) { contextMenuEl.remove(); contex
 function handleKeyboard(e) {
   const tag = (e.target?.tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+  // Ignore browser/OS chords (Ctrl+R reload, Ctrl+F find, Cmd+S save, …) — the
+  // single-key shortcuts below must not hijack them. Shift is allowed (it's how
+  // '?' is typed); Ctrl/Meta/Alt are not.
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); document.getElementById('filter-search')?.focus(); return; }
   if (e.key === '?') { e.preventDefault(); showKeyboardHelp(); return; }
   if (e.key === 'f' || e.key === 'F') { toggleFollow(); return; }
@@ -4137,8 +4253,11 @@ function applyUrlState() {
     const sel = document.getElementById('theme-select');
     if (sel && [...sel.options].some((o) => o.value === u.theme)) {
       sel.value = u.theme;
-      // Reuse the existing change-handler in bindUI — keeps tile + radar + persist logic in one place.
-      sel.dispatchEvent(new Event('change'));
+      // Apply locally WITHOUT persisting: a shared link like `#theme=synthwave`
+      // (or a hostile LAN page doing window.open) must not rewrite the Pi's
+      // stored theme for every other client. Dispatching 'change' would hit the
+      // persist:true handler; call applyTheme directly with persist:false.
+      applyTheme(u.theme, { persist: false });
     }
   }
   if (u.center && map) {

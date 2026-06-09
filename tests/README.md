@@ -20,3 +20,8 @@ scheduler never start and no external services are hit.
 
 On the production Pi these run against `/opt/piscope/venv` (`pip install pytest`
 there), staged in a temp dir so they never touch the live `piscope.db`.
+
+When staging onto the Pi, copy **all four** of `app/ static/ tests/ tools/` — a
+couple of tests read repo files directly (`tools/claude-shim/shim.py` for the
+no-`--bare` regression guard, `static/app.js` for the badge-escaping check), so a
+`app/ static/ tests/`-only stage fails them with `FileNotFoundError`.

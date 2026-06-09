@@ -297,6 +297,96 @@ def seen_hexes_for_date(date_key: str) -> set[str]:
         return set()
 
 
+def aircraft_history(hex_id: str) -> Optional[dict[str, Any]]:
+    """Per-tail sighting history from the ledger (analytics feature, phase 5).
+    The data was collected since this feature shipped but never surfaced per
+    aircraft. Returns None if the hex has never been logged."""
+    hex_id = (hex_id or "").lower().strip()
+    if not hex_id:
+        return None
+    with _connect() as conn:
+        agg = conn.execute(
+            "SELECT COUNT(*) AS days_seen, MIN(first_ts) AS first_seen, "
+            "       MAX(last_ts) AS last_seen, SUM(polls) AS total_polls, "
+            "       MAX(military) AS military, MAX(max_alt) AS max_alt, "
+            "       MIN(min_alt) AS min_alt, MAX(max_gs) AS max_gs, "
+            "       MAX(max_range_nm) AS max_range_nm, "
+            "       MIN(CASE WHEN min_range_nm > 0 THEN min_range_nm END) AS min_range_nm "
+            "FROM aircraft_sightings WHERE hex = ?",
+            (hex_id,),
+        ).fetchone()
+        if not agg or not agg["days_seen"]:
+            return None
+        # Most-recent non-null identity attributes.
+        ident = conn.execute(
+            "SELECT callsign, registration, type_code FROM aircraft_sightings "
+            "WHERE hex = ? ORDER BY date ASC", (hex_id,),
+        ).fetchall()
+        # Recent per-day rows for a mini history table / sparkline (cap at 60).
+        days = conn.execute(
+            "SELECT date, first_ts, last_ts, polls, callsign, type_code, "
+            "       max_alt, max_gs, max_range_nm "
+            "FROM aircraft_sightings WHERE hex = ? ORDER BY date DESC LIMIT 60",
+            (hex_id,),
+        ).fetchall()
+    latest = {"callsign": None, "registration": None, "type_code": None}
+    for r in ident:
+        for k in latest:
+            if r[k]:
+                latest[k] = r[k]
+    return {
+        "hex": hex_id,
+        "days_seen": agg["days_seen"],
+        "first_seen": agg["first_seen"],
+        "last_seen": agg["last_seen"],
+        "total_polls": int(agg["total_polls"] or 0),
+        "military": bool(agg["military"]),
+        "extremes": {
+            "max_alt": agg["max_alt"], "min_alt": agg["min_alt"],
+            "max_gs": round(agg["max_gs"], 1) if agg["max_gs"] is not None else None,
+            "max_range_nm": round(agg["max_range_nm"], 1) if agg["max_range_nm"] is not None else None,
+            "min_range_nm": round(agg["min_range_nm"], 1) if agg["min_range_nm"] is not None else None,
+        },
+        **latest,
+        "days": [dict(r) for r in days],
+    }
+
+
+def export_csv(kind: str) -> str:
+    """Return analytics as CSV text (analytics feature, phase 5). `kind` is
+    'daily' (per-UTC-day traffic from daily_stats) or 'sightings' (the per-(hex,
+    day) ledger). Streamed straight to a download by /api/analytics/export."""
+    import csv
+    import io
+    if kind not in ("daily", "sightings"):
+        raise ValueError("kind must be 'daily' or 'sightings'")
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    with _connect() as conn:
+        if kind == "daily":
+            w.writerow(["date", "total_polls", "unique_aircraft", "max_range_nm",
+                        "emergencies", "military_seen"])
+            for r in conn.execute(
+                "SELECT date, total_polls, unique_aircraft, max_range_nm, emergencies, "
+                "military_seen FROM daily_stats ORDER BY date ASC"
+            ):
+                w.writerow([r["date"], r["total_polls"], r["unique_aircraft"],
+                            r["max_range_nm"], r["emergencies"], r["military_seen"]])
+        else:
+            w.writerow(["hex", "date", "callsign", "registration", "type_code",
+                        "military", "polls", "max_alt", "min_alt", "max_gs",
+                        "max_range_nm", "min_range_nm"])
+            for r in conn.execute(
+                "SELECT hex, date, callsign, registration, type_code, military, polls, "
+                "max_alt, min_alt, max_gs, max_range_nm, min_range_nm "
+                "FROM aircraft_sightings ORDER BY date ASC, hex ASC"
+            ):
+                w.writerow([r["hex"], r["date"], r["callsign"], r["registration"],
+                            r["type_code"], r["military"], r["polls"], r["max_alt"],
+                            r["min_alt"], r["max_gs"], r["max_range_nm"], r["min_range_nm"]])
+    return buf.getvalue()
+
+
 def prune_old_analytics(max_age_days: Any) -> int:
     """Trim sightings + hourly rows older than the retention window. 0/None/garbage
     disables (keep forever). Own connection — called from the feed loop's 5-minute

@@ -30,7 +30,7 @@ dependencies, no venv.
 Headers: Authorization: Bearer <SHIM_BEARER_TOKEN>   (if configured)
 Body:    {"prompt": "...", "num_predict"?: 360, "temperature"?: 0.5}
 200:     {"text": "..."}
-4xx/5xx: {"detail": "..."}
+4xx/5xx: {"error": "..."}
 ```
 
 `GET /health`
@@ -67,9 +67,12 @@ Then:
 
 2. Verify the binary is reachable headlessly:
    ```bash
-   claude --bare --print "Say hi in 4 words"
+   claude --print "Say hi in 4 words"
    ```
-   If you get a response, the shim will work too.
+   If you get a response, the shim will work too. Do NOT add `--bare`: it
+   disables OAuth and forces `ANTHROPIC_API_KEY`-only auth, so an OAuth /
+   subscription login would report "Not logged in" — the shim deliberately
+   omits it (see the note in `shim.py:_run_claude`).
 
 3. Edit `/etc/claude-shim.env`:
    - `SHIM_ALLOW_IPS=10.0.0.231` — pin the Pi (or your client) IP.

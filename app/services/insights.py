@@ -12,6 +12,7 @@ import sqlite3
 import time
 from typing import Any, Optional
 
+from ..models.aircraft import PLAUSIBLE_RANGE_MAX_NM
 from .settings import _connect  # type: ignore[attr-defined]
 
 
@@ -191,7 +192,12 @@ def _bearing_deg(receiver_lat: float, receiver_lon: float, lat: float, lon: floa
 def update_polar(receiver_lat: float, receiver_lon: float, *, hex_id: str,
                  lat: float, lon: float, distance_nm: float,
                  conn: Optional[sqlite3.Connection] = None) -> None:
-    if distance_nm is None or distance_nm <= 0:
+    # Plausibility ceiling (iteration 13): the column is updated with MAX(), so a
+    # single garbage frame (live examples: A330 "at" 126,500 ft, CPR-junk
+    # positions hundreds of nm out) would otherwise pin that bearing's max range
+    # to nonsense FOREVER with no self-correction. records.py and analytics.py
+    # already clamp to PLAUSIBLE_RANGE_MAX_NM; this path was the one that didn't.
+    if distance_nm is None or distance_nm <= 0 or distance_nm > PLAUSIBLE_RANGE_MAX_NM:
         return
     bearing = int(round(_bearing_deg(receiver_lat, receiver_lon, lat, lon))) % 360
     now = time.time()

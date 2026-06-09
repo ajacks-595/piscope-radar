@@ -19,7 +19,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Optional
+from typing import Any, Optional
 
 
 log = logging.getLogger("piscope.events_bus")
@@ -67,38 +67,58 @@ def publish(kind: str, *, hex: str, lat: Optional[float] = None,
     return ev
 
 
-async def subscribe(start_after_id: int = 0) -> AsyncIterator[BusEvent]:
-    """Async iterator: yield missed events from the ring buffer first (per
-    Last-Event-ID semantics), then yield each live event as it arrives. Cleans
-    the subscriber list up on consumer-side cancellation.
+class Subscription:
+    """A live subscription to the bus. Plain object, NOT an async generator —
+    that distinction is load-bearing (iteration 13). The SSE consumer races
+    each `next()` against a 25 s heartbeat with `asyncio.wait_for`, which
+    cancels the pending awaitable on timeout. When `subscribe()` was an async
+    generator, that cancellation propagated into the generator's suspended
+    `await q.get()`, ran its `finally`, and CLOSED the generator — so on a
+    quiet feed (the normal case, since aircraft events are sparse) the stream
+    tore itself down on the very first 25 s heartbeat and the client
+    reconnected every 25 s, re-replaying the whole ring each time. Cancelling
+    a bare `queue.get()` future leaves the subscription untouched, so the
+    heartbeat now does what it's supposed to: hold the connection open.
 
-    Ordering is deliberate: we attach the live queue BEFORE snapshotting the
-    ring. If we drained the ring first (as this used to), an event published in
-    the gap between the drain and the attach would land in neither and be lost.
-    Attaching first means every post-attach event reaches the queue; we then
-    replay the ring and de-dup by id so an event that lands in both the ring
-    snapshot and the queue is yielded exactly once."""
-    q: asyncio.Queue[BusEvent] = asyncio.Queue(maxsize=128)
-    _subscribers.append(q)
-    try:
-        # Replay the ring (everything newer than the client's Last-Event-ID),
-        # tracking the highest id we replay so the same event arriving on the
-        # queue can be dropped as a duplicate.
-        replayed_through = start_after_id
-        for ev in list(_ring):
-            if ev.id > start_after_id:
-                replayed_through = max(replayed_through, ev.id)
-                yield ev
+    Replay-then-live ordering matches the old generator: the queue is attached
+    BEFORE the ring is snapshotted, so an event published in the attach gap
+    lands on the queue; ring events already delivered are de-duped by id.
+    Always call `close()` (the SSE handler does so in a `finally`)."""
+
+    __slots__ = ("_q", "_replay", "_replayed_through", "_closed")
+
+    def __init__(self, start_after_id: int = 0) -> None:
+        self._q: asyncio.Queue[BusEvent] = asyncio.Queue(maxsize=128)
+        _subscribers.append(self._q)
+        self._replay = [ev for ev in list(_ring) if ev.id > start_after_id]
+        self._replayed_through = max(
+            [start_after_id] + [ev.id for ev in self._replay])
+        self._closed = False
+
+    async def next(self) -> BusEvent:
+        """Next event — replayed ring events first, then live ones. Awaits the
+        queue when nothing is buffered; raises CancelledError if the awaiting
+        task is cancelled (the subscription survives — call next() again)."""
+        if self._replay:
+            return self._replay.pop(0)
         while True:
-            ev = await q.get()
-            if ev.id <= replayed_through:
-                continue  # already delivered during ring replay
-            yield ev
-    finally:
+            ev = await self._q.get()
+            if ev.id > self._replayed_through:
+                return ev   # else already delivered during ring replay; skip
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         try:
-            _subscribers.remove(q)
+            _subscribers.remove(self._q)
         except ValueError:
             pass
+
+
+def subscribe(start_after_id: int = 0) -> Subscription:
+    """Attach a live subscription replaying everything after `start_after_id`."""
+    return Subscription(start_after_id)
 
 
 def subscriber_count() -> int:

@@ -133,9 +133,26 @@ log "Syncing application files to ${INSTALL_DIR}"
 mkdir -p "${INSTALL_DIR}"
 
 # Back up the live DB before overwriting any code, so a bad install can be rolled back.
+# Use SQLite's online-backup API, NOT cp: the service is still running and writes
+# every ~2 s in WAL mode, so a plain file copy would miss everything still in the
+# -wal sidecar since the last checkpoint and could tear mid-checkpoint. system
+# python3 (installed above) ships the sqlite3 stdlib module, so this needs no venv
+# (which doesn't exist yet on a first install). Rotate one generation so re-running
+# the installer to recover doesn't clobber the only good backup with a bad one.
 if [[ -f "${INSTALL_DIR}/piscope.db" ]]; then
-  cp "${INSTALL_DIR}/piscope.db" "${INSTALL_DIR}/piscope.db.bak"
-  ok "Existing piscope.db backed up to piscope.db.bak"
+  [[ -f "${INSTALL_DIR}/piscope.db.bak" ]] && mv -f "${INSTALL_DIR}/piscope.db.bak" "${INSTALL_DIR}/piscope.db.bak.1"
+  if python3 - "${INSTALL_DIR}/piscope.db" "${INSTALL_DIR}/piscope.db.bak" <<'PYBACKUP'
+import sqlite3, sys
+src, dst = sys.argv[1], sys.argv[2]
+with sqlite3.connect(src) as s, sqlite3.connect(dst) as d:
+    s.backup(d)
+PYBACKUP
+  then
+    ok "Existing piscope.db backed up (WAL-safe) to piscope.db.bak"
+  else
+    warn "WAL-safe backup failed; falling back to file copy (may miss the last few seconds)"
+    cp "${INSTALL_DIR}/piscope.db" "${INSTALL_DIR}/piscope.db.bak"
+  fi
 fi
 
 # Sync code (deletes stale files in app/static, keeps DB).
@@ -187,11 +204,33 @@ ExecStart=${INSTALL_DIR}/venv/bin/python -m uvicorn app.main:app --host 127.0.0.
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
-# Light hardening (LAN-only deployment).
+# Hardening. Verified compatible with this app (SQLite/WAL needs write access to
+# the DB's directory; httpx needs INET sockets + DNS via netlink). ReadWritePaths
+# carves the one writable hole out of an otherwise read-only filesystem; the DB
+# lives in INSTALL_DIR, so that's the path. UMask=0077 matters — piscope.db holds
+# API keys / SMTP password and was previously created world-readable.
 NoNewPrivileges=true
-ProtectSystem=full
+ProtectSystem=strict
+ReadWritePaths=${INSTALL_DIR}
 ProtectHome=read-only
 PrivateTmp=true
+PrivateDevices=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+RemoveIPC=true
+CapabilityBoundingSet=
+UMask=0077
 LimitNOFILE=4096
 
 [Install]
@@ -200,7 +239,10 @@ EOF
 
 systemctl daemon-reload
 systemctl enable piscope.service
-systemctl restart piscope.service
+# NB: the actual (re)start happens at the END, after the reverse proxy and CLI are
+# in place. Restarting here would, on a transient start failure, leave a box with
+# no proxy and no admin CLI — and a Restart=always unit could boot-loop the freshly
+# rsynced code against a not-yet-refreshed venv.
 
 # ----- 5. Reverse proxy ------------------------------------------------------
 # Two flavours: lighttpd (PiAware default — sits alongside tar1090) and nginx (everything else).
@@ -219,9 +261,12 @@ configure_lighttpd() {
   cat > "${CONF}" <<EOF
 # PiScope Radar — proxy /piscope and /piscope/ws to uvicorn on 127.0.0.1:${SERVICE_PORT}.
 # Lighttpd 1.4.46+ handles WebSocket upgrades via mod_proxy when "upgrade" => "enable".
-\$HTTP["url"] =~ "^/piscope" {
+# Anchor the match to a path boundary so it doesn't also catch "/piscopexyz".
+\$HTTP["url"] =~ "^/piscope(\$|/)" {
     proxy.server = ( "" => ( ( "host" => "127.0.0.1", "port" => ${SERVICE_PORT} ) ) )
     proxy.header = ( "upgrade" => "enable" )
+    # Cap upload size at the proxy too (the app caps /api/import at 20 MB itself).
+    server.max-request-size = 26214400
 }
 EOF
   # Symlink directly into conf-enabled. `lighttpd-enable-mod` chokes on the numeric
@@ -303,33 +348,40 @@ esac
 # ----- 6. Admin CLI ---------------------------------------------------------
 log "Installing 'piscope' helper command"
 CLI_PATH="/usr/local/bin/piscope"
-cat > "${CLI_PATH}" <<'CLI'
+# Unquoted heredoc: install-time values (${INSTALL_DIR}, ${SERVICE_PORT}, the
+# literal service name) are baked in now; every RUNTIME shell expansion the CLI
+# needs is escaped as \$ so it survives into the written script. Previously this
+# was a quoted heredoc that hardcoded SERVICE="piscope-radar" — a unit that has
+# never existed (it's piscope.service), so status/start/stop/restart/logs were
+# all broken in production. Restore/import also needs the X-PiScope-Import header.
+cat > "${CLI_PATH}" <<CLI
 #!/usr/bin/env bash
 # PiScope Radar admin helper. Wraps the most common day-to-day ops.
 set -euo pipefail
-INSTALL_DIR="/opt/piscope"
-SERVICE="piscope-radar"
-case "${1:-help}" in
-  status)   systemctl status "${SERVICE}" --no-pager ;;
-  start)    sudo systemctl start "${SERVICE}" ;;
-  stop)     sudo systemctl stop "${SERVICE}" ;;
-  restart)  sudo systemctl restart "${SERVICE}" ;;
-  logs)     journalctl -u "${SERVICE}" -f --no-pager ;;
-  health)   curl -fsS http://127.0.0.1:8765/piscope/api/health | python3 -m json.tool ;;
+INSTALL_DIR="${INSTALL_DIR}"
+SERVICE="piscope"
+PORT="${SERVICE_PORT}"
+case "\${1:-help}" in
+  status)   systemctl status "\${SERVICE}" --no-pager ;;
+  start)    sudo systemctl start "\${SERVICE}" ;;
+  stop)     sudo systemctl stop "\${SERVICE}" ;;
+  restart)  sudo systemctl restart "\${SERVICE}" ;;
+  logs)     journalctl -u "\${SERVICE}" -f --no-pager ;;
+  health)   curl -fsS "http://127.0.0.1:\${PORT}/piscope/api/health" | python3 -m json.tool ;;
   backup)
-    out="${HOME}/piscope-$(date +%Y%m%d-%H%M%S).zip"
-    curl -fsS http://127.0.0.1:8765/piscope/api/export -o "${out}"
-    echo "Saved ${out}"
+    out="\${HOME}/piscope-\$(date +%Y%m%d-%H%M%S).zip"
+    curl -fsS "http://127.0.0.1:\${PORT}/piscope/api/export" -o "\${out}"
+    echo "Saved \${out}"
     ;;
   restore)
-    [[ -z "${2:-}" ]] && { echo "Usage: piscope restore <backup.zip>"; exit 1; }
-    curl -fsS -F "file=@${2}" http://127.0.0.1:8765/piscope/api/import
+    [[ -z "\${2:-}" ]] && { echo "Usage: piscope restore <backup.zip>"; exit 1; }
+    curl -fsS -H "X-PiScope-Import: 1" -F "file=@\${2}" "http://127.0.0.1:\${PORT}/piscope/api/import"
     ;;
   url)
-    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-    echo "http://${ip:-localhost}/piscope"
+    ip=\$(hostname -I 2>/dev/null | awk '{print \$1}')
+    echo "http://\${ip:-localhost}/piscope"
     ;;
-  db-size)  du -h "${INSTALL_DIR}/piscope.db" "${INSTALL_DIR}/piscope.db-wal" 2>/dev/null || true ;;
+  db-size)  du -h "\${INSTALL_DIR}/piscope.db" "\${INSTALL_DIR}/piscope.db-wal" 2>/dev/null || true ;;
   *)
     cat <<USAGE
 PiScope Radar admin commands:
@@ -349,18 +401,23 @@ esac
 CLI
 chmod +x "${CLI_PATH}"
 
-# ----- 7. Done --------------------------------------------------------------
+# ----- 7. Start the service (now that proxy + CLI are in place) --------------
+log "Starting piscope.service"
+systemctl restart piscope.service
+sleep 2
+
+# ----- 8. Done --------------------------------------------------------------
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo
 ok "PiScope Radar installed."
 log "Open in a browser:   http://${IP:-localhost}/piscope"
-log "Service status:      systemctl status piscope-radar"
-log "Tail logs:           journalctl -u piscope-radar -f"
+log "Service status:      systemctl status piscope"
+log "Tail logs:           journalctl -u piscope -f"
 log "Admin command:       piscope help"
 log "Local API port:      127.0.0.1:${SERVICE_PORT} (${WEB_SERVER} proxies it to /piscope)"
 echo
 if systemctl is-active piscope.service --quiet; then
   ok "Service is RUNNING."
 else
-  err "Service did not come up — run 'journalctl -u piscope-radar --no-pager -n 50' to investigate."
+  err "Service did not come up — run 'journalctl -u piscope --no-pager -n 50' to investigate."
 fi

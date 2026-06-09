@@ -209,16 +209,23 @@ async def _maybe_add_ai_commentary(digest: dict[str, Any]) -> None:
     """If any AI provider is configured, ask for a short paragraph framing the day's
     activity. Failure is silent — the templated digest is the source of truth."""
     from . import ai
+    from .ai._common import _safe_text
     if not ai.is_configured():
         return
     try:
         t = digest["totals"]
-        top = ", ".join(f"{r['type_code']}x{r['sightings']}" for r in digest["top_types"][:3])
-        new = ", ".join(digest["new_types_in_window"][:5])
+        # Callsign / type_code originate from RF (aircraft_from_wire applies no
+        # charset filter) and are stored verbatim, so they must be sanitised
+        # before they touch a prompt — same invariant /api/explain enforces.
+        # _safe_text strips control chars + caps length; a crafted callsign can
+        # no longer smuggle prompt-injection text into the AI commentary.
+        top = ", ".join(f"{_safe_text(r.get('type_code'), 8)}x{int(r.get('sightings') or 0)}"
+                        for r in digest["top_types"][:3])
+        new = ", ".join(_safe_text(tc, 8) for tc in digest["new_types_in_window"][:5])
         callout_lines = []
         for c in digest["callouts"][:5]:
-            name = c.get("display_name") or c.get("callsign") or c.get("hex")
-            callout_lines.append(f"- {c['kind']}: {name} ({c.get('type_code') or '?'})")
+            name = _safe_text(c.get("display_name") or c.get("callsign") or c.get("hex"), 16)
+            callout_lines.append(f"- {_safe_text(c.get('kind'), 12)}: {name} ({_safe_text(c.get('type_code'), 8) or '?'})")
         prompt = (
             "You write a friendly 2-sentence summary for an aviation hobbyist's daily ADS-B report. "
             "Use ONLY the facts below. Be specific where you can; no padding, no greetings, no markdown.\n\n"
@@ -292,7 +299,8 @@ async def run_digest(*, with_ai: bool = True) -> dict[str, Any]:
     """Build the digest, optionally enrich with AI, then deliver via every enabled channel.
     Returns the digest dict (with `delivery` populated) so callers — the scheduler and the
     `Send test digest` button — can report success/failure."""
-    digest = build_digest()
+    # build_digest is synchronous SQL + zlib snapshot decode; run it off the loop.
+    digest = await asyncio.to_thread(build_digest)
     if with_ai:
         await _maybe_add_ai_commentary(digest)
     text = render_text(digest)
@@ -427,7 +435,8 @@ def render_weekly_text(d: dict[str, Any]) -> str:
 async def run_weekly_digest() -> dict[str, Any]:
     """Build + deliver the weekly summary to webhooks subscribed to
     `weekly_digest`. Used by the scheduler and the Settings "Send now" button."""
-    digest = build_weekly_digest()
+    # build_weekly_digest calls analytics.overview (10+ queries) + notable queries.
+    digest = await asyncio.to_thread(build_weekly_digest)
     text = render_weekly_text(digest)
     try:
         webhooks.fan_out("weekly_digest", {"message": text, "digest": digest})
@@ -469,6 +478,9 @@ async def _weekly_scheduler_loop() -> None:
             wait = _seconds_until_weekly(
                 settings_store.get("weekly_digest_day") or "sun",
                 settings_store.get("weekly_digest_local_time") or "19:00")
+            if wait > _SCHED_MAX_SLEEP_S:
+                await asyncio.sleep(_SCHED_MAX_SLEEP_S)
+                continue
             log.info("weekly digest: next fire in %.0f s", wait)
             await asyncio.sleep(wait)
             await run_weekly_digest()
@@ -502,6 +514,14 @@ def _seconds_until(hhmm: str) -> float:
 _TASK: Optional[asyncio.Task[None]] = None
 _WEEKLY_TASK: Optional[asyncio.Task[None]] = None
 
+# Longest a scheduler ever sleeps in one go. The fire time is naive-local
+# wall-clock, so a single multi-hour sleep would (a) fire an hour off if a DST
+# transition lands inside it and (b) ignore a digest_local_time change until the
+# old time elapses. Waking at least this often re-derives the target from the
+# current clock + settings, bounding both to one interval. Cheap: a no-op wake
+# every 15 min costs nothing on a Pi.
+_SCHED_MAX_SLEEP_S = 900.0
+
 
 async def _scheduler_loop() -> None:
     """Sleep until the next `digest_local_time`, then run the digest. Reads the setting
@@ -514,6 +534,10 @@ async def _scheduler_loop() -> None:
                 await asyncio.sleep(600)
                 continue
             wait = _seconds_until(settings_store.get("digest_local_time") or "07:30")
+            if wait > _SCHED_MAX_SLEEP_S:
+                # Not due yet — nap and re-derive (handles DST + a retimed digest).
+                await asyncio.sleep(_SCHED_MAX_SLEEP_S)
+                continue
             log.info("digest: next fire in %.0f s", wait)
             await asyncio.sleep(wait)
             await run_digest(with_ai=True)

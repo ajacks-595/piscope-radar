@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # claude-shim install script.
 #
-# Sets up a Python venv, an /etc/claude-shim.env config, and a systemd unit
-# for the shim. Idempotent — re-running just refreshes the venv and re-links
-# the unit. Run as root (it writes /etc/ + /opt/ paths).
+# Sets up an /etc/claude-shim.env config and a systemd unit for the shim. The
+# shim is stdlib-only — NO venv or pip required (see line 28 below). Idempotent:
+# re-running refreshes the copied shim.py + re-links the unit. Run as root (it
+# writes /etc/ + /opt/ paths).
 
 set -euo pipefail
 

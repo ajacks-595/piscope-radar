@@ -43,20 +43,28 @@ async def lookup(hex_id: str) -> Optional[dict[str, Any]]:
         log.info("planespotters lookup failed for %s: %s", hex_id, exc)
         return None
 
-    photos_raw = (data or {}).get("photos") or []
-    if not photos_raw:
+    # Parsing runs outside the try; guard every shape assumption so a
+    # schema-changed / hostile upstream (non-object body, non-list photos,
+    # non-dict entries) returns a clean {} instead of 500-ing /api/enrich/photo.
+    photos_raw = data.get("photos") if isinstance(data, dict) else None
+    if not isinstance(photos_raw, list) or not photos_raw:
         _CACHE.set(hex_id, {})
         return {}
     # Return up to 6 photos so the UI can show a small carousel.
     gallery = []
     for p in photos_raw[:6]:
+        if not isinstance(p, dict):
+            continue
         thumbnail = p.get("thumbnail_large") or p.get("thumbnail") or {}
+        if not isinstance(thumbnail, dict):
+            continue
         url = _safe_https_url(thumbnail.get("src"))
         if not url:
             continue
+        photographer = p.get("photographer")
         gallery.append({
             "url": url,
-            "photographer": (p.get("photographer") or "")[:120] or None,
+            "photographer": (photographer[:120] or None) if isinstance(photographer, str) else None,
             "link": _safe_https_url(p.get("link")),
         })
     if not gallery:

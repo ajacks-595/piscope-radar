@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
+from ..services import hostguard
 from ..services.feed import feed_service
 
 
@@ -33,6 +34,14 @@ def _origin_is_same_host(ws: WebSocket) -> bool:
 
 @router.websocket("/ws")
 async def aircraft_ws(ws: WebSocket) -> None:
+    # HTTP middleware doesn't wrap WebSocket handshakes, so the host guard is
+    # applied here explicitly. This matters: DNS rebinding makes Origin equal the
+    # rebound (attacker) host, so the Origin==Host check below passes — but the
+    # Host itself is then non-LAN-shaped and this rejects it.
+    if hostguard.enabled() and not hostguard.host_allowed(ws.headers.get("host", "")):
+        log.warning("Rejected WS connect for disallowed Host: %r", ws.headers.get("host"))
+        await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     if not _origin_is_same_host(ws):
         log.warning("Rejected cross-origin WS connect from %s", ws.headers.get("origin"))
         await ws.close(code=status.WS_1008_POLICY_VIOLATION)

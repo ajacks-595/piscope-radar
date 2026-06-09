@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -19,6 +20,11 @@ URL = "https://aeroapi.flightaware.com/aeroapi/flights/{ident}?max_pages=1"
 _CALLSIGN_RE = re.compile(r"^[A-Z0-9]{2,8}$")
 
 _CACHE = LRUCache(max_size=512)
+# Serialises the budget check-and-reserve so concurrent lookups can't all read
+# "under budget" and overshoot the monthly cap (TOCTOU). The lock is held only
+# across the cheap reserve, NOT the 12 s network call, so a slow upstream can't
+# queue every caller behind it.
+_BUDGET_LOCK = asyncio.Lock()
 
 
 def _today_utc() -> str:
@@ -94,7 +100,7 @@ def _flatten(flight: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-async def lookup(callsign: str) -> dict[str, Any]:
+async def lookup(callsign: str, *, allow_over_budget: bool = False) -> dict[str, Any]:
     callsign = (callsign or "").upper().strip()
     if not _CALLSIGN_RE.match(callsign):
         return {"error": "Invalid callsign"}
@@ -102,32 +108,49 @@ async def lookup(callsign: str) -> dict[str, Any]:
     cache_key = (callsign, _today_utc())
     cached = _CACHE.get(cache_key)
     if cached is not None:
+        # Cache hits are free — no budget gate, no spend.
         return {**cached, "cached": True}
 
     api_key = settings_store.get("fa_api_key") or ""
     if not api_key:
         return {"error": "FlightAware API key is not configured."}
 
+    # Atomic budget gate (iteration 13): check the cap and RESERVE the spend
+    # under a lock before the network call, so N concurrent lookups can't each
+    # see "under budget" and bill N× the limit. The reservation is refunded
+    # below if the call never actually billed (auth rejection / network error).
+    # A 404 IS billed by AeroAPI, so its reservation stays.
+    async with _BUDGET_LOCK:
+        status = settings_store.fa_budget_status()
+        if status.get("over_budget") and not allow_over_budget:
+            return {"blocked": "over_budget", "budget": status,
+                    "message": "Monthly budget reached; retry with confirm_over_budget=true to override."}
+        settings_store.fa_record_call(COST_CENTS_PER_CALL)
+
+    billed = True
     try:
         client = await get_client()
         r = await client.get(URL.format(ident=callsign), headers={"x-apikey": api_key}, timeout=12.0)
         if r.status_code == 401:
+            billed = False
             return {"error": "FlightAware rejected the API key."}
         if r.status_code == 404:
             _CACHE.set(cache_key, {"flight": None})
-            settings_store.fa_record_call(COST_CENTS_PER_CALL)
             return {"flight": None}
         r.raise_for_status()
         data = r.json()
     except httpx.HTTPError as exc:
         # Intentionally do NOT log the URL — even though the key is in a header, paranoia is cheap.
         log.warning("FlightAware call failed for %s: %s", callsign, type(exc).__name__)
+        billed = False
         return {"error": "FlightAware request failed"}
+    finally:
+        if not billed:
+            settings_store.fa_record_call(-COST_CENTS_PER_CALL)   # refund the reservation
 
     flight = _pick_best(data.get("flights") or [])
     flattened = _flatten(flight) if flight else None
     payload = {"flight": flattened}
 
     _CACHE.set(cache_key, payload)
-    settings_store.fa_record_call(COST_CENTS_PER_CALL)
     return payload

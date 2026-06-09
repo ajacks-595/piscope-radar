@@ -293,6 +293,10 @@
               <button class="range-btn" data-range="all">All</button>
             </div>
             <span class="hint" id="analytics-caption"></span>
+            <span class="analytics-export">
+              <a class="export-link" id="analytics-export-daily" href="/piscope/api/analytics/export?kind=daily" download>⭳ Daily CSV</a>
+              <a class="export-link" id="analytics-export-sightings" href="/piscope/api/analytics/export?kind=sightings" download>⭳ Sightings CSV</a>
+            </span>
           </div>
           <div id="analytics-body"><p class="hint">Loading…</p></div>
         </section>
@@ -769,7 +773,8 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"
+          integrity="sha384-mFKkGiGvT5vo1fEyGCD3hshDdKmW3wzXW/x+fWriYJArD0R3gawT6lMvLboM22c0" crossorigin=""></script>
   <script src="/piscope/static/radar.js"></script>
   <script src="/piscope/static/app.js"></script>
 </body>

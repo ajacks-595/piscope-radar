@@ -23,6 +23,7 @@ def test_redacted_sql_dump_strips_secrets(temp_db):
 def test_daily_backup_zip_omits_secrets(temp_db, tmp_path):
     # Regression for S1: the automated daily backup zip previously dumped the DB verbatim,
     # including plaintext API keys. It must now strip them like /api/export does.
+    import asyncio
     import zipfile
     from app.services import settings as settings_store
     from app.services import backups as backups_store
@@ -31,7 +32,8 @@ def test_daily_backup_zip_omits_secrets(temp_db, tmp_path):
     backups_store._LAST_BACKUP_DATE = None             # force a run this call
     settings_store.set_one("daily_backup_dir", str(tmp_path))
 
-    out = backups_store.maybe_run_daily()
+    # maybe_run_daily is async (iter 13: offloads the heavy dump to a thread).
+    out = asyncio.run(backups_store.maybe_run_daily())
     assert out is not None
     with zipfile.ZipFile(out) as zf:
         sql = zf.read("piscope.sql").decode("utf-8")
