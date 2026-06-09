@@ -42,9 +42,14 @@ self.addEventListener('fetch', (event) => {
   // Same-origin static assets get a cache-first strategy.
   if (url.origin === self.location.origin && url.pathname.startsWith('/piscope/static')) {
     event.respondWith(
-      caches.match(req).then((cached) => cached || fetch(req).then((resp) => {
-        const copy = resp.clone();
-        caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+      caches.match(req, { ignoreSearch: true }).then((cached) => cached || fetch(req).then((resp) => {
+        // Only cache genuine successes. Without the resp.ok gate a 502/503/404
+        // returned for a `?v=…` asset URL mid-deploy would be cached and — since
+        // this is cache-first — served forever until the next version bump.
+        if (resp && resp.ok) {
+          const copy = resp.clone();
+          caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+        }
         return resp;
       }).catch(() => cached)),
     );

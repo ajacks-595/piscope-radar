@@ -64,3 +64,83 @@ def test_fa_budget_tracking(temp_db):
     s.fa_record_call(5)
     s.fa_record_call(5)
     assert s.fa_budget_status()["spent_cents"] == 10
+
+
+# --- value validation (iteration 13) ------------------------------------------
+
+
+def test_invalid_numeric_value_rejected(temp_db):
+    from app.services import settings as s
+    # A non-numeric poll_interval used to be stored verbatim and later killed
+    # the feed poll task when int() raised outside its try/except.
+    s.set_many({"poll_interval": "abc"})
+    assert s.get("poll_interval") == 2          # default survives
+    s.set_many({"fa_monthly_limit_cents": {"weird": True}})
+    assert s.get("fa_monthly_limit_cents") == 500
+
+
+def test_numeric_values_clamped_not_dropped(temp_db):
+    from app.services import settings as s
+    s.set_many({"poll_interval": 0, "trail_length": 99999, "smtp_port": "8025"})
+    assert s.get("poll_interval") == 1
+    assert s.get("trail_length") == 500
+    assert s.get("smtp_port") == 8025
+
+
+def test_bool_and_enum_coercion(temp_db):
+    from app.services import settings as s
+    s.set_many({"digest_enabled": "false", "notify_military": 1,
+                "ai_provider": "OLLAMA", "feed_mode": "bogus"})
+    assert s.get("digest_enabled") is False
+    assert s.get("notify_military") is True
+    assert s.get("ai_provider") == "ollama"     # case-normalised
+    assert s.get("feed_mode") == "global"       # invalid enum rejected → default
+
+
+def test_hhmm_validation(temp_db):
+    from app.services import settings as s
+    s.set_many({"digest_local_time": "25:99"})
+    assert s.get("digest_local_time") == "07:30"
+    s.set_many({"digest_local_time": "8:05"})
+    assert s.get("digest_local_time") == "08:05"   # canonicalised
+
+
+def test_frame_ancestors_header_safe(temp_db):
+    from app.services import settings as s
+    # Newlines / control chars must never reach the CSP response header — a
+    # stored CRLF would 500 every page load at the header-encoding layer.
+    s.set_many({"frame_ancestors": "'self'\r\nSet-Cookie: x=y"})
+    assert s.get("frame_ancestors") == "'self'"     # rejected → default
+    s.set_many({"frame_ancestors": "'self', http://10.0.0.188:8090"})
+    assert s.get("frame_ancestors") == "'self', http://10.0.0.188:8090"
+
+
+def test_oversized_value_truncated_by_validator(temp_db):
+    from app.services import settings as s
+    # watchlist's _v_str(8192) validator caps length, so a huge value is truncated
+    # to the cap rather than stored whole (the _MAX_VALUE_BYTES backstop in set_many
+    # only fires for the rare validator-less key, e.g. the internal digest blob).
+    s.set_many({"watchlist": "A" * (300 * 1024)})
+    assert len(s.get("watchlist")) == 8192
+
+
+def test_control_chars_stripped_from_strings(temp_db):
+    from app.services import settings as s
+    s.set_many({"ollama_model": "gem\x00ma4:\x1blatest"})
+    assert s.get("ollama_model") == "gemma4:latest"
+
+
+def test_stored_garbage_cleaned_on_cache_load(temp_db):
+    import json
+    import sqlite3
+    from app.services import settings as s
+    # Simulate a pre-validator DB: write garbage straight into the table.
+    with sqlite3.connect(temp_db) as conn:
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES('poll_interval', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (json.dumps("not-a-number"),),
+        )
+        conn.commit()
+    s.reload_cache()
+    assert s.get("poll_interval") == 2          # cleaned to default on load

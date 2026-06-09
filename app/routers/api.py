@@ -124,8 +124,16 @@ async def aircraft_snapshot() -> dict[str, Any]:
 # --- enrichment endpoints ----------------------------------------------------
 
 
+# Path-param shape gates. The enrichment clients re-validate internally (and never
+# interpolate raw input into an outbound URL), but rejecting malformed input at the
+# edge returns a clean 400 instead of a 502, and keeps junk out of the caches.
+_CALLSIGN_PATH_RE = re.compile(r"^[A-Za-z0-9]{2,8}$")
+
+
 @router.get("/enrich/hexdb/{hex_id}")
 async def enrich_hexdb(hex_id: str) -> dict[str, Any]:
+    if not _HEX_RE.match(hex_id.lower()):
+        raise HTTPException(status_code=400, detail="Invalid hex")
     data = await hexdb.lookup(hex_id)
     if data is None:
         raise HTTPException(status_code=502, detail="hexdb lookup failed")
@@ -134,6 +142,8 @@ async def enrich_hexdb(hex_id: str) -> dict[str, Any]:
 
 @router.get("/enrich/adsbdb/{callsign}")
 async def enrich_adsbdb(callsign: str) -> dict[str, Any]:
+    if not _CALLSIGN_PATH_RE.match(callsign):
+        raise HTTPException(status_code=400, detail="Invalid callsign")
     data = await adsbdb.lookup(callsign)
     if data is None:
         raise HTTPException(status_code=502, detail="adsbdb lookup failed")
@@ -142,6 +152,8 @@ async def enrich_adsbdb(callsign: str) -> dict[str, Any]:
 
 @router.get("/enrich/photo/{hex_id}")
 async def enrich_photo(hex_id: str) -> dict[str, Any]:
+    if not _HEX_RE.match(hex_id.lower()):
+        raise HTTPException(status_code=400, detail="Invalid hex")
     data = await planespotters.lookup(hex_id)
     if data is None:
         raise HTTPException(status_code=502, detail="planespotters lookup failed")
@@ -160,12 +172,15 @@ async def fa_budget() -> dict[str, Any]:
 async def fa_lookup(callsign: str, confirm_over_budget: bool = False) -> dict[str, Any]:
     budget = settings_store.fa_budget_status()
     if budget.get("over_budget") and not confirm_over_budget:
+        # Friendly early return for the UI. The authoritative, race-free gate is
+        # inside flightaware.lookup (atomic check-and-reserve) — this pre-check
+        # just avoids a wasted call in the common case.
         return {
             "blocked": "over_budget",
             "budget": budget,
             "message": "Monthly budget reached; resend with confirm_over_budget=true to override.",
         }
-    result = await flightaware.lookup(callsign)
+    result = await flightaware.lookup(callsign, allow_over_budget=confirm_over_budget)
     result["budget"] = settings_store.fa_budget_status()
     return result
 
@@ -270,8 +285,8 @@ async def set_openaip_key(body: dict[str, str] = Body(...)) -> dict[str, Any]:
 
 @router.get("/events")
 async def list_events(limit: int = 100, kind: str | None = None) -> dict[str, Any]:
-    if kind not in (None, "military", "emergency", "watchlist"):
-        raise HTTPException(status_code=400, detail="kind must be one of military/emergency/watchlist")
+    if kind not in (None, "military", "emergency", "watchlist", "rare"):
+        raise HTTPException(status_code=400, detail="kind must be one of military/emergency/watchlist/rare")
     return {"events": events_store.recent_events(limit=limit, kind=kind)}
 
 
@@ -293,7 +308,9 @@ async def replay_timeline(max_points: int = 600) -> dict[str, Any]:
 
 @router.get("/replay/at")
 async def replay_at(ts: float) -> dict[str, Any]:
-    snap = events_store.snapshot_nearest(ts)
+    # snapshot_nearest does an ABS(ts-?) scan + zlib-decompress + JSON-parse of
+    # the matched blob — offload so a replay scrub can't hitch the live feed.
+    snap = await run_in_threadpool(events_store.snapshot_nearest, ts)
     if snap is None:
         raise HTTPException(status_code=404, detail="No snapshot found")
     return snap
@@ -353,8 +370,10 @@ async def analytics_overview(range: str = "7d") -> dict[str, Any]:  # noqa: A002
     `range` is one of 24h / 7d / 30d / all. Per-aircraft detail only reaches back
     to `meta.sightings_coverage_start` (the ledger ships with this feature);
     per-day traffic backfills further via the long-standing daily_stats table."""
+    # overview() runs 10+ aggregating queries + Python post-processing; offload it
+    # so a 30-day rollup can't stall the feed poll / WS broadcast / SSE heartbeat.
     try:
-        return analytics_store.overview(range)
+        return await run_in_threadpool(analytics_store.overview, range)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -368,7 +387,7 @@ async def analytics_notable(range: str = "7d", limit: int = 80) -> dict[str, Any
         since = notable_store.window_since(range)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return notable_store.notable_in_window(since, limit=limit)
+    return await run_in_threadpool(notable_store.notable_in_window, since, limit)
 
 
 @router.get("/analytics/returning")
@@ -380,8 +399,37 @@ async def analytics_returning(range: str = "7d", min_days: int = 2,  # noqa: A00
         since = notable_store.window_since(range)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"aircraft": notable_store.returning_in_window(since, min_days=min_days, limit=limit),
+    aircraft = await run_in_threadpool(notable_store.returning_in_window, since, min_days, limit)
+    return {"aircraft": aircraft,
             "min_days": max(2, min(int(min_days or 2), 365))}
+
+
+@router.get("/analytics/aircraft/{hex_id}")
+async def analytics_aircraft(hex_id: str) -> dict[str, Any]:
+    """Per-tail sighting history from the ledger: days seen, first/last, dwell,
+    extremes, and a recent per-day breakdown. 404 if never logged."""
+    if not _HEX_RE.match(hex_id.lower()):
+        raise HTTPException(status_code=400, detail="Invalid hex")
+    hist = await run_in_threadpool(analytics_store.aircraft_history, hex_id)
+    if hist is None:
+        raise HTTPException(status_code=404, detail="No history for this aircraft")
+    return hist
+
+
+@router.get("/analytics/export")
+async def analytics_export(kind: str = "daily") -> Response:
+    """Download analytics as CSV. `kind=daily` (per-day traffic) or
+    `kind=sightings` (the full per-(hex, day) ledger)."""
+    try:
+        csv_text = await run_in_threadpool(analytics_store.export_csv, kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    fname = f"piscope-analytics-{kind}-{time.strftime('%Y%m%d')}.csv"
+    return Response(
+        content=csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 @router.get("/analytics/rules")
@@ -1034,43 +1082,48 @@ async def dashboard_events(
 
         sub = events_bus.subscribe(start_after_id=last_id)
         loop_done = False
-        while not loop_done:
-            try:
-                # Race the next bus event against a 25 s heartbeat. asyncio.wait
-                # would also work but anext + wait_for is the simpler shape here.
-                next_task = asyncio.ensure_future(sub.__anext__())
+        try:
+            while not loop_done:
                 try:
-                    ev = await asyncio.wait_for(next_task, timeout=25.0)
-                except asyncio.TimeoutError:
-                    next_task.cancel()
-                    yield f"event: heartbeat\ndata: {json.dumps({'as_of': time.time()})}\n\n"
-                    continue
-                except StopAsyncIteration:
-                    loop_done = True
-                    break
-
-                # Location filter — events without coords always pass.
-                if (lat is not None and lon is not None
-                        and ev.lat is not None and ev.lon is not None):
-                    d = haversine_km(lat, lon, ev.lat, ev.lon)
-                    if d > radius_km:
+                    # Race the next bus event against a 25 s heartbeat. sub.next()
+                    # is a plain coroutine over a queue — cancelling it on timeout
+                    # (what wait_for does) leaves the subscription intact, so the
+                    # heartbeat holds the connection open instead of tearing the
+                    # stream down (iteration 13; see events_bus.Subscription).
+                    try:
+                        ev = await asyncio.wait_for(sub.next(), timeout=25.0)
+                    except asyncio.TimeoutError:
+                        yield f"event: heartbeat\ndata: {json.dumps({'as_of': time.time()})}\n\n"
                         continue
 
-                payload = {
-                    "hex": ev.hex,
-                    "ts": ev.ts,
-                    "lat": ev.lat,
-                    "lon": ev.lon,
-                    **(ev.data or {}),
-                }
-                yield f"id: {ev.id}\nevent: {ev.kind}\ndata: {json.dumps(payload)}\n\n"
-            except asyncio.CancelledError:
-                loop_done = True
-            except Exception as exc:
-                # Don't kill the stream over one bad event — log + send a comment
-                # so the client knows something happened but isn't disconnected.
-                log.warning("dashboard SSE stream error: %s", exc)
-                yield f": error: {type(exc).__name__}\n\n"
+                    # Location filter — events without coords always pass.
+                    if (lat is not None and lon is not None
+                            and ev.lat is not None and ev.lon is not None):
+                        d = haversine_km(lat, lon, ev.lat, ev.lon)
+                        if d > radius_km:
+                            continue
+
+                    payload = {
+                        "hex": ev.hex,
+                        "ts": ev.ts,
+                        "lat": ev.lat,
+                        "lon": ev.lon,
+                        **(ev.data or {}),
+                    }
+                    yield f"id: {ev.id}\nevent: {ev.kind}\ndata: {json.dumps(payload)}\n\n"
+                except asyncio.CancelledError:
+                    # Client disconnected — stop cleanly (re-raised after cleanup).
+                    loop_done = True
+                    raise
+                except Exception as exc:
+                    # Don't kill the stream over one bad event — log + send a comment
+                    # so the client knows something happened but isn't disconnected.
+                    log.warning("dashboard SSE stream error: %s", exc)
+                    yield f": error: {type(exc).__name__}\n\n"
+        finally:
+            # Always detach the subscription from the bus, however the stream ends
+            # (client disconnect, cancellation, server shutdown).
+            sub.close()
 
     return StreamingResponse(
         stream(),

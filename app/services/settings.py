@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+
+
+log = logging.getLogger("piscope.settings")
 
 # Cap value sizes so a single setting can't blow up memory or the DB.
 _MAX_VALUE_BYTES = 256 * 1024
@@ -165,6 +171,17 @@ DEFAULTS: dict[str, Any] = {
     # comfortably bounded on SD storage while still allowing year-over-year views.
     # 0 = keep forever. Pruned alongside the snapshot prune in the feed loop.
     "analytics_retention_days": 365,
+    # ---- DNS-rebinding host guard (iteration 13) ----
+    # OPT-IN (default off): when enabled, rejects requests whose Host header is not
+    # LAN-shaped (see services/hostguard.py) to blunt DNS-rebinding against this
+    # no-auth box. It's off by default because a custom DNS name that legitimately
+    # resolves to the Pi (e.g. `piscope.mylan.example`) is, by Host header alone,
+    # indistinguishable from a rebinding attack — so a default-on guard would break
+    # exactly those setups. To turn it on: set host_guard_enabled=true AND add any
+    # custom hostnames you use to `allowed_hosts` (comma-separated; .local/.lan/
+    # .home.arpa names and private/loopback/CGNAT IP literals are always allowed).
+    "host_guard_enabled": False,
+    "allowed_hosts": "",
     # ---- Weekly summary (analytics feature, phase 4) ----
     # Posts a 7-day rollup (traffic, busiest hour/day, top types/operators,
     # notable + new returning aircraft, records broken) to every webhook
@@ -177,6 +194,195 @@ DEFAULTS: dict[str, Any] = {
 
 # Settings the user should never read back over the wire.
 SECRET_KEYS = {"fa_api_key", "openaip_api_key", "smtp_pass", "cloud_api_key", "claude_cli_token"}
+
+
+# --- Value validation (iteration 13) ------------------------------------------
+# DEFAULTS whitelists *keys*; this layer validates *values*. Without it a buggy
+# (or hostile — this box has no auth) LAN client could store poll_interval="abc",
+# which raised outside the poll loop's try/except and permanently killed the feed
+# task, or a newline-bearing frame_ancestors that 500s every page load at the
+# response-header layer. Validators run on every write AND on cache load, so
+# garbage persisted by an older build is cleaned at startup too. Numeric values
+# out of range are clamped; values of the wrong shape reject just that key
+# (same silent-per-key contract as the whitelist).
+
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _v_int(lo: int, hi: int) -> Callable[[Any], Any]:
+    def check(v: Any) -> Any:
+        if isinstance(v, bool):
+            raise ValueError("boolean is not a number")
+        n = int(float(v))
+        return max(lo, min(n, hi))
+    return check
+
+
+def _v_float(lo: float, hi: float, *, none_ok: bool = False) -> Callable[[Any], Any]:
+    def check(v: Any) -> Any:
+        if v is None or v == "":
+            if none_ok:
+                return None
+            raise ValueError("value required")
+        if isinstance(v, bool):
+            raise ValueError("boolean is not a number")
+        n = float(v)
+        if not math.isfinite(n):
+            raise ValueError("not a finite number")
+        return max(lo, min(n, hi))
+    return check
+
+
+def _v_bool(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)) and v in (0, 1):
+        return bool(v)
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("true", "1", "yes", "on"):
+            return True
+        if s in ("false", "0", "no", "off"):
+            return False
+    raise ValueError("not a boolean")
+
+
+def _v_enum(*allowed: str, blank_ok: bool = False) -> Callable[[Any], Any]:
+    def check(v: Any) -> Any:
+        s = str(v or "").strip().lower()
+        if not s and blank_ok:
+            return ""
+        if s in allowed:
+            return s
+        raise ValueError(f"must be one of {'/'.join(allowed)}")
+    return check
+
+
+def _v_str(max_len: int = 2048, pattern: Optional[str] = None) -> Callable[[Any], Any]:
+    compiled = re.compile(pattern) if pattern else None
+    def check(v: Any) -> Any:
+        if v is None:
+            return ""
+        if not isinstance(v, str):
+            raise ValueError("not a string")
+        s = _CTRL_RE.sub("", v).strip()[:max_len]
+        if compiled is not None and not compiled.fullmatch(s):
+            raise ValueError("invalid format")
+        return s
+    return check
+
+
+def _v_hhmm(v: Any) -> str:
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(v or "").strip())
+    if not m or not (0 <= int(m.group(1)) <= 23 and 0 <= int(m.group(2)) <= 59):
+        raise ValueError("must be HH:MM")
+    return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+
+def _v_keep_alive(v: Any) -> Any:
+    """Ollama keep_alive: integer seconds or a duration string like '30s'/'5m'/'1h'."""
+    if isinstance(v, bool):
+        raise ValueError("not a duration")
+    if isinstance(v, (int, float)) and math.isfinite(float(v)):
+        return max(-1, min(int(v), 86400))   # -1 = Ollama's "keep forever"
+    s = str(v or "").strip().lower()
+    if re.fullmatch(r"-?\d{1,5}[smh]?", s):
+        return s
+    raise ValueError("must be seconds or '30s'/'5m'/'1h'")
+
+
+def _v_json_list_str(v: Any) -> str:
+    """Settings that hold a JSON array as a string (webhooks/views/extra feeds)."""
+    if v is None or v == "":
+        return "[]"
+    if not isinstance(v, str):
+        raise ValueError("must be a JSON string")
+    if not isinstance(json.loads(v), list):
+        raise ValueError("must be a JSON array")
+    return v
+
+
+_BOOL_KEYS = (
+    "show_ground", "range_rings_enabled", "always_show_labels", "openaip_overlay_enabled",
+    "audio_alerts_enabled", "audio_directional", "follow_selected", "trail_fade",
+    "weather_overlay_enabled", "day_night_enabled", "airport_overlay_enabled",
+    "notify_military", "notify_emergency", "notify_watchlist",
+    "digest_enabled", "digest_deliver_in_app", "digest_deliver_webhook", "digest_deliver_email",
+    "smtp_use_starttls", "ollama_enabled", "cloud_api_enabled", "claude_cli_enabled",
+    "weekly_digest_enabled", "host_guard_enabled",
+)
+
+_VALIDATORS: dict[str, Callable[[Any], Any]] = {
+    # Numerics (clamped). poll_interval especially: the feed loop sleeps on it.
+    "poll_interval": _v_int(1, 120),
+    "trail_length": _v_int(2, 500),
+    "antenna_range_nm": _v_int(10, 2000),
+    "fa_monthly_limit_cents": _v_int(0, 1_000_000),
+    "global_radius_nm": _v_int(10, 500),
+    "replay_retention_minutes": _v_int(1, 1440),
+    "snapshot_every_n_polls": _v_int(1, 100),
+    "label_full_min_zoom": _v_int(1, 18),
+    "watchdog_outage_minutes": _v_int(0, 1440),
+    "ai_chat_max_turns": _v_int(1, 20),
+    "analytics_retention_days": _v_int(0, 3650),
+    "smtp_port": _v_int(1, 65535),
+    # Coordinates (None allowed — "not configured").
+    "receiver_lat": _v_float(-90.0, 90.0, none_ok=True),
+    "receiver_lon": _v_float(-180.0, 180.0, none_ok=True),
+    "global_center_lat": _v_float(-90.0, 90.0, none_ok=True),
+    "global_center_lon": _v_float(-180.0, 180.0, none_ok=True),
+    # Enums.
+    "feed_mode": _v_enum("local", "global"),
+    "ai_provider": _v_enum("ollama", "cloud_api", "claude_cli", blank_ok=True),
+    "cloud_api_vendor": _v_enum("anthropic", "openai", "google"),
+    "trail_colour_mode": _v_enum("single", "altitude", "speed"),
+    "map_label_mode": _v_enum("off", "callsign", "full"),
+    "weekly_digest_day": _v_enum("mon", "tue", "wed", "thu", "fri", "sat", "sun"),
+    # Times.
+    "digest_local_time": _v_hhmm,
+    "weekly_digest_local_time": _v_hhmm,
+    # Strings (control chars stripped, length-capped; pattern where shape is known).
+    "tar1090_base_url": _v_str(2048),
+    "contact_url": _v_str(2048),
+    "ollama_url": _v_str(2048),
+    "claude_cli_url": _v_str(2048),
+    "ollama_model": _v_str(200),
+    "cloud_api_model": _v_str(200),
+    "watchlist": _v_str(8192),
+    "theme": _v_str(64),
+    "map_style": _v_str(64),
+    "range_rings_nm": _v_str(256, pattern=r"[0-9, ]*"),
+    "daily_backup_dir": _v_str(1024),
+    "smtp_host": _v_str(255),
+    "smtp_user": _v_str(320),
+    "smtp_from": _v_str(320),
+    "smtp_to": _v_str(1024),
+    "allowed_hosts": _v_str(2048),
+    # frame_ancestors feeds a response header verbatim: restrict to CSP source-list
+    # characters so a stored value can never smuggle header-breaking bytes.
+    "frame_ancestors": _v_str(512, pattern=r"[A-Za-z0-9'\":*./\- ,_]*"),
+    # Secrets — free-form but control-stripped + capped.
+    "fa_api_key": _v_str(1024),
+    "openaip_api_key": _v_str(1024),
+    "cloud_api_key": _v_str(1024),
+    "claude_cli_token": _v_str(1024),
+    "smtp_pass": _v_str(1024),
+    # JSON-array-as-string blobs.
+    "webhooks_json": _v_json_list_str,
+    "saved_views_json": _v_json_list_str,
+    "extra_feeds_json": _v_json_list_str,
+    # Special.
+    "ollama_keep_alive": _v_keep_alive,
+    # digest_latest_json deliberately has no validator: it's an internal slot the
+    # digest service writes; the size cap in set_many still bounds it.
+}
+_VALIDATORS.update({k: _v_bool for k in _BOOL_KEYS})
+
+
+def _validated(key: str, value: Any) -> Any:
+    """Canonical value for `key`, or raise ValueError/TypeError to reject the write."""
+    fn = _VALIDATORS.get(key)
+    return fn(value) if fn else value
 
 
 def _connect() -> sqlite3.Connection:
@@ -384,7 +590,20 @@ def _populate_cache() -> dict[str, Any]:
     global _CACHE
     with _connect() as conn:
         rows = conn.execute("SELECT key, value FROM settings").fetchall()
-    stored = {r["key"]: _coerce(r["key"], r["value"]) for r in rows}
+    stored: dict[str, Any] = {}
+    for r in rows:
+        k = r["key"]
+        v = _coerce(k, r["value"])
+        # Re-validate on load so garbage persisted by an older build (before the
+        # write-time validators existed) falls back to the default instead of
+        # crashing whatever reads it (the feed loop, header builders, int() calls).
+        if k in _VALIDATORS:
+            try:
+                v = _VALIDATORS[k](v)
+            except (ValueError, TypeError):
+                log.warning("stored setting %r has invalid value; using default", k)
+                v = DEFAULTS.get(k)
+        stored[k] = v
     _CACHE = {**DEFAULTS, **stored}
     return _CACHE
 
@@ -442,10 +661,19 @@ def set_many(values: dict[str, Any]) -> None:
             if k in SECRET_KEYS and (v == "***" or v is None):
                 # don't overwrite a stored secret with the redaction placeholder
                 continue
+            try:
+                v = _validated(k, v)
+            except (ValueError, TypeError) as exc:
+                log.info("rejecting invalid value for setting %r: %s", k, exc)
+                continue
+            payload = json.dumps(v)
+            if len(payload) > _MAX_VALUE_BYTES:
+                log.info("rejecting oversized value for setting %r (%d bytes)", k, len(payload))
+                continue
             conn.execute(
                 "INSERT INTO settings(key, value) VALUES(?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (k, json.dumps(v)),
+                (k, payload),
             )
         conn.commit()
     # Rebuild the in-memory cache so subsequent reads see the new values without hitting disk.

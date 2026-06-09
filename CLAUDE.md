@@ -267,12 +267,12 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
 
 ## Open items / future work
 
-- **claude-shim is ad-hoc, not systemd-managed.** Currently runs as a backgrounded
-  Python process under `dev` on the dev host (port 8090, token in
-  `/tmp/claude-shim-token`). Survives until reboot. To finish: run
-  `sudo /home/dev/projects/piscope-radar/tools/claude-shim/install.sh` on the dev host
-  — installs the systemd unit and writes `/etc/claude-shim.env` with its own
-  generated token (you'd then need to point PiScope at the new token).
+- **claude-shim is systemd-managed** (since 2026-06-06). Runs under `dev` on the dev
+  host via the `claude-shim.service` unit, config in `/etc/claude-shim.env` (mode 600;
+  generated token + `SHIM_ALLOW_IPS` pinned to the Pi + loopback). Re-run
+  `sudo /home/dev/projects/piscope-radar/tools/claude-shim/install.sh` to converge after
+  changes. NB: the shim now refuses to start on a non-loopback bind with no token
+  (fail-closed, iter 13), so always keep `SHIM_BEARER_TOKEN` set for the LAN bind.
 - **Generic `unavailable` error envelopes.** Both `/api/explain` and
   `/api/explain/followup` collapse upstream errors into `"no response from <provider>"`.
   Plumbing the shim's `error` field (and the cloud API vendor's error message)

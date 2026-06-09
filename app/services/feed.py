@@ -317,7 +317,14 @@ class FeedService:
                 self.connection_state = "error"
                 self.last_error = str(exc)
                 self.error_count += 1
-            interval = max(1, int(settings_store.get("poll_interval") or 2))
+            # Defensive parse: this line sits OUTSIDE the try/except above, so a
+            # non-numeric stored value would otherwise raise here and permanently
+            # kill the poll task (the write-time validator now prevents storing
+            # one, but a pre-validator DB or direct DB edit must not be fatal).
+            try:
+                interval = max(1, min(int(float(settings_store.get("poll_interval") or 2)), 120))
+            except (TypeError, ValueError):
+                interval = 2
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
@@ -421,6 +428,14 @@ class FeedService:
             except Exception as exc:
                 log.info("ignoring invalid extra feed: %s", exc)
 
+        # Drop status entries for feeds that are no longer configured. A stale
+        # ok:True row from a removed extra feed would otherwise satisfy the
+        # any-ok checks (connection_state + watchdog) forever and mask a real
+        # outage of the remaining feeds.
+        current_names = {name for name, _, _ in feeds}
+        for stale in [n for n in self.feed_status if n not in current_names]:
+            self.feed_status.pop(stale, None)
+
         # Poll all feeds in parallel.
         fetch_started = time.time()
         results = await asyncio.gather(
@@ -436,6 +451,34 @@ class FeedService:
         all_rows: list[dict[str, Any]] = []
         for rows in results:
             all_rows.extend(rows)
+
+        # Transient-failure guard (iteration 13). When EVERY feed failed this
+        # cycle, the old behaviour treated the empty row set as truth: the map
+        # blanked, trails GC'd, and — worse — the military/emergency/watchlist
+        # de-dup sets re-armed, so a single 8 s timeout re-fired every alert
+        # (webhooks included) when the feed came back two seconds later. Instead:
+        # keep the previous store + de-dup state through short blips and only
+        # surface an empty store (with proper emergency_resolved events) once the
+        # outage is sustained. `_last_any_feed_ok_at` is tracked here, not in the
+        # watchdog, so this works even with the watchdog disabled.
+        any_ok = any(self.feed_status.get(name, {}).get("ok") for name, _, _ in feeds)
+        if any_ok:
+            self._last_any_feed_ok_at = now_ts
+        elif feeds:
+            if (now_ts - self._last_any_feed_ok_at) > 60 and (self.aircraft or self.trails):
+                self._expire_all_aircraft(now_ts)
+            self.connection_state = "error"
+            self.last_error = "all feeds failed"
+            self.poll_count += 1
+            self.error_count += 1
+            self.last_poll_duration_ms = (time.time() - poll_start) * 1000
+            self.last_sql_ms = 0.0
+            self.last_process_ms = 0.0
+            self._check_watchdog(now_ts)
+            self._last_trail_appends = {}
+            self._broadcast(self.broadcast_payload())
+            return
+
         self.total_messages = len(all_rows)
 
         new_store: dict[str, Aircraft] = {}
@@ -688,8 +731,10 @@ class FeedService:
             events_store.prune_old_snapshots(retention_s)
             # Analytics retention — sightings/hourly rows beyond the configured window.
             analytics_store.prune_old_analytics(s.get("analytics_retention_days"))
-            # Daily backup check — only writes if the date has rolled over and `daily_backup_dir` is set.
-            backups_store.maybe_run_daily()
+            # Daily backup check — only writes if the date has rolled over and
+            # `daily_backup_dir` is set. Awaited (it offloads the heavy whole-DB
+            # dump to a worker thread) so the poll loop doesn't freeze during it.
+            await backups_store.maybe_run_daily()
 
         # Broadcast the slim payload (trail deltas only) — full snapshots only ship on initial
         # WS connect via the WS endpoint, or via the REST `/api/aircraft` fallback.
@@ -734,6 +779,31 @@ class FeedService:
                 "last_error": self.last_error,
                 "now": now_ts,
             })
+
+    def _expire_all_aircraft(self, now_ts: float) -> None:
+        """Sustained outage: drop the stale store and re-arm event de-dup, emitting
+        emergency_resolved (coverage_lost) exactly as if every aircraft left
+        coverage. Called once per outage — afterwards the store is empty so the
+        `self.aircraft or self.trails` gate stops repeat calls."""
+        for h in list(self._notified_emergency):
+            started = self._emergency_started_at.pop(h, None)
+            duration = (now_ts - started) if started else None
+            try:
+                events_bus.publish(
+                    "emergency_resolved", hex=h, lat=None, lon=None,
+                    data={
+                        "duration_s": round(duration, 1) if duration is not None else None,
+                        "reason": "coverage_lost",
+                    },
+                )
+            except Exception as exc:
+                log.warning("emergency_resolved publish failed: %s", exc)
+        self._notified_military.clear()
+        self._notified_emergency.clear()
+        self._notified_watchlist.clear()
+        self._emergency_started_at.clear()
+        self.aircraft = {}
+        self.trails.clear()
 
     # --- helpers used by REST endpoints --------------------------------------
 

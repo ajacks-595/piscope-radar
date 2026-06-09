@@ -401,3 +401,60 @@ def test_analytics_endpoint_default_and_bad_range(client):
     assert client.get("/piscope/api/analytics").json()["range"] == "7d"
     r = client.get("/piscope/api/analytics?range=bogus")
     assert r.status_code == 400
+
+
+# --- per-aircraft history + CSV export (phase 5) -----------------------------
+
+
+def test_aircraft_history_aggregates_across_days(temp_db):
+    buf = SightingsBuffer()
+    base = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc).timestamp()
+    # Same hex on two distinct UTC days.
+    buf.observe_poll([_ac(callsign="baw9 ", type_code="a320", altitude_baro=10000,
+                          ground_speed=400.0, distance_nm=50.0)], base)
+    _flush(buf)
+    buf2 = SightingsBuffer()
+    buf2.observe_poll([_ac(altitude_baro=12000, distance_nm=80.0)], base + 86400)
+    _flush(buf2)
+
+    hist = analytics.aircraft_history("abc123")
+    assert hist is not None
+    assert hist["days_seen"] == 2
+    assert hist["callsign"] == "BAW9"
+    assert hist["extremes"]["max_alt"] == 12000
+    assert hist["extremes"]["max_range_nm"] == 80.0
+    assert len(hist["days"]) == 2
+    assert analytics.aircraft_history("ffffff") is None
+
+
+def test_aircraft_history_endpoint(client):
+    buf = SightingsBuffer()
+    buf.observe_poll([_ac(callsign="test1", type_code="b738", altitude_baro=20000)],
+                     time.time())
+    _flush(buf)
+    r = client.get("/piscope/api/analytics/aircraft/abc123")
+    assert r.status_code == 200 and r.json()["days_seen"] == 1
+    assert client.get("/piscope/api/analytics/aircraft/ffffff").status_code == 404
+    assert client.get("/piscope/api/analytics/aircraft/NOTHEX").status_code == 400
+
+
+def test_csv_export(temp_db):
+    buf = SightingsBuffer()
+    buf.observe_poll([_ac(callsign="csv1", type_code="a319", altitude_baro=8000,
+                          distance_nm=30.0)], time.time())
+    _flush(buf)
+    sightings = analytics.export_csv("sightings")
+    assert sightings.splitlines()[0].startswith("hex,date,callsign")
+    assert "abc123" in sightings and "A319" in sightings
+    daily = analytics.export_csv("daily")
+    assert daily.splitlines()[0].startswith("date,total_polls")
+    with pytest.raises(ValueError):
+        analytics.export_csv("bogus")
+
+
+def test_csv_export_endpoint(client):
+    r = client.get("/piscope/api/analytics/export?kind=daily")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/csv")
+    assert "attachment" in r.headers.get("content-disposition", "")
+    assert client.get("/piscope/api/analytics/export?kind=bogus").status_code == 400

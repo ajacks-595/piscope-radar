@@ -28,6 +28,12 @@ from ._http import get_client, validate_external_url_async
 
 log = logging.getLogger("piscope.webhooks")
 
+# Strong references to in-flight fire-and-forget posts. asyncio only holds a weak
+# reference to tasks created via create_task, so without this a webhook POST can be
+# garbage-collected mid-flight ("Task was destroyed but it is pending"). Tasks
+# remove themselves on completion.
+_INFLIGHT: set[asyncio.Task] = set()
+
 
 def _format_text(kind: str, ac: dict[str, Any]) -> str:
     when = datetime.now(timezone.utc).strftime("%H:%M UTC")
@@ -128,4 +134,6 @@ def fan_out(kind: str, ac_payload: dict[str, Any]) -> None:
     except RuntimeError:
         return
     for ep in interested:
-        loop.create_task(_post_one(ep, message, ac_payload))
+        task = loop.create_task(_post_one(ep, message, ac_payload))
+        _INFLIGHT.add(task)
+        task.add_done_callback(_INFLIGHT.discard)

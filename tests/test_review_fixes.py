@@ -134,15 +134,15 @@ def test_events_bus_no_loss_when_publish_races_replay():
 
     async def run():
         e1 = bus.publish("emergency", hex="a1")          # ring: [e1]
-        agen = bus.subscribe(start_after_id=0)
-        first = await agen.__anext__()                   # attaches queue, replays e1
+        sub = bus.subscribe(start_after_id=0)            # attaches queue, queues replay of e1
+        first = await sub.next()
         # "the gap": publish AFTER the queue is attached. Old code attached the
         # queue only after draining the ring, so this event was lost.
         e2 = bus.publish("military", hex="a2")
-        second = await asyncio.wait_for(agen.__anext__(), timeout=1.0)
+        second = await asyncio.wait_for(sub.next(), timeout=1.0)
         third_pub = bus.publish("rare", hex="a3")
-        third = await asyncio.wait_for(agen.__anext__(), timeout=1.0)
-        await agen.aclose()
+        third = await asyncio.wait_for(sub.next(), timeout=1.0)
+        sub.close()
         return [first.id, second.id, third.id], [e1.id, e2.id, third_pub.id]
 
     got, expected = asyncio.run(run())
@@ -160,14 +160,14 @@ def test_events_bus_replay_dedups_ring_and_queue():
     bus.publish("military", hex="a2")
 
     async def run():
-        agen = bus.subscribe(start_after_id=0)
+        sub = bus.subscribe(start_after_id=0)
         out = []
-        out.append(await agen.__anext__())   # e1
-        out.append(await agen.__anext__())   # e2
-        # Drive a live event so the while-loop is exercised; it must not re-emit e1/e2.
+        out.append(await sub.next())   # e1
+        out.append(await sub.next())   # e2
+        # Drive a live event so the live path is exercised; it must not re-emit e1/e2.
         bus.publish("rare", hex="a3")
-        out.append(await asyncio.wait_for(agen.__anext__(), timeout=1.0))
-        await agen.aclose()
+        out.append(await asyncio.wait_for(sub.next(), timeout=1.0))
+        sub.close()
         return [e.id for e in out]
 
     ids = asyncio.run(run())
@@ -227,24 +227,28 @@ def test_index_csp_has_nonce_and_hardening(client):
     r = client.get("/piscope")
     assert r.status_code == 200
     csp = r.headers.get("content-security-policy", "")
-    # Enforced policy: the always-safe directives only.
+    # Enforced policy (iter 13: script-src promoted from Report-Only).
     assert "object-src 'none'" in csp
     assert "base-uri 'self'" in csp
     assert "frame-ancestors" in csp
-    assert "script-src" not in csp   # script-src is Report-Only for now
+    assert "script-src 'self' https://unpkg.com" in csp
     assert r.headers.get("x-content-type-options") == "nosniff"
-    # script-src ships Report-Only and must carry a nonce; that exact nonce must
-    # be stamped on the one inline bootstrap <script>.
-    ro = r.headers.get("content-security-policy-report-only", "")
-    m = re.search(r"script-src[^;]*'nonce-([A-Za-z0-9_-]+)'", ro)
-    assert m, f"no nonce in report-only script-src: {ro!r}"
+    # No separate Report-Only header any more; the nonce lives in the enforced
+    # script-src and must be stamped on the one inline bootstrap <script>.
+    assert r.headers.get("content-security-policy-report-only") is None
+    m = re.search(r"script-src[^;]*'nonce-([A-Za-z0-9_-]+)'", csp)
+    assert m, f"no nonce in script-src: {csp!r}"
     nonce = m.group(1)
     assert f'<script nonce="{nonce}">' in r.text
 
 
 def test_index_csp_nonce_is_per_response(client):
-    n1 = client.get("/piscope").headers["content-security-policy-report-only"]
-    n2 = client.get("/piscope").headers["content-security-policy-report-only"]
+    import re
+    def nonce_of(resp):
+        csp = resp.headers["content-security-policy"]
+        return re.search(r"'nonce-([A-Za-z0-9_-]+)'", csp).group(1)
+    n1 = nonce_of(client.get("/piscope"))
+    n2 = nonce_of(client.get("/piscope"))
     assert n1 != n2, "CSP nonce should be unique per response"
 
 

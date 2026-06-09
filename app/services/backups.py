@@ -5,6 +5,7 @@ backup itself only fires when the day rolls over, and we keep the last 14 zip fi
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
@@ -56,8 +57,22 @@ def _prune(dir_path: Path) -> int:
     return extra
 
 
-def maybe_run_daily() -> Optional[str]:
-    """Run a backup if the date has rolled over and a target dir is configured."""
+def _run_daily_blocking(target_dir: str, today: str) -> Optional[str]:
+    """The synchronous half: whole-DB online-backup + iterdump + zlib. Runs in a
+    worker thread (see maybe_run_daily) because on a year of analytics it's
+    hundreds of ms to seconds — long enough to stall the feed/WS/SSE loops if it
+    ran inline, exactly the asymmetry /api/export already avoids."""
+    dir_path = Path(os.path.expanduser(target_dir))
+    out = _write_backup(dir_path)
+    _prune(dir_path)
+    log.info("Daily backup written to %s", out)
+    return str(out) if out else None
+
+
+async def maybe_run_daily() -> Optional[str]:
+    """Run a backup if the date has rolled over and a target dir is configured.
+    Awaited from the feed loop's 5-minute maintenance block; the heavy lifting
+    is offloaded to a thread so the event loop keeps polling/broadcasting."""
     global _LAST_BACKUP_DATE
     target_dir = (settings_store.get("daily_backup_dir") or "").strip()
     if not target_dir:
@@ -65,13 +80,13 @@ def maybe_run_daily() -> Optional[str]:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if _LAST_BACKUP_DATE == today:
         return None
+    # Claim the date BEFORE awaiting so a second poll entering this 5-min window
+    # mid-backup doesn't kick off a duplicate. Reset on failure so a transient
+    # error doesn't skip the whole day.
+    _LAST_BACKUP_DATE = today
     try:
-        dir_path = Path(os.path.expanduser(target_dir))
-        out = _write_backup(dir_path)
-        _prune(dir_path)
-        _LAST_BACKUP_DATE = today
-        log.info("Daily backup written to %s", out)
-        return str(out) if out else None
+        return await asyncio.to_thread(_run_daily_blocking, target_dir, today)
     except Exception as exc:
         log.warning("Daily backup failed: %s", exc)
+        _LAST_BACKUP_DATE = None
         return None

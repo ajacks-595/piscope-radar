@@ -37,10 +37,15 @@ def temp_db(monkeypatch):
     from app.services import ratelimit
     ratelimit.reset()
     yield path
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
+    # Remove the DB and ALL its siblings. WAL mode creates -wal/-shm next to the
+    # file, and the import test writes a .pre-import.bak; unlinking only the .db
+    # leaked the rest into the temp dir (measured: ~1,900 orphaned -wal files /
+    # 417 MB on the Pi, whose /tmp is on the SD card).
+    for suffix in ("", "-wal", "-shm", ".pre-import.bak", ".import.tmp"):
+        try:
+            os.unlink(path + suffix)
+        except OSError:
+            pass
 
 
 @pytest.fixture()
