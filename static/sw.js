@@ -14,6 +14,12 @@ const SHELL = [
   // Iteration 5: airport overlay data — 464 KB, pre-cached so the overlay toggles instantly
   // and works offline. Refreshed by the same version-eviction logic when the cache bumps.
   '/piscope/static/data/airports.json',
+  // Iteration 13.2: Leaflet vendored locally — precache it so the map shell (and
+  // therefore the whole app) boots with zero internet. Tiles still need network,
+  // but the radar-sweep themes are fully self-contained.
+  '/piscope/static/vendor/leaflet/leaflet.css',
+  '/piscope/static/vendor/leaflet/leaflet.js',
+  '/piscope/static/vendor/leaflet.heat/leaflet-heat.js',
 ];
 // NOTE: this literal is rewritten on the wire to a content-hash-derived tag
 // (`piscope-shell-<version>-<sha256-prefix>`) by app/main.py's /piscope/sw.js

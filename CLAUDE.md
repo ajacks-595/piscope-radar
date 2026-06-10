@@ -74,9 +74,11 @@ at next `main` promotion.
 - **Backend** — Python 3.9+, FastAPI + asyncio + httpx + uvicorn, SQLite (WAL mode).
   Polls a tar1090 instance every 2 s, fans out via WebSocket, enriches via hexdb /
   adsbdb / planespotters / FlightAware.
-- **Frontend** — vanilla HTML/CSS/JS, no framework. Leaflet 1.9 + Leaflet.heat,
-  canvas radar-sweep overlay (`static/radar.js`), service worker (`static/sw.js`)
-  for PWA + offline shell caching.
+- **Frontend** — vanilla HTML/CSS/JS, no framework. Leaflet 1.9.4 + Leaflet.heat 0.2.0
+  **vendored under `static/vendor/`** (since 1.7.1 — no CDN at runtime; the files were
+  byte-verified against the SRI pins that previously guarded the unpkg copies; CSP
+  script-src is `'self'` + nonce only). Canvas radar-sweep overlay (`static/radar.js`),
+  service worker (`static/sw.js`) for PWA + offline shell caching.
 - **Storage** — single SQLite file at `/opt/piscope/piscope.db` on the Pi (live data,
   never overwrite via rsync). Tables: settings, events, daily_stats, feed_snapshots,
   aircraft_notes, seen_types, polar_coverage, position_heatmap, bookmarks, records,
@@ -264,6 +266,12 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
 
 7. **`piscope.db` on the Pi is live data.** Never rsync over it. The standard deploy
    block excludes it implicitly by only touching `app/` and `static/`.
+
+8. **The systemd unit is `ProtectSystem=strict` with `ReadWritePaths=/opt/piscope`
+   (since 1.7.1).** The service can only write under `/opt/piscope` (+ /tmp via
+   PrivateTmp). If the user ever sets `daily_backup_dir` to a path OUTSIDE
+   `/opt/piscope`, backups will fail with EROFS until that path is added to the
+   unit's `ReadWritePaths` (edit install.sh, re-run it on the Pi).
 
 ## Open items / future work
 
