@@ -231,7 +231,7 @@ def test_index_csp_has_nonce_and_hardening(client):
     assert "object-src 'none'" in csp
     assert "base-uri 'self'" in csp
     assert "frame-ancestors" in csp
-    assert "script-src 'self' https://unpkg.com" in csp
+    assert "script-src 'self' 'nonce-" in csp   # 13.2: no CDN hosts since Leaflet is vendored
     assert r.headers.get("x-content-type-options") == "nosniff"
     # No separate Report-Only header any more; the nonce lives in the enforced
     # script-src and must be stamped on the one inline bootstrap <script>.

@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 
 # Version stamp. Bump whenever you ship a notable user-facing change — the frontend reads
 # this via /piscope/api/version and pops a "✨ What's new" toast on first load after a bump.
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 
 app = FastAPI(title="PiScope Radar", version=VERSION, lifespan=lifespan)
 
@@ -130,10 +130,11 @@ def _csp_header(script_nonce: Optional[str] = None) -> str:
     connections unrestricted.
 
     When `script_nonce` is given (the served HTML), `script-src` is enforced
-    too: `'self'` + the Leaflet CDN + the per-response nonce for the single
-    inline bootstrap script — no `'unsafe-inline'`, so an injected <script>
-    is blocked. Promoted from Report-Only in iteration 13 after a clean
-    real-browser verification pass on the Pi (iteration 12)."""
+    too: `'self'` + the per-response nonce for the single inline bootstrap
+    script — no `'unsafe-inline'`, so an injected <script> is blocked.
+    Promoted from Report-Only in iteration 13 after a clean real-browser
+    verification pass on the Pi (iteration 12); the unpkg.com allowance was
+    dropped in 13.2 when Leaflet was vendored under static/vendor/."""
     raw = (settings_store.get("frame_ancestors") or "'self'").strip()
     # The setting is a comma-separated string of CSP source expressions; the
     # settings layer restricts it to CSP-safe characters at write time.
@@ -146,7 +147,7 @@ def _csp_header(script_nonce: Optional[str] = None) -> str:
         "base-uri 'self'",
     ]
     if script_nonce:
-        directives.append(f"script-src 'self' https://unpkg.com 'nonce-{script_nonce}'")
+        directives.append(f"script-src 'self' 'nonce-{script_nonce}'")
     return "; ".join(directives)
 
 
@@ -191,7 +192,9 @@ async def index() -> HTMLResponse:
     # bump automatically invalidates the browser's HTTP cache. Without this, users have to
     # hard-reload after upgrades to see new JS/CSS — and most won't bother.
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    for asset in ("themes.css", "app.css", "radar.js", "app.js"):
+    for asset in ("themes.css", "app.css", "radar.js", "app.js",
+                  "vendor/leaflet/leaflet.css", "vendor/leaflet/leaflet.js",
+                  "vendor/leaflet.heat/leaflet-heat.js"):
         html = html.replace(f'"/piscope/static/{asset}"', f'"/piscope/static/{asset}?v={VERSION}"')
     # Stamp a per-response nonce onto the single inline bootstrap <script> so it's
     # allowed under the script-src nonce policy. The external scripts (Leaflet CDN,

@@ -101,8 +101,12 @@
     }
   })();
   </script>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<!-- Leaflet 1.9.4 + leaflet.heat 0.2.0 are vendored under static/vendor/ (iter 13.2):
+       byte-verified against the SRI pins that previously guarded the unpkg copies, plus a
+       cross-CDN compare. Self-hosting removes the CDN as a boot dependency (no internet ⇒
+       the app still loads), makes the PWA shell genuinely offline-cacheable, and lets the
+       CSP drop the unpkg.com script-src allowance. -->
+  <link rel="stylesheet" href="/piscope/static/vendor/leaflet/leaflet.css" />
   <link rel="stylesheet" href="/piscope/static/themes.css" />
   <link rel="stylesheet" href="/piscope/static/app.css" />
 </head>
@@ -771,10 +775,8 @@
     </div>
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"
-          integrity="sha384-mFKkGiGvT5vo1fEyGCD3hshDdKmW3wzXW/x+fWriYJArD0R3gawT6lMvLboM22c0" crossorigin=""></script>
+  <script src="/piscope/static/vendor/leaflet/leaflet.js"></script>
+  <script src="/piscope/static/vendor/leaflet.heat/leaflet-heat.js"></script>
   <script src="/piscope/static/radar.js"></script>
   <script src="/piscope/static/app.js"></script>
 </body>

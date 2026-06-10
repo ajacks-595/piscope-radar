@@ -22,11 +22,28 @@ def test_index_default_csp_is_self(client):
     assert csp.startswith("frame-ancestors 'self'")
     assert "object-src 'none'" in csp
     assert "base-uri 'self'" in csp
-    assert "script-src 'self' https://unpkg.com 'nonce-" in csp
+    # 13.2: Leaflet is vendored, so script-src is 'self' + nonce only — no CDN hosts.
+    assert "script-src 'self' 'nonce-" in csp
+    assert "unpkg.com" not in csp
     assert r.headers.get("content-security-policy-report-only") is None
     # The nonce in the header matches the one stamped onto the inline bootstrap.
     nonce = csp.split("'nonce-", 1)[1].split("'", 1)[0]
     assert f'<script nonce="{nonce}">' in r.text
+
+
+def test_index_serves_vendored_leaflet(client):
+    # 13.2: no CDN dependency — the served HTML must reference only the local
+    # vendored copies (version-stamped), and those files must actually exist.
+    # Check actual resource references, not the bare string ("unpkg" legitimately
+    # appears in an explanatory HTML comment about the vendoring).
+    r = client.get("/piscope")
+    assert 'src="https://unpkg' not in r.text
+    assert 'href="https://unpkg' not in r.text
+    from app.main import VERSION
+    for asset in ("vendor/leaflet/leaflet.css", "vendor/leaflet/leaflet.js",
+                  "vendor/leaflet.heat/leaflet-heat.js"):
+        assert f'"/piscope/static/{asset}?v={VERSION}"' in r.text
+        assert client.get(f"/piscope/static/{asset}").status_code == 200
 
 
 def test_security_headers_on_api_and_static(client):
