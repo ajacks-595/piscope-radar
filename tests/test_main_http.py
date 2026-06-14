@@ -54,6 +54,20 @@ def test_security_headers_on_api_and_static(client):
     # Versioned static assets are immutable-cached; unversioned ones are not.
     r = client.get("/piscope/static/app.css?v=9.9.9")
     assert "immutable" in (r.headers.get("cache-control") or "")
+
+
+def test_tile_layer_overrides_referrer_policy(client):
+    # Regression guard: the page-wide `Referrer-Policy: no-referrer` (asserted above)
+    # strips the Referer from every sub-request, which makes OSM's volunteer tile
+    # servers answer "403r. Referer is required" and blank the map. The base Leaflet
+    # tile layer must therefore opt back in to a Referer via a per-element
+    # referrerPolicy, which overrides the document policy for just those tile <img>s.
+    # If a refactor drops this option, tiles silently break again — fail loudly here.
+    js = client.get("/piscope/static/app.js").text
+    assert "referrerPolicy:" in js
+    # Must be one of the policies OSM's usage policy accepts (i.e. not 'no-referrer'
+    # or 'same-origin'); we ship the most privacy-preserving acceptable value.
+    assert "'strict-origin-when-cross-origin'" in js
     r = client.get("/piscope/static/app.css")
     assert "immutable" not in (r.headers.get("cache-control") or "")
 
