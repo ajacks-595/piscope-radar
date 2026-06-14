@@ -830,7 +830,18 @@ function applyTileLayerForTheme() {
   // tiles past their max, which manifested as "the map disappears when I zoom in". Setting
   // the layer's maxZoom makes Leaflet show the previous level's tiles scaled up instead.
   const layerMax = preset.maxZoom || 18;
-  tileLayer = L.tileLayer(preset.url, { attribution: preset.attribution, maxZoom: layerMax }).addTo(map);
+  // OSM's volunteer tile servers (and the OSM-France HOT / CyclOSM / OpenTopoMap presets)
+  // reject tile requests that arrive with no Referer — "403r. Referer is required" per their
+  // tile usage policy. Our pages send a global `Referrer-Policy: no-referrer` (app/main.py)
+  // which would strip it, so override it for the tile <img>s only: Leaflet copies this option
+  // onto each tile element's referrerpolicy attribute, and a per-element policy wins over the
+  // document policy. `strict-origin-when-cross-origin` leaks only the origin (a LAN host) to
+  // the tile CDN and nothing on a downgrade; the rest of the app keeps no-referrer.
+  tileLayer = L.tileLayer(preset.url, {
+    attribution: preset.attribution,
+    maxZoom: layerMax,
+    referrerPolicy: 'strict-origin-when-cross-origin',
+  }).addTo(map);
   // Toggle the map root's "dark filter" attribute so the CSS rule for inverting light
   // tiles applies (or doesn't). Cleaner than swapping classes per preset.
   const mapEl = document.getElementById('map');
