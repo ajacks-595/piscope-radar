@@ -72,6 +72,16 @@ def test_tile_layer_overrides_referrer_policy(client):
     assert "immutable" not in (r.headers.get("cache-control") or "")
 
 
+def test_detail_panel_has_close_control(client):
+    # Regression guard: the aircraft detail panel must ship a way to dismiss it. It had
+    # none — no close button, no deselect, and Escape skipped it — so on mobile (where the
+    # panel is a full-screen `.detail.open` overlay) the only way back to the map was a
+    # full page reload. Keep the close button + its deselect handler wired.
+    js = client.get("/piscope/static/app.js").text
+    assert "function deselectAircraft" in js   # the clear-selection / close handler
+    assert "detail-close" in js                # the ✕ button (wired to deselectAircraft)
+
+
 def test_host_guard_blocks_public_hostnames(client):
     from app.services import settings as s
     s.set_one("host_guard_enabled", True)   # opt-in; off by default
