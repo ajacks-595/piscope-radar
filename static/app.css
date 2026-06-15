@@ -591,6 +591,24 @@ input[type="range"] {
 
 /* ------------- detail panel ------------- */
 .detail { padding: 0; overflow: auto; }
+
+/* Close control for the detail panel. A sticky bar keeps the ✕ pinned to the top-right of
+   the (scrolling) panel; the bar passes pointer events through so only the button is
+   clickable, and the button carries a solid background so it stays legible over content. */
+.detail-close-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px;
+  pointer-events: none;
+}
+.detail-close-bar .icon-button {
+  pointer-events: auto;
+  background: var(--surface-bg);
+  border: 1px solid var(--separator);
+}
 .detail-empty {
   display: flex;
   align-items: flex-start;

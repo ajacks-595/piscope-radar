@@ -1402,6 +1402,24 @@ function selectAircraft(hex, { pan }) {
   if (typeof scheduleUrlStateWrite === 'function') scheduleUrlStateWrite();
 }
 
+// Clear the current selection and return the detail panel to its empty state. The missing
+// counterpart to selectAircraft — without it the panel had no close control, so on mobile
+// (where it's a full-screen overlay) the only way out was a full page reload.
+function deselectAircraft() {
+  const prev = state.selectedHex;
+  if (!prev) return;
+  state.selectedHex = null;
+  state.selectedEnrichment = null;
+  state._pendingSelect = null;   // drop any not-yet-consumed URL selection too
+  refreshRowSelection(prev, false);
+  refreshMapMarkers();
+  refreshTrails();
+  if (routeLineLayer) routeLineLayer.clearLayers();
+  renderDetailPanel(null);
+  // Strip select= from the share URL so a reload / next write doesn't re-open it.
+  if (typeof scheduleUrlStateWrite === 'function') scheduleUrlStateWrite();
+}
+
 function refreshRowSelection(hex, on) {
   // CSS.escape: in global/extra-feed mode the hex comes from an upstream we don't
   // control, so a value containing a quote or backslash would otherwise throw a
@@ -1413,15 +1431,22 @@ function refreshRowSelection(hex, on) {
 function renderDetailPanel(ac) {
   const empty = document.getElementById('detail-empty');
   const content = document.getElementById('detail-content');
+  const panel = document.getElementById('detail');
   if (!ac) {
     empty.hidden = false;
     content.hidden = true;
+    // On narrow screens (.detail is a slide-in overlay) this slides it back off so the
+    // map is reachable again. Inert on desktop, where .detail.open has no CSS effect —
+    // the rule lives only inside the ≤900px media query and the panel is a fixed column.
+    if (panel) panel.classList.remove('open');
     return;
   }
   empty.hidden = true;
   content.hidden = false;
+  if (panel) panel.classList.add('open');
   state.selectedEnrichment = { hex: ac.hex, callsign: ac.callsign };
   content.innerHTML = `
+    <div class="detail-close-bar"><button class="icon-button" id="detail-close" type="button" title="Close (Esc)" aria-label="Close aircraft details">✕</button></div>
     <section>
       <div class="detail-header">
         <span class="callsign">${escapeHtml(ac.display_name)}</span>
@@ -1461,6 +1486,7 @@ function renderDetailPanel(ac) {
       <div class="detail-quick-links" id="quick-links">${quickLinks(ac)}</div>
     </section>
   `;
+  document.getElementById('detail-close').addEventListener('click', deselectAircraft);
   document.getElementById('fa-fetch-btn').addEventListener('click', () => fetchFlightAware(ac));
   document.getElementById('bookmark-toggle').addEventListener('click', toggleBookmarkSelected);
   // Show the AI section only when /api/explain/status reports the backend is configured.
@@ -3799,7 +3825,14 @@ function handleKeyboard(e) {
     }
     return;
   }
-  if (e.key === 'Escape') { hideContextMenu(); closeSettings(); closeEvents(); closeStats(); closeViews(); closeKeyboardHelp(); closeOperatorProfile(); }
+  if (e.key === 'Escape') {
+    // Escape dismisses the topmost layer. If a modal or the context menu is open it closes
+    // that and leaves the aircraft selection intact; otherwise it closes the detail panel.
+    const modalWasOpen = !!document.querySelector('.modal:not([hidden])');
+    const menuWasOpen = !!contextMenuEl;
+    hideContextMenu(); closeSettings(); closeEvents(); closeStats(); closeViews(); closeKeyboardHelp(); closeOperatorProfile();
+    if (!modalWasOpen && !menuWasOpen && state.selectedHex) deselectAircraft();
+  }
 }
 
 // Move the sidebar selection by `delta` rows (1 = down, -1 = up). Reads order directly
