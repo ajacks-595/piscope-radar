@@ -18,7 +18,7 @@ fastapi==0.136.1
 uvicorn==0.47.0
 httpx==0.28.1
 websockets==16.0
-python-multipart==0.0.29
+python-multipart==0.0.31
 
 # --- Transitive, pinned for full reproducibility ---
 annotated-types==0.7.0
