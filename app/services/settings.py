@@ -109,12 +109,21 @@ DEFAULTS: dict[str, Any] = {
     # Empty falls back to the legacy `ollama_enabled` flag so existing deployments
     # keep working without an explicit migration step.
     "ai_provider": "",
-    # Cloud LLM provider (Anthropic / OpenAI / Google) — bring-your-own API key.
+    # Cloud LLM provider — bring-your-own API key. Vendors: "anthropic" | "openai" |
+    # "google" (all hard-coded endpoints), plus "openai_compatible" which speaks the
+    # OpenAI chat/completions schema against a user-supplied base URL — Ollama Cloud,
+    # LiteLLM, vLLM, LocalAI, Groq, Together, OpenRouter, etc.
     "cloud_api_enabled": False,
-    "cloud_api_vendor": "anthropic",       # "anthropic" | "openai" | "google"
+    "cloud_api_vendor": "anthropic",       # "anthropic" | "openai" | "google" | "openai_compatible"
     "cloud_api_key": "",
     # Empty model name falls back to a sensible per-vendor default in ai/cloud_api.py.
+    # (No default exists for openai_compatible — set the model your endpoint exposes.)
     "cloud_api_model": "",
+    # Base URL for the openai_compatible vendor, e.g. "https://ollama.com/v1". Should
+    # include the version segment; PiScope POSTs to "<base>/chat/completions" and
+    # GETs "<base>/models". SSRF-validated (blocks link-local / cloud-metadata) since
+    # it's user-supplied and fetched server-side. Ignored by the other vendors.
+    "cloud_api_base_url": "",
     # Claude CLI provider — POSTs to a small shim daemon that wraps `claude -p`.
     # The shim lives on a LAN host that has Claude Code installed and authenticated.
     # See tools/claude-shim/ in the repo for a turnkey daemon + systemd unit.
@@ -334,7 +343,7 @@ _VALIDATORS: dict[str, Callable[[Any], Any]] = {
     # Enums.
     "feed_mode": _v_enum("local", "global"),
     "ai_provider": _v_enum("ollama", "cloud_api", "claude_cli", blank_ok=True),
-    "cloud_api_vendor": _v_enum("anthropic", "openai", "google"),
+    "cloud_api_vendor": _v_enum("anthropic", "openai", "google", "openai_compatible"),
     "trail_colour_mode": _v_enum("single", "altitude", "speed"),
     "map_label_mode": _v_enum("off", "callsign", "full"),
     "weekly_digest_day": _v_enum("mon", "tue", "wed", "thu", "fri", "sat", "sun"),
@@ -348,6 +357,7 @@ _VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "claude_cli_url": _v_str(2048),
     "ollama_model": _v_str(200),
     "cloud_api_model": _v_str(200),
+    "cloud_api_base_url": _v_str(2048),
     "watchlist": _v_str(8192),
     "theme": _v_str(64),
     "map_style": _v_str(64),

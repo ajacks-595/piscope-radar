@@ -61,7 +61,7 @@ def test_cap_response_trims_at_word_boundary():
 def test_cloud_api_vendor_defaults(temp_db):
     from app.services.ai import cloud_api
     from app.services import settings as s
-    assert set(cloud_api.DEFAULT_MODELS) == {"anthropic", "openai", "google"}
+    assert set(cloud_api.DEFAULT_MODELS) == {"anthropic", "openai", "google", "openai_compatible"}
     # Default vendor when unset / invalid.
     assert cloud_api._vendor() == "anthropic"
     s.set_one("cloud_api_vendor", "google")
@@ -70,6 +70,41 @@ def test_cloud_api_vendor_defaults(temp_db):
     assert cloud_api.is_configured() is False
     s.set_many({"cloud_api_enabled": True, "cloud_api_key": "sk-test"})
     assert cloud_api.is_configured() is True
+
+
+def test_cloud_api_openai_compatible_config_and_ssrf(temp_db):
+    # The openai_compatible vendor needs a valid, non-blocked base URL — but no API key
+    # (open LAN servers often need none). The base URL is the one user-redirectable host,
+    # so it goes through the same SSRF guard as the ollama/shim URLs.
+    from app.services.ai import cloud_api
+    from app.services import settings as s
+
+    s.set_many({"cloud_api_enabled": True, "cloud_api_vendor": "openai_compatible"})
+    assert cloud_api._vendor() == "openai_compatible"
+    # No base URL yet → not configured, even with the master switch on.
+    assert cloud_api.is_configured() is False
+    assert cloud_api._base_url() is None
+
+    # link-local / cloud-metadata base is refused (dotted and numeric-encoded forms).
+    s.set_one("cloud_api_base_url", "http://169.254.169.254/v1")
+    assert cloud_api._base_url() is None and cloud_api.is_configured() is False
+    s.set_one("cloud_api_base_url", "http://2852039166/v1")   # 169.254.169.254 as one decimal
+    assert cloud_api._base_url() is None and cloud_api.is_configured() is False
+
+    # non-http(s) scheme refused.
+    s.set_one("cloud_api_base_url", "file:///etc/passwd")
+    assert cloud_api._base_url() is None
+
+    # A LAN endpoint is allowed (LiteLLM/vLLM on the LAN); trailing slash is trimmed,
+    # and no API key is required for this vendor.
+    s.set_one("cloud_api_base_url", "http://10.0.0.5:4000/v1/")
+    assert cloud_api._base_url() == "http://10.0.0.5:4000/v1"
+    assert cloud_api.is_configured() is True
+
+    # No universal default model for this vendor — it echoes whatever the user set.
+    assert cloud_api._model() == ""
+    s.set_one("cloud_api_model", "gpt-oss:120b")
+    assert cloud_api._model() == "gpt-oss:120b"
 
 
 def test_ai_provider_urls_reject_link_local_keep_lan(temp_db):

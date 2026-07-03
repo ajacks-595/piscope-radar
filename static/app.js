@@ -1817,6 +1817,15 @@ function updateAIProviderPanel() {
   }
 }
 
+// Cloud-API vendor dropdown: the Base URL field is only relevant to the
+// `openai_compatible` vendor (Ollama Cloud / LiteLLM / vLLM / Groq / …), so
+// show it only for that choice. Called on settings open and on vendor change.
+function updateCloudApiVendorFields() {
+  const vendor = document.getElementById('setting-cloud-api-vendor')?.value || 'anthropic';
+  const field = document.getElementById('cloud-api-base-url-field');
+  if (field) field.hidden = (vendor !== 'openai_compatible');
+}
+
 // Settings → AI "Test connection" buttons. All three save the user's typed values
 // first so the test reflects what they'd actually be saving (you don't want to
 // confuse "I changed the URL but didn't save" with "the URL doesn't work").
@@ -1859,7 +1868,8 @@ async function testCloudApiConnection() {
   out.style.color = '';
   const vendor = document.getElementById('setting-cloud-api-vendor')?.value || 'anthropic';
   const model = document.getElementById('setting-cloud-api-model')?.value.trim() || '';
-  const body = { cloud_api_vendor: vendor, cloud_api_model: model };
+  const baseUrl = document.getElementById('setting-cloud-api-base-url')?.value.trim() || '';
+  const body = { cloud_api_vendor: vendor, cloud_api_model: model, cloud_api_base_url: baseUrl };
   const key = document.getElementById('setting-cloud-api-key')?.value;
   if (key && key !== '***') body.cloud_api_key = key;
   try {
@@ -1867,12 +1877,15 @@ async function testCloudApiConnection() {
     const res = await fetch('/piscope/api/cloud-api/test', { method: 'POST' });
     const data = await res.json();
     if (data.ok) {
+      // "endpoint reachable" reads right for the keyless openai_compatible vendor;
+      // the hosted vendors are validating an API key, so "key works" is accurate there.
+      const okPhrase = vendor === 'openai_compatible' ? 'endpoint reachable' : `${vendor} key works`;
       const m = data.configured_model;
       if (m && !data.model_present) {
-        out.textContent = `✓ key works, but model "${m}" wasn't in the list (have: ${(data.models || []).slice(0,3).join(', ') || 'none'})`;
+        out.textContent = `✓ ${okPhrase}, but model "${m}" wasn't in the list (have: ${(data.models || []).slice(0,3).join(', ') || 'none'})`;
         out.style.color = 'var(--alert)';
       } else {
-        out.textContent = `✓ ${vendor} key works — ${data.models?.length || 0} models available`;
+        out.textContent = `✓ ${okPhrase} — ${data.models?.length || 0} models available`;
         out.style.color = 'var(--accent)';
       }
     } else {
@@ -2405,10 +2418,12 @@ function populateSettingsModal() {
   if (el('setting-ollama-model'))    el('setting-ollama-model').value = s.ollama_model || 'gemma4:latest';
   if (el('setting-ollama-enabled'))  el('setting-ollama-enabled').checked = !!s.ollama_enabled;
   if (el('setting-cloud-api-vendor'))   el('setting-cloud-api-vendor').value = s.cloud_api_vendor || 'anthropic';
+  if (el('setting-cloud-api-base-url')) el('setting-cloud-api-base-url').value = s.cloud_api_base_url || '';
   if (el('setting-cloud-api-key'))      el('setting-cloud-api-key').value = '';
   if (el('cloud-api-key-status'))       el('cloud-api-key-status').textContent = s.cloud_api_key_set ? 'A key is currently stored. Leave blank to keep it.' : 'No key stored yet.';
   if (el('setting-cloud-api-model'))    el('setting-cloud-api-model').value = s.cloud_api_model || '';
   if (el('setting-cloud-api-enabled'))  el('setting-cloud-api-enabled').checked = !!s.cloud_api_enabled;
+  updateCloudApiVendorFields();
   if (el('setting-claude-cli-url'))     el('setting-claude-cli-url').value = s.claude_cli_url || '';
   if (el('setting-claude-cli-token'))   el('setting-claude-cli-token').value = '';
   if (el('claude-cli-token-status'))    el('claude-cli-token-status').textContent = s.claude_cli_token_set ? 'A token is currently stored. Leave blank to keep it.' : 'No token stored yet.';
@@ -2503,6 +2518,7 @@ async function saveSettings() {
     ollama_model:    document.getElementById('setting-ollama-model')?.value.trim() || 'gemma4:latest',
     ollama_enabled:  !!document.getElementById('setting-ollama-enabled')?.checked,
     cloud_api_vendor:  document.getElementById('setting-cloud-api-vendor')?.value || 'anthropic',
+    cloud_api_base_url: document.getElementById('setting-cloud-api-base-url')?.value.trim() || '',
     cloud_api_model:   document.getElementById('setting-cloud-api-model')?.value.trim() || '',
     cloud_api_enabled: !!document.getElementById('setting-cloud-api-enabled')?.checked,
     claude_cli_url:     document.getElementById('setting-claude-cli-url')?.value.trim() || '',
@@ -4109,6 +4125,7 @@ function bindUI() {
   document.getElementById('test-cloud-api-btn')?.addEventListener('click', testCloudApiConnection);
   document.getElementById('test-claude-cli-btn')?.addEventListener('click', testClaudeCliConnection);
   document.getElementById('setting-ai-provider')?.addEventListener('change', updateAIProviderPanel);
+  document.getElementById('setting-cloud-api-vendor')?.addEventListener('change', updateCloudApiVendorFields);
   document.getElementById('import-db').addEventListener('change', handleDbImport);
   document.addEventListener('keydown', handleKeyboard);
   // Bookmark right-click on aircraft markers
