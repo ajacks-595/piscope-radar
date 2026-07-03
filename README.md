@@ -220,7 +220,7 @@ PiScope Radar is just the glue. The real data comes from:
 - [FlightAware AeroAPI](https://www.flightaware.com/commercial/aeroapi/) — optional, paid, on-demand flight data
 - [OpenAIP](https://www.openaip.net/) — optional aviation chart overlay (free API key required)
 - [RainViewer](https://www.rainviewer.com/) — weather radar overlay (no key)
-- AI briefings are optional and bring-your-own: [Ollama](https://ollama.com/) (local), or a cloud key from [Anthropic](https://www.anthropic.com/) / [OpenAI](https://openai.com/) / [Google](https://ai.google.dev/), or your own [Claude Code](https://claude.com/claude-code) subscription via the bundled shim
+- AI briefings are optional and bring-your-own: [Ollama](https://ollama.com/) (local), a cloud key from [Anthropic](https://www.anthropic.com/) / [OpenAI](https://openai.com/) / [Google](https://ai.google.dev/), any OpenAI-compatible endpoint (Ollama Cloud, [LiteLLM](https://litellm.ai/), vLLM, Groq, OpenRouter, …) via a custom base URL, or your own [Claude Code](https://claude.com/claude-code) subscription via the bundled shim
 
 ## Security model
 
