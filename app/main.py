@@ -100,6 +100,15 @@ async def _host_guard_and_headers(request, call_next):
     # so reloads stop re-validating every asset against the Pi.
     if request.url.path.startswith("/piscope/static/") and "v" in request.query_params:
         response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+    # HTML served straight off the static mount (/piscope/static/index.html — StaticFiles
+    # serves the whole directory) renders the full app but skipped the /piscope route's
+    # CSP: frameable by any origin, and inline handlers injected via stored settings
+    # data ran there. Give it the same frame-ancestors policy plus a nonce-less
+    # script-src 'self'. That also blocks the inline embed bootstrap on that copy,
+    # which is fine — /piscope is the supported entry point.
+    if request.url.path.startswith("/piscope/static/") and \
+            response.headers.get("content-type", "").startswith("text/html"):
+        response.headers.setdefault("Content-Security-Policy", _csp_header(script_self_only=True))
     return response
 
 
@@ -120,7 +129,7 @@ async def root() -> RedirectResponse:
 # Read fresh from settings on each request — cheap, and means an admin's
 # `frame_ancestors` change takes effect without restart.
 
-def _csp_header(script_nonce: Optional[str] = None) -> str:
+def _csp_header(script_nonce: Optional[str] = None, *, script_self_only: bool = False) -> str:
     """Build the ENFORCED Content-Security-Policy header value.
 
     Base directives are universally safe: `frame-ancestors` (from the user's
@@ -134,7 +143,10 @@ def _csp_header(script_nonce: Optional[str] = None) -> str:
     script — no `'unsafe-inline'`, so an injected <script> is blocked.
     Promoted from Report-Only in iteration 13 after a clean real-browser
     verification pass on the Pi (iteration 12); the unpkg.com allowance was
-    dropped in 13.2 when Leaflet was vendored under static/vendor/."""
+    dropped in 13.2 when Leaflet was vendored under static/vendor/.
+
+    `script_self_only` (static-mount HTML) enforces `script-src 'self'` with no
+    nonce, so no inline script or handler can run on those pages."""
     raw = (settings_store.get("frame_ancestors") or "'self'").strip()
     # The setting is a comma-separated string of CSP source expressions; the
     # settings layer restricts it to CSP-safe characters at write time.
@@ -148,6 +160,8 @@ def _csp_header(script_nonce: Optional[str] = None) -> str:
     ]
     if script_nonce:
         directives.append(f"script-src 'self' 'nonce-{script_nonce}'")
+    elif script_self_only:
+        directives.append("script-src 'self'")
     return "; ".join(directives)
 
 
