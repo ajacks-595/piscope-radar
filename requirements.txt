@@ -12,13 +12,17 @@
 # NOTE: starlette is pinned to 1.0.1 (not the 1.0.0 that was deployed) to pick up
 # the PYSEC-2026-161 fix. fastapi 0.136.1 requires starlette>=0.46.0, so this is
 # compatible.
+#
+# NOTE: python-multipart is pinned to 0.0.32 (was 0.0.29) for CVE-2026-53537/53538/
+# 53539/53540 — 53539 is a quadratic urlencoded-form parse that blocked the event
+# loop ~1 s per 512 KiB body, reachable pre-auth through /api/import's form parsing.
 
 # --- Direct dependencies (the five install.sh used to install unpinned) ---
 fastapi==0.136.1
 uvicorn==0.47.0
 httpx==0.28.1
 websockets==16.0
-python-multipart==0.0.29
+python-multipart==0.0.32
 
 # --- Transitive, pinned for full reproducibility ---
 annotated-types==0.7.0
