@@ -761,7 +761,7 @@ class FeedService:
                 self._outage_notified = False
                 self._watchdog_armed = True
                 webhooks_service.fan_out("feed_recovered", {
-                    "message": f"PiScope Radar feeds recovered after outage.",
+                    "message": "PiScope Radar feeds recovered after outage.",
                     "now": now_ts,
                 })
             return

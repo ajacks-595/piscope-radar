@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .routers import api as api_router
