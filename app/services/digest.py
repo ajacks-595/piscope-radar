@@ -264,7 +264,7 @@ def _send_email(text: str) -> tuple[bool, Optional[str]]:
     password = settings_store.get("smtp_pass") or ""
     sender = (settings_store.get("smtp_from") or user).strip()
     recipient = (settings_store.get("smtp_to") or "").strip()
-    use_starttls = bool(settings_store.get("smtp_use_starttls", True))
+    use_starttls = bool(settings_store.get("smtp_use_starttls"))   # DEFAULTS supplies True
     if not host or not sender or not recipient:
         return False, "SMTP not configured"
     msg = EmailMessage()
