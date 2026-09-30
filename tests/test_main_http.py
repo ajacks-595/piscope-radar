@@ -97,6 +97,16 @@ def test_detail_panel_has_close_control(client):
     assert "detail-close" in js                # the ✕ button (wired to deselectAircraft)
 
 
+def test_trail_render_cache_keys_on_newest_point(client):
+    # Regression guard: refreshTrails' diff-skip cache was keyed on trail length. Once a
+    # trail reaches trail_length every append shifts one point out, the length stays
+    # constant, and the drawn trail froze — on the live Pi every full trail lagged its
+    # aircraft by up to 9 nm after 30 s. The key must include the newest point.
+    js = client.get("/piscope/static/app.js").text
+    assert "const last = pts[pts.length - 1];" in js
+    assert "cached.last === last" in js
+
+
 def test_host_guard_blocks_public_hostnames(client):
     from app.services import settings as s
     s.set_one("host_guard_enabled", True)   # opt-in; off by default
