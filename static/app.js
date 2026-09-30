@@ -1277,8 +1277,11 @@ function speedColor(speed) {
 }
 
 // Cache the parameters that drove the last trail render per hex, so we can short-circuit
-// the (expensive) rebuild for aircraft that didn't actually move this poll.
-const _trailRenderCache = new Map();   // hex → { len, mode, fade, isSel, anySel }
+// the (expensive) rebuild for aircraft that didn't actually move this poll. `last` is the
+// newest point's array (a fresh object per append) — length alone can't be the key: once a
+// trail reaches trail_length each append shifts one point out, the length stays constant,
+// and the drawn trail froze while the aircraft flew on.
+const _trailRenderCache = new Map();   // hex → { len, last, mode, fade, isSel, anySel }
 
 function refreshTrails() {
   if (!map) return;
@@ -1294,12 +1297,13 @@ function refreshTrails() {
     // Diff-skip: if nothing that affects the trail's rendering changed since last poll,
     // leave the existing polylines alone. The hot path here is "the aircraft is on the
     // map but didn't move", which is most aircraft on most ticks.
+    const last = pts[pts.length - 1];
     const cached = _trailRenderCache.get(hex);
-    if (cached && cached.len === pts.length && cached.mode === mode && cached.fade === fade
-        && cached.isSel === isSel && cached.anySel === anySel) {
+    if (cached && cached.len === pts.length && cached.last === last && cached.mode === mode
+        && cached.fade === fade && cached.isSel === isSel && cached.anySel === anySel) {
       continue;
     }
-    _trailRenderCache.set(hex, { len: pts.length, mode, fade, isSel, anySel });
+    _trailRenderCache.set(hex, { len: pts.length, last, mode, fade, isSel, anySel });
 
     const baseOpacity = anySel ? (isSel ? 0.95 : 0.18) : 0.55;
     const weight = isSel ? 2.5 : 1.2;
