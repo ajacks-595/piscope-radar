@@ -289,3 +289,36 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
   tag is still `v1.4.0` even though `main` is at v1.8.0.
 - **Co-authored-by footer convention** isn't established in this repo. If you start
   adding it, document it here and in project memory.
+
+## Project-specific repo review additions
+
+Bug classes the 2026-09-30 repo review found with no dedicated test. Run these on
+every review; full report in `.repo-review/2026-09-30T185602Z/REPORT.md`.
+
+- **2026-09-30 — Live vs analytics military classification parity.** The feed only
+  trusted the readsb `dbFlags` bit, which the local tar1090 never sets, so from June
+  the Pi logged 0 military events while `notable.py` rules matched 880 military
+  aircraft. Check: `SELECT COUNT(*) FROM events WHERE kind='military'` over a
+  window against `notable.military_where()` hits in `aircraft_sightings` over the
+  same window. A large mismatch means the alert pipeline is blind.
+- **2026-09-30 — Alert re-fire rate.** De-dup sets re-arm after one missed poll.
+  Check: consecutive same-hex/same-kind events < 10 min apart in `events` (script in
+  `.repo-review/…/event-refire-evidence.txt`). A non-trivial count means webhook spam.
+- **2026-09-30 — Don't stub the function under test.** The email digest crashed on
+  every send for months because the only test monkeypatched `_send_email` wholesale.
+  Stub the I/O boundary (`smtplib.SMTP`, `httpx`), not the function being tested.
+- **2026-09-30 — Diff-skip caches in `app.js` must key on content, not size.** Trails
+  froze once full because the render cache compared only `pts.length`. Browser check:
+  feed synthetic frames through `applyAircraftUpdate` and compare each polyline's
+  last latlng with the newest trail point (`.repo-review/…/trail-synthetic.js` pattern).
+- **2026-09-30 — Every HTML response carries the CSP, not just `/piscope`.**
+  `StaticFiles` also serves `static/index.html`. Check `curl -I` on
+  `/piscope/static/index.html` for `frame-ancestors` and `script-src`.
+- **2026-09-30 — Cross-site simple-request audit.** List every POST that takes no
+  JSON body (they need no CORS preflight). Each must be harmless or explicitly
+  CSRF-guarded; FlightAware's `confirm_over_budget` query param can spend money.
+- **2026-09-30 — claude-shim reinstall gate.** The shim isn't currently installed on
+  claude-dev (only `/etc/claude-shim.env` remains), though the Pi still points
+  `claude_cli_url` at it. Don't reinstall it until `shim.py` runs `claude --print`
+  with the tool surface, MCP and user allow-rules disabled, then canary-test it with
+  a prompt asking it to run `id`. See REPORT.md P1-2.
