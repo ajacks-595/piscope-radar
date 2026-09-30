@@ -18,9 +18,9 @@ import logging
 import time
 import zlib
 from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
-from .settings import _connect, get  # type: ignore[attr-defined]
+from .settings import _connect  # type: ignore[attr-defined]
 
 
 # Snapshots are stored zlib-compressed because JSON of aircraft state compresses ~80%.

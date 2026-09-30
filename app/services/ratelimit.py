@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from typing import Deque, Dict, Tuple
+from typing import Deque, Dict
 
 # bucket name -> deque of recent allow() timestamps within the window.
 _BUCKETS: Dict[str, Deque[float]] = {}

@@ -177,7 +177,8 @@ def test_metrics_prometheus_format(client):
 def test_export_returns_zip_without_secrets(client):
     # Guards the S1 refactor end-to-end: /api/export must still produce a zip, and the
     # bundled SQL must not contain stored secret values.
-    import io, zipfile
+    import io
+    import zipfile
     client.post("/piscope/api/settings/fa-key", json={"key": "EXPORT-SECRET-FA"})
     r = client.get("/piscope/api/export")
     assert r.status_code == 200
