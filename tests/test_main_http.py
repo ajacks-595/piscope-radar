@@ -56,6 +56,21 @@ def test_security_headers_on_api_and_static(client):
     assert "immutable" in (r.headers.get("cache-control") or "")
 
 
+def test_static_mount_html_gets_csp(client):
+    # /piscope/static/index.html renders the whole app straight off the static mount.
+    # It used to carry no CSP at all: any origin could frame it (clickjacking past the
+    # frame_ancestors setting) and inline handlers from stored settings data executed.
+    client.post("/piscope/api/settings", json={"frame_ancestors": "'self', https://dash.example"})
+    r = client.get("/piscope/static/index.html")
+    assert r.status_code == 200
+    csp = r.headers.get("content-security-policy") or ""
+    assert csp.startswith("frame-ancestors 'self' https://dash.example")
+    assert "script-src 'self'" in csp
+    assert "unsafe-inline" not in csp and "nonce-" not in csp
+    # Non-HTML static assets are unaffected.
+    assert client.get("/piscope/static/app.js").headers.get("content-security-policy") is None
+
+
 def test_tile_layer_overrides_referrer_policy(client):
     # Regression guard: the page-wide `Referrer-Policy: no-referrer` (asserted above)
     # strips the Referer from every sub-request, which makes OSM's volunteer tile
