@@ -182,7 +182,7 @@ def test_hourly_row_counters_and_bands(temp_db):
     ts = datetime(2026, 6, 3, 14, 10, tzinfo=timezone.utc).timestamp()
     buf.observe_poll([
         _ac("aaa111", altitude_baro=5000, distance_nm=80.0),        # low
-        _ac("bbb222", altitude_baro=36000, military=True),          # very_high
+        _ac("bbb222", altitude_baro=36000, military=True, military_db=True),  # very_high
         _ac("ccc333"),                                              # no alt → no band
         _ac("ddd444", on_ground=True),                              # ground
     ], ts)
@@ -313,7 +313,7 @@ def _seed_window_data(now: float) -> None:
     buf = SightingsBuffer()
     buf.observe_poll([
         _ac("aaa111", callsign="BAW123", type_code="A320", altitude_baro=35000,
-            ground_speed=420.0, distance_nm=90.0, military=True),
+            ground_speed=420.0, distance_nm=90.0, military=True, military_db=True),
         _ac("bbb222", callsign="GABCD", altitude_baro=2000, distance_nm=10.0),
     ], now - 3600)
     _flush(buf)

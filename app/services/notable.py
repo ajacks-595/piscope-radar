@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from ..models.aircraft import MILITARY_DB_FLAG_LABEL
 from . import categorize
 from .analytics import _sightings_where  # shared window-filter contract
 from .settings import _connect  # type: ignore[attr-defined]
@@ -130,13 +131,22 @@ def military_prefix_label(callsign: Optional[str]) -> Optional[str]:
     return None
 
 
+def live_military_label(hex_id: Optional[str], callsign: Optional[str]) -> Optional[str]:
+    """Rule-based military label for a LIVE aircraft — hex allocation range first,
+    then military callsign prefix — or None. The feed applies it on top of the
+    readsb dbFlags bit, which a receiver without an aircraft database (a plain
+    local tar1090) never sets: before this, such a feed raised no military alerts
+    at all while this module's rules found hundreds of military aircraft."""
+    return hex_range_label(hex_id) or military_prefix_label(callsign)
+
+
 def classify_sighting(row: dict[str, Any]) -> list[dict[str, str]]:
     """All rule matches for one sighting-shaped dict (hex, callsign, type_code,
     military, max_alt, min_alt, polls). Returns [{rule, label}, ...] — empty
     when nothing notable."""
     out: list[dict[str, str]] = []
     if row.get("military"):
-        out.append({"rule": "military_db_flag", "label": "Military (aircraft DB flag)"})
+        out.append({"rule": "military_db_flag", "label": MILITARY_DB_FLAG_LABEL})
     range_label = hex_range_label(row.get("hex"))
     if range_label:
         out.append({"rule": "military_hex_range", "label": range_label})
