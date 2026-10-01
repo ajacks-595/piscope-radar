@@ -200,9 +200,14 @@ After=tar1090.service
 Type=simple
 User=${SERVICE_USER}
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port ${SERVICE_PORT}
+# --timeout-graceful-shutdown: dashboards hold /api/dashboard/events SSE streams open
+# indefinitely, and uvicorn otherwise waits for them forever on SIGTERM — every
+# restart then hung until systemd's 90 s SIGKILL, skipping the shutdown hook that
+# flushes buffered analytics. 5 s lets in-flight requests finish, then cancels.
+ExecStart=${INSTALL_DIR}/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port ${SERVICE_PORT} --timeout-graceful-shutdown 5
 Restart=always
 RestartSec=5
+TimeoutStopSec=30
 Environment=PYTHONUNBUFFERED=1
 # Hardening. Verified compatible with this app (SQLite/WAL needs write access to
 # the DB's directory; httpx needs INET sockets + DNS via netlink). ReadWritePaths
