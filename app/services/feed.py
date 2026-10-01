@@ -27,6 +27,9 @@ from ._http import validate_external_url, validate_external_url_async, _BLOCKED_
 log = logging.getLogger("piscope.feed")
 
 ADSB_LOL_URL = "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{nm}"
+# Seconds an aircraft must be out of coverage before its trail is dropped and its
+# military/emergency/watchlist alert de-dup re-arms.
+REARM_GRACE_S = 120
 # NB: validate_external_url is imported from _http above (shared with webhooks.py
 # to avoid an import cycle). feed's callers use the default resolve=False — the
 # feed URL is admin-set and polled every cycle, so no per-poll DNS lookup.
@@ -81,6 +84,8 @@ class FeedService:
         # bus events with the squawk's lifetime when the aircraft drops the
         # emergency code (or leaves coverage).
         self._emergency_started_at: dict[str, float] = {}
+        # Last poll each notified hex was in coverage — drives the re-arm grace.
+        self._notified_last_seen: dict[str, float] = {}
 
         # Snapshot persistence cadence — every Nth poll write to feed_snapshots. Read from
         # settings on each poll so it can be retuned without a restart.
@@ -678,11 +683,20 @@ class FeedService:
             if hex_id not in new_store:
                 last = self.trails[hex_id][-1] if self.trails[hex_id] else None
                 last_ts = last[2] if last else 0
-                if now_ts - last_ts > 120:
+                if now_ts - last_ts > REARM_GRACE_S:
                     del self.trails[hex_id]
+        # De-dup re-arms only after REARM_GRACE_S out of coverage, like trails. It used
+        # to re-arm on the first missed poll, so a fringe contact flickering in and out
+        # re-fired its alert (and webhook) each time: 298 of 375 military events in
+        # May 2026 repeated the same hex within 10 minutes.
+        notified = self._notified_military | self._notified_emergency | self._notified_watchlist
+        for h in notified:
+            if h in new_store:
+                self._notified_last_seen[h] = now_ts
         for s_set in (self._notified_military, self._notified_emergency, self._notified_watchlist):
             for h in list(s_set):
-                if h not in new_store:
+                if h not in new_store and \
+                        now_ts - self._notified_last_seen.get(h, now_ts) > REARM_GRACE_S:
                     # Coverage-loss resolves a still-active emergency. Other
                     # event kinds (military, watchlist) just re-arm silently.
                     if s_set is self._notified_emergency:
@@ -699,6 +713,10 @@ class FeedService:
                         except Exception as exc:
                             log.warning("emergency_resolved publish failed: %s", exc)
                     s_set.discard(h)
+        for h in [h for h in self._notified_last_seen
+                  if h not in self._notified_military and h not in self._notified_emergency
+                  and h not in self._notified_watchlist]:
+            del self._notified_last_seen[h]
 
         # Roll the daily counters when the date changes.
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -812,6 +830,7 @@ class FeedService:
         self._notified_emergency.clear()
         self._notified_watchlist.clear()
         self._emergency_started_at.clear()
+        self._notified_last_seen.clear()
         self.aircraft = {}
         self.trails.clear()
 
