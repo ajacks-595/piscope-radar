@@ -71,6 +71,46 @@ def test_static_mount_html_gets_csp(client):
     assert client.get("/piscope/static/app.js").headers.get("content-security-policy") is None
 
 
+def test_cross_site_writes_refused(client, monkeypatch):
+    # Body-less POSTs are CORS "simple" requests: a hostile page can fire them with
+    # no preflight. Browsers tag them Sec-Fetch-Site (Origin on older browsers).
+    from app.services import digest as digest_svc
+    ran = []
+
+    async def _fake_run(**kw):
+        ran.append(1)
+        return {"generated_at": 0}
+    monkeypatch.setattr(digest_svc, "run_digest", _fake_run)
+
+    for headers in ({"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"},
+                    {"Origin": "http://evil.example"}, {"Origin": "null"}):
+        r = client.post("/piscope/api/digest/run", headers=headers)
+        assert r.status_code == 403, headers
+    assert client.post("/piscope/api/flightaware/RCH123?confirm_over_budget=true",
+                       headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+    assert not ran
+    # Same-origin browser requests, direct navigation and non-browser clients pass.
+    for headers in ({"Sec-Fetch-Site": "same-origin"}, {"Sec-Fetch-Site": "none"},
+                    {"Origin": "http://testserver"}, {}):
+        assert client.post("/piscope/api/digest/run", headers=headers).status_code == 200, headers
+    assert len(ran) == 4
+    # Reads are untouched (dashboards consume GETs cross-origin server-side).
+    assert client.get("/piscope/api/version", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 200
+
+
+def test_flightaware_lookups_rate_limited(client, monkeypatch):
+    from app.services import flightaware
+    calls = []
+
+    async def _fake_lookup(callsign, *, allow_over_budget=False):
+        calls.append(callsign)
+        return {"flight": None}
+    monkeypatch.setattr(flightaware, "lookup", _fake_lookup)
+    codes = [client.post(f"/piscope/api/flightaware/TST{i}").status_code for i in range(25)]
+    assert codes[:20] == [200] * 20 and set(codes[20:]) == {429}
+    assert len(calls) == 20
+
+
 def test_tile_layer_overrides_referrer_policy(client):
     # Regression guard: the page-wide `Referrer-Policy: no-referrer` (asserted above)
     # strips the Referer from every sub-request, which makes OSM's volunteer tile
