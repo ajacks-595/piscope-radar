@@ -381,6 +381,19 @@ case "\${1:-help}" in
     ip=\$(hostname -I 2>/dev/null | awk '{print \$1}')
     echo "http://\${ip:-localhost}/piscope"
     ;;
+  allow-host)
+    # Add a custom host name (e.g. a DNS name that points at the Pi) to the
+    # DNS-rebinding guard's allow-list. Talks to the local API directly.
+    [[ -z "\${2:-}" ]] && { echo "Usage: piscope allow-host <hostname>"; exit 1; }
+    curl -fsS "http://127.0.0.1:\${PORT}/piscope/api/settings" \
+      | python3 -c 'import json, sys
+s = json.load(sys.stdin); h = sys.argv[1].strip().lower()
+cur = [x.strip() for x in (s.get("allowed_hosts") or "").split(",") if x.strip()]
+print(json.dumps({"allowed_hosts": ", ".join(cur + ([h] if h not in cur else []))}))' "\${2}" \
+      | curl -fsS -X POST -H "Content-Type: application/json" --data-binary @- \
+          "http://127.0.0.1:\${PORT}/piscope/api/settings" >/dev/null
+    echo "Allowed host name: \${2}"
+    ;;
   db-size)  du -h "\${INSTALL_DIR}/piscope.db" "\${INSTALL_DIR}/piscope.db-wal" 2>/dev/null || true ;;
   *)
     cat <<USAGE
@@ -395,6 +408,7 @@ PiScope Radar admin commands:
   piscope restore <file.zip>  — restore from a backup zip
   piscope db-size  — show on-disk DB size
   piscope url      — print the LAN URL to open
+  piscope allow-host <name>  — allow a custom host name through the DNS-rebinding guard
 USAGE
     ;;
 esac

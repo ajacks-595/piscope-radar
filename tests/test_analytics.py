@@ -37,7 +37,7 @@ def test_migration_creates_analytics_tables(temp_db):
     names = {r["name"] for r in _rows(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"aircraft_sightings", "hourly_stats"} <= names
-    assert _rows("PRAGMA user_version")[0][0] == 3
+    assert _rows("PRAGMA user_version")[0][0] == 4
     indexes = {r["name"] for r in _rows(
         "SELECT name FROM sqlite_master WHERE type='index'")}
     assert "idx_sightings_date" in indexes
@@ -47,7 +47,7 @@ def test_migration_is_idempotent(temp_db):
     from app.services import settings as settings_store
     settings_store.init_db()   # second run on the same DB must not raise
     settings_store.init_db()
-    assert _rows("PRAGMA user_version")[0][0] == 3
+    assert _rows("PRAGMA user_version")[0][0] == 4
 
 
 # --- SightingsBuffer ------------------------------------------------------------

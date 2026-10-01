@@ -32,6 +32,7 @@ from ..services.ai import cloud_api as _cloud_api_provider
 from ..services.ai import claude_cli as _claude_cli_provider
 from ..services import digest as digest_svc
 from ..services import dashboard as dashboard_svc
+from ..services import hostguard
 from ..services import ratelimit
 from ..services._http import LRUCache, get_client, reset_client
 from ..services.feed import feed_service
@@ -198,11 +199,34 @@ async def get_settings() -> dict[str, Any]:
     return settings_store.get_all(redact=True)
 
 
+def _keep_request_host_allowed(request: Request, values: dict[str, Any]) -> None:
+    """If this write would make the host guard reject the Host the request itself came
+    in on (turning the guard on, or editing allowed_hosts), add that Host to
+    allowed_hosts — otherwise saving Settings locks the user out of the very UI they
+    are using. Safe: the request is being served, so this Host is either allowed
+    already or the guard is off (when anyone could change the setting anyway)."""
+    if "host_guard_enabled" not in values and "allowed_hosts" not in values:
+        return
+    try:
+        enabled = settings_store._v_bool(values.get("host_guard_enabled",
+                                                    settings_store.get("host_guard_enabled")))
+    except ValueError:
+        return   # set_many will reject the bad value and keep the current state
+    allowed = values.get("allowed_hosts", settings_store.get("allowed_hosts"))
+    allowed = allowed if isinstance(allowed, str) else ""
+    host_header = request.headers.get("host", "")
+    if enabled and not hostguard.host_allowed(host_header, allowed):
+        name = hostguard._host_only(host_header)
+        if name:
+            values["allowed_hosts"] = ", ".join(t for t in (allowed.strip(), name) if t)
+
+
 @router.post("/settings")
-async def post_settings(values: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def post_settings(request: Request, values: dict[str, Any] = Body(...)) -> dict[str, Any]:
     # Reject empty bodies — accidental wipes.
     if not values:
         raise HTTPException(status_code=400, detail="No settings provided")
+    _keep_request_host_allowed(request, values)
     # If the contact URL is changing, recycle the shared httpx client so the new User-Agent
     # gets used on subsequent calls, and drop the planespotters cache so previously-failed
     # lookups (e.g. 403s under the old UA) get retried with the new one.

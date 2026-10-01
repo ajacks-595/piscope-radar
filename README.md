@@ -174,6 +174,7 @@ piscope health      # JSON health from /api/health
 piscope backup      # download a DB zip to your home dir
 piscope restore foo.zip
 piscope url         # print http://<ip>/piscope
+piscope allow-host piscope.example.com   # allow a custom DNS name (rebinding guard)
 piscope help
 ```
 
@@ -229,6 +230,9 @@ without putting auth + HTTPS in front of it.
 
 - No CORS (any browser-tab-origin on the LAN can hit the API; that's intentional for `http://pi.local/piscope`)
 - WebSocket endpoint rejects cross-origin connections
+- State-changing requests that a browser marks as cross-site (`Sec-Fetch-Site` / `Origin`) are refused, so other websites can't trigger actions through your browser
+- DNS-rebinding guard (on by default for new installs): only LAN-style host names — IP addresses, single-label names, `.local`/`.lan`/`.home`/`.home.arpa`/`.internal` — are served, plus names you allow in Settings → Notifications → Network access or with `piscope allow-host <name>`. Installs that predate 1.7.5 keep it off until you enable it there
+- Stored secrets are bound to their destination: changing the AI endpoint, shim URL or SMTP host clears the key/token/password, so it can't be redirected to another server
 - Cross-origin iframing is blocked by default (`Content-Security-Policy: frame-ancestors 'self'`); embedding requires explicitly allow-listing the parent origin in Settings
 - SSRF-safe URL validation for the tar1090 base URL and any extra feeds
 - API keys + AI provider tokens stored only in SQLite, never echoed back to the browser (redacted to `***` with a "stored" flag)

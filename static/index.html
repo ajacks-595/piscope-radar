@@ -674,6 +674,15 @@
             <input id="setting-frame-ancestors" type="text" placeholder="'self', http://10.0.0.x:8090, https://home.example.com" />
             <span class="hint">Takes effect on next page load — affects both the main UI and the embedded map view.</span>
           </div>
+          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 14px 0;" />
+          <h3>Network access</h3>
+          <p class="hint">PiScope has no login, so a malicious website could use DNS rebinding to reach it through your browser. With this on, requests are only served for LAN-style host names — IP addresses, single-label names like <code>piaware</code>, and <code>.local</code>/<code>.lan</code>/<code>.home</code>/<code>.home.arpa</code>/<code>.internal</code> — plus any names listed below. The host name you are using right now is added automatically when you save.</p>
+          <label class="checkbox-row"><input id="setting-host-guard" type="checkbox" /> Only serve LAN host names (DNS-rebinding guard)</label>
+          <div class="field">
+            <label for="setting-allowed-hosts">Allowed host names</label>
+            <input id="setting-allowed-hosts" type="text" placeholder="piscope.example.com, pi.tailnet.ts.net" autocomplete="off" />
+            <span class="hint">Comma-separated, exact match, port ignored. Also settable on the Pi with <code>piscope allow-host &lt;name&gt;</code>.</span>
+          </div>
         </section>
 
         <section class="tab-section" data-section="digest">
