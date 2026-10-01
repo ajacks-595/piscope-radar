@@ -226,6 +226,7 @@ async def post_settings(request: Request, values: dict[str, Any] = Body(...)) ->
     # Reject empty bodies — accidental wipes.
     if not values:
         raise HTTPException(status_code=400, detail="No settings provided")
+    values = {k: v for k, v in values.items() if k not in settings_store.CLIENT_READONLY_KEYS}
     _keep_request_host_allowed(request, values)
     # If the contact URL is changing, recycle the shared httpx client so the new User-Agent
     # gets used on subsequent calls, and drop the planespotters cache so previously-failed

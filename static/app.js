@@ -3057,7 +3057,7 @@ async function loadViews() {
   savedViewsCache.forEach((v) => {
     const li = document.createElement('li');
     li.innerHTML = `
-      <span><div class="vname">${escapeHtml(v.name)}</div><div class="vmeta">${v.lat.toFixed(2)}, ${v.lon.toFixed(2)} · z${v.zoom}</div></span>
+      <span><div class="vname">${escapeHtml(v.name)}</div><div class="vmeta">${Number(v.lat).toFixed(2)}, ${Number(v.lon).toFixed(2)} · z${Number(v.zoom) || ''}</div></span>
       <button class="secondary go">Go</button>
       <button class="secondary del">Delete</button>
     `;
@@ -3579,9 +3579,9 @@ function paintDigestCard(digest) {
   const t = digest.totals || {};
   const by = t.by_kind || {};
   const byBits = Object.entries(by).sort((a, b) => b[1] - a[1])
-    .map(([k, v]) => `<span class="digest-pill">${escapeHtml(k)} ×${v}</span>`).join('');
+    .map(([k, v]) => `<span class="digest-pill">${escapeHtml(k)} ×${Number(v) || 0}</span>`).join('');
   const topTypes = (digest.top_types || []).slice(0, 8)
-    .map((r) => `<tr><td>${escapeHtml(r.type_code)}</td><td>${r.sightings}</td></tr>`).join('');
+    .map((r) => `<tr><td>${escapeHtml(r.type_code)}</td><td>${Number(r.sightings) || 0}</td></tr>`).join('');
   const newTypes = (digest.new_types_in_window || []).map((t) => `<code>${escapeHtml(t)}</code>`).join(' ');
   const callouts = (digest.callouts || []).slice(0, 10).map((c) => {
     const when = new Date((c.ts || 0) * 1000).toLocaleTimeString();
@@ -3595,10 +3595,10 @@ function paintDigestCard(digest) {
     : '';
   card.innerHTML = `
     <section class="digest-headlines">
-      <div class="digest-stat"><div class="digest-stat-value">${t.events || 0}</div><div class="hint">alerts</div></div>
-      <div class="digest-stat"><div class="digest-stat-value">${t.unique_aircraft_today || 0}</div><div class="hint">unique today</div></div>
-      <div class="digest-stat"><div class="digest-stat-value">${t.peak_concurrent_aircraft || 0}</div><div class="hint">peak concurrent</div></div>
-      <div class="digest-stat"><div class="digest-stat-value">${Math.round(t.max_range_nm_today || 0)}</div><div class="hint">max range nm</div></div>
+      <div class="digest-stat"><div class="digest-stat-value">${Number(t.events) || 0}</div><div class="hint">alerts</div></div>
+      <div class="digest-stat"><div class="digest-stat-value">${Number(t.unique_aircraft_today) || 0}</div><div class="hint">unique today</div></div>
+      <div class="digest-stat"><div class="digest-stat-value">${Number(t.peak_concurrent_aircraft) || 0}</div><div class="hint">peak concurrent</div></div>
+      <div class="digest-stat"><div class="digest-stat-value">${Math.round(Number(t.max_range_nm_today) || 0)}</div><div class="hint">max range nm</div></div>
     </section>
     ${byBits ? `<div class="digest-breakdown" style="margin:8px 0">${byBits}</div>` : ''}
     ${topTypes ? `<section><h4>Top types in window</h4><table class="stats-table"><thead><tr><th>Type</th><th>Sightings</th></tr></thead><tbody>${topTypes}</tbody></table></section>` : ''}
