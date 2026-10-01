@@ -92,6 +92,14 @@ Then:
 
 The shim has the operator's full Claude account behind it. Defence in depth:
 
+- **Text-only `claude`** — prompts carry untrusted input (PiScope forwards LAN
+  users' follow-up questions), so the shim runs `claude --print --restricted
+  --tools "" --strict-mcp-config`: no built-in tools, no MCP servers, and none of
+  the operator's settings or allow-rules. A prompt injection can only change the
+  reply text. Needs a Claude Code new enough to know `--restricted`; an older one
+  rejects the flag and the shim returns 502 (fails closed). The child process
+  gets a minimal environment, so the `SHIM_*` variables (incl. the token) never
+  reach it.
 - **Bearer token** — `SHIM_BEARER_TOKEN` is mandatory in any deployment that
   isn't bound to `127.0.0.1`. Treat it like a password.
 - **IP allow-list** — set `SHIM_ALLOW_IPS` to the exact LAN IPs of clients.

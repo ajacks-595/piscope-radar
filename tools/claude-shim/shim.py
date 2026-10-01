@@ -102,6 +102,16 @@ def _claude_version() -> Optional[str]:
         return None
 
 
+# Environment passed to `claude`: just enough to find its binary, config and OAuth
+# credentials. Notably NOT the SHIM_* variables (the bearer token lives there).
+_CHILD_ENV_KEYS = ("HOME", "PATH", "USER", "LOGNAME", "LANG", "LC_ALL", "TZ",
+                   "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME")
+
+
+def _child_env() -> dict[str, str]:
+    return {k: os.environ[k] for k in _CHILD_ENV_KEYS if k in os.environ}
+
+
 def _run_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
     """Returns (stdout_text, error_or_None)."""
     bin_path = shutil.which(CLAUDE_BIN)
@@ -113,10 +123,22 @@ def _run_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
     # NOTE: do NOT add `--bare`. Per `claude --help`, --bare disables OAuth and
     # keychain reads — auth becomes ANTHROPIC_API_KEY only. The whole point of
     # this shim is to piggyback on the operator's OAuth login, so --bare would
-    # defeat the purpose. Side effects from hooks/MCP are mostly harmless for a
-    # headless one-shot prompt; if you need to suppress them, set them off in
-    # ~/.claude/settings.json rather than reaching for --bare.
-    args = [bin_path, "--print"]
+    # defeat the purpose.
+    #
+    # The prompt is attacker-influenced: PiScope forwards unauthenticated LAN
+    # input (the follow-up chat question and client-supplied history) straight
+    # into it. Run text-only. Without these flags `claude --print` inherited the
+    # operator's full config — 24 tools incl. Bash/Edit/Write, every allow-rule in
+    # ~/.claude/settings.json, and 10 MCP servers (Gmail, Drive, Slack, …) — so a
+    # prompt injection could run commands or send mail as the operator.
+    #   --restricted          drop code-running tools + WebFetch, ignore user/
+    #                         project/local settings (and their allow-rules)
+    #   --tools ""            no built-in tools at all
+    #   --strict-mcp-config   no MCP servers (none passed via --mcp-config)
+    # An older claude that doesn't know a flag exits non-zero, so this fails
+    # closed (the request returns 502) rather than running unrestricted.
+    args = [bin_path, "--print", "--restricted", "--tools", "", "--strict-mcp-config",
+            "--disable-slash-commands", "--no-session-persistence"]
     if CLAUDE_MODEL:
         args += ["--model", CLAUDE_MODEL]
     # Concurrency cap: don't fork unbounded node processes if many requests land
@@ -133,6 +155,7 @@ def _run_claude(prompt: str) -> tuple[Optional[str], Optional[str]]:
             text=True,
             timeout=TIMEOUT_SECONDS,
             start_new_session=True,
+            env=_child_env(),
         )
     except subprocess.TimeoutExpired as exc:
         pid = getattr(exc, "pid", None)
