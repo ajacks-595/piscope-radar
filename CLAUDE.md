@@ -275,6 +275,20 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
    `/opt/piscope`, backups will fail with EROFS until that path is added to the
    unit's `ReadWritePaths` (edit install.sh, re-run it on the Pi).
 
+9. **Restarts log `ERROR: Cancel N running task(s), timeout graceful shutdown exceeded`
+   (+ a `CancelledError` traceback) whenever dashboards hold `/api/dashboard/events` SSE
+   streams open — expected, not a fault.** The unit runs uvicorn with
+   `--timeout-graceful-shutdown 5` (since 2026-10-01): SSE streams never end on their own,
+   so uvicorn waits 5 s, cancels them, then runs the lifespan shutdown normally (look for
+   `Application shutdown complete`). Without the flag every restart hung until systemd's
+   SIGKILL. ASGI gives in-flight requests no shutdown signal, so there's no clean way to
+   end the streams first.
+
+10. **lighttpd must stream `/piscope` responses (`server.stream-response-body = 2` in
+    `99-piscope.conf`, since 2026-10-01).** With lighttpd's default buffering the SSE
+    feed delivered nothing through the proxy and abandoned streams leaked upstream
+    connections. E2E module `13-sse` guards this.
+
 ## Open items / future work
 
 - **claude-shim is NOT installed right now** (found 2026-09-30: no `/opt/claude-shim`, no
