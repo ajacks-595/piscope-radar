@@ -206,6 +206,12 @@ DEFAULTS: dict[str, Any] = {
 # Settings the user should never read back over the wire.
 SECRET_KEYS = {"fa_api_key", "openaip_api_key", "smtp_pass", "cloud_api_key", "claude_cli_token"}
 
+# Keys the generic POST /api/settings must not write. digest_latest_json is an
+# internal slot; saved views and webhooks have their own endpoints (/api/views,
+# /api/webhooks) that validate each entry. Writing them raw here bypassed that
+# cleaning and let arbitrary markup into fields the UI renders.
+CLIENT_READONLY_KEYS = {"digest_latest_json", "saved_views_json", "webhooks_json"}
+
 
 # --- Value validation (iteration 13) ------------------------------------------
 # DEFAULTS whitelists *keys*; this layer validates *values*. Without it a buggy
