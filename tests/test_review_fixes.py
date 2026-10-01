@@ -276,6 +276,42 @@ def test_ssrf_still_allows_lan_and_loopback():
 
 # --- P3-7: shim constant-time token compare (static guard) ------------------
 
+def _load_shim():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "claude_shim_under_test", REPO / "tools" / "claude-shim" / "shim.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_shim_runs_claude_text_only_with_scrubbed_env(tmp_path, monkeypatch):
+    # The shim's prompt carries unauthenticated LAN input (PiScope's follow-up chat).
+    # Plain `claude --print` inherited the operator's tools, allow-rules and MCP
+    # servers, so a prompt injection could run commands. Drive the real _run_claude
+    # against a fake `claude` that records its argv + env.
+    import json
+    record = tmp_path / "argv.json"
+    fake = tmp_path / "claude"
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        f"json.dump({{'argv': sys.argv[1:], 'env': sorted(os.environ)}}, open({str(record)!r}, 'w'))\n"
+        "sys.stdin.read(); print('brief text')\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("SHIM_BEARER_TOKEN", "do-not-leak")
+    shim = _load_shim()
+    monkeypatch.setattr(shim, "CLAUDE_BIN", str(fake))
+    text, err = shim._run_claude("hello")
+    assert (text, err) == ("brief text", None)
+    got = json.loads(record.read_text())
+    argv = got["argv"]
+    assert argv[0] == "--print" and "--bare" not in argv          # OAuth path kept
+    assert "--restricted" in argv and "--strict-mcp-config" in argv
+    assert argv[argv.index("--tools") + 1] == ""                   # no tools at all
+    assert not [k for k in got["env"] if k.startswith("SHIM_")]    # token not inherited
+
+
 def test_shim_uses_constant_time_compare():
     shim = (REPO / "tools" / "claude-shim" / "shim.py").read_text(encoding="utf-8")
     assert "hmac.compare_digest" in shim
