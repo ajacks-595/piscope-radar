@@ -270,6 +270,11 @@ configure_lighttpd() {
 \$HTTP["url"] =~ "^/piscope(\$|/)" {
     proxy.server = ( "" => ( ( "host" => "127.0.0.1", "port" => ${SERVICE_PORT} ) ) )
     proxy.header = ( "upgrade" => "enable" )
+    # Stream responses to the client as they arrive. lighttpd's default (0) buffers
+    # the whole response first, so the /piscope/api/dashboard/events SSE stream never
+    # delivered a byte, and an abandoned client's upstream connection stayed open
+    # forever (lighttpd never wrote to it, so never noticed the client was gone).
+    server.stream-response-body = 2
     # Cap upload size at the proxy too (the app caps /api/import at 20 MB itself).
     server.max-request-size = 26214400
 }
