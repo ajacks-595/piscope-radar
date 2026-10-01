@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
 
 
 log = logging.getLogger("piscope.settings")
@@ -659,31 +660,78 @@ def get_all(redact: bool = True) -> dict[str, Any]:
     return merged
 
 
+# --- Secrets are bound to where they get sent ------------------------------------
+# Redaction keeps secrets off the wire, but this box has no auth: anyone on the LAN
+# could point a secret's destination at their own server (openai_compatible base
+# URL, shim URL, SMTP host) and press "Test" to receive the stored key. Each such
+# secret is tied to its destination; a write that moves the destination without
+# also supplying the secret clears the stored one, so it must be re-entered.
+
+
+def _origin(url: Any) -> str:
+    try:
+        p = urlparse(str(url or "").strip())
+        return f"{p.scheme}://{p.netloc}".lower() if p.scheme and p.netloc else ""
+    except ValueError:
+        return ""
+
+
+def _cloud_api_destination(s: dict[str, Any]) -> str:
+    vendor = str(s.get("cloud_api_vendor") or "").lower()
+    # Hosted vendors have one fixed endpoint each; openai_compatible goes wherever
+    # the base URL points.
+    return _origin(s.get("cloud_api_base_url")) if vendor == "openai_compatible" else vendor
+
+
+_SECRET_DESTINATIONS: dict[str, Callable[[dict[str, Any]], str]] = {
+    "cloud_api_key": _cloud_api_destination,
+    "claude_cli_token": lambda s: _origin(s.get("claude_cli_url")),
+    "smtp_pass": lambda s: str(s.get("smtp_host") or "").strip().lower(),
+}
+
+
+def _unbind_redirected_secrets(pending: dict[str, Any]) -> None:
+    """Add `<secret>: ""` to `pending` for each stored secret whose destination this
+    write changes without supplying a replacement."""
+    current = _CACHE if _CACHE is not None else _populate_cache()
+    merged = {**current, **pending}
+    for secret, destination in _SECRET_DESTINATIONS.items():
+        if secret in pending or not current.get(secret):
+            continue
+        if destination(current) != destination(merged):
+            log.warning("clearing stored %s: its destination changed — re-enter it for "
+                        "the new endpoint", secret)
+            pending[secret] = ""
+
+
 def set_many(values: dict[str, Any]) -> None:
     """Persist a batch of settings updates. Only keys present in DEFAULTS are accepted —
     this whitelists what callers can write so a hostile (or buggy) client cannot pollute the
     settings table with arbitrary keys or shadow internal config."""
     global _CACHE_VERSION
+    pending: dict[str, Any] = {}
+    for k, v in values.items():
+        if k not in DEFAULTS:
+            continue  # whitelist: silently ignore unknown keys
+        if k in SECRET_KEYS and (v == "***" or v is None):
+            # don't overwrite a stored secret with the redaction placeholder
+            continue
+        try:
+            v = _validated(k, v)
+        except (ValueError, TypeError) as exc:
+            log.info("rejecting invalid value for setting %r: %s", k, exc)
+            continue
+        if len(json.dumps(v)) > _MAX_VALUE_BYTES:
+            log.info("rejecting oversized value for setting %r", k)
+            continue
+        pending[k] = v
+    _unbind_redirected_secrets(pending)
     with _connect() as conn:
-        for k, v in values.items():
-            if k not in DEFAULTS:
-                continue  # whitelist: silently ignore unknown keys
-            if k in SECRET_KEYS and (v == "***" or v is None):
-                # don't overwrite a stored secret with the redaction placeholder
-                continue
-            try:
-                v = _validated(k, v)
-            except (ValueError, TypeError) as exc:
-                log.info("rejecting invalid value for setting %r: %s", k, exc)
-                continue
-            payload = json.dumps(v)
-            if len(payload) > _MAX_VALUE_BYTES:
-                log.info("rejecting oversized value for setting %r (%d bytes)", k, len(payload))
-                continue
+        for k, v in pending.items():
             conn.execute(
                 "INSERT INTO settings(key, value) VALUES(?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (k, payload),
+                (k, json.dumps(v)),
             )
         conn.commit()
     # Rebuild the in-memory cache so subsequent reads see the new values without hitting disk.
