@@ -57,8 +57,9 @@ echo "==> Restart ${SERVICE} + verify"
 ssh -o ConnectTimeout=5 "$HOST" "
   set -e
   sudo -n /usr/bin/systemctl restart ${SERVICE}
-  sleep 3
   systemctl is-active ${SERVICE}
-  echo -n 'version: '; curl -s -m 5 '${VERSION_URL}' || echo '(version endpoint unreachable)'
+  # uvicorn needs ~5 s on a Pi to import and bind; poll instead of a fixed sleep.
+  for i in \$(seq 1 30); do curl -s -m 2 -o /dev/null '${VERSION_URL}' && break; sleep 1; done
+  echo -n 'version: '; curl -s -m 5 '${VERSION_URL}' || echo '(version endpoint unreachable after 30 s)'
 "
 echo "==> done"
