@@ -606,7 +606,7 @@
             <div class="field" id="cloud-api-base-url-field" hidden>
               <label for="setting-cloud-api-base-url">Base URL</label>
               <input id="setting-cloud-api-base-url" type="url" placeholder="https://ollama.com/v1" autocomplete="off" />
-              <span class="hint">OpenAI-compatible <code>/v1</code> endpoint (must include the version segment). Examples: Ollama Cloud <code>https://ollama.com/v1</code>, Groq <code>https://api.groq.com/openai/v1</code>, LiteLLM <code>http://10.0.0.x:4000/v1</code>. The Pi must be able to reach it; link-local / cloud-metadata addresses are refused.</span>
+              <span class="hint">OpenAI-compatible <code>/v1</code> endpoint (must include the version segment). Examples: Ollama Cloud <code>https://ollama.com/v1</code>, Groq <code>https://api.groq.com/openai/v1</code>, LiteLLM <code>http://10.0.0.x:4000/v1</code>. The Pi must be able to reach it; link-local / cloud-metadata addresses are refused. Changing the endpoint (or the vendor) clears the stored API key — re-enter it with the new URL.</span>
             </div>
             <div class="field">
               <label for="setting-cloud-api-key">API key</label>
@@ -629,7 +629,7 @@
             <div class="field">
               <label for="setting-claude-cli-url">Shim URL</label>
               <input id="setting-claude-cli-url" type="url" placeholder="http://10.0.0.x:8090" autocomplete="off" />
-              <span class="hint">Points at a <code>claude-shim</code> daemon (see <code>tools/claude-shim/</code> in the repo).</span>
+              <span class="hint">Points at a <code>claude-shim</code> daemon (see <code>tools/claude-shim/</code> in the repo). Changing the URL clears the stored token — re-enter it.</span>
             </div>
             <div class="field">
               <label for="setting-claude-cli-token">Bearer token</label>
@@ -690,7 +690,7 @@
           <label class="checkbox-row"><input id="setting-digest-email" type="checkbox" /> Email via SMTP</label>
           <hr style="border:0;border-top:1px solid var(--separator);margin:10px 0;" />
           <h4>SMTP (used only if email delivery is enabled)</h4>
-          <div class="field"><label for="setting-smtp-host">SMTP host</label><input id="setting-smtp-host" type="text" placeholder="smtp.example.com" autocomplete="off" /></div>
+          <div class="field"><label for="setting-smtp-host">SMTP host</label><input id="setting-smtp-host" type="text" placeholder="smtp.example.com" autocomplete="off" /><span class="hint">Changing the host clears the stored password — re-enter it.</span></div>
           <div class="field"><label for="setting-smtp-port">SMTP port</label><input id="setting-smtp-port" type="number" min="1" max="65535" placeholder="587" /></div>
           <div class="field"><label for="setting-smtp-user">Username</label><input id="setting-smtp-user" type="text" autocomplete="off" /></div>
           <div class="field"><label for="setting-smtp-pass">Password</label><input id="setting-smtp-pass" type="password" placeholder="paste password (write-only)" autocomplete="off" /></div>
