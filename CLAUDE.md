@@ -244,9 +244,11 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
    "Network is unreachable" until sandbox is OFF again. Keep sandbox off when
    anything needs to touch the Pi.
 
-3. **Pip can't reach pypi.** The egress proxy whitelists github.com but not pypi.
-   Don't reach for pip on this host — either rewrite to stdlib (claude-shim) or
-   use the Pi's `/opt/piscope/venv` over SSH for verification.
+3. **PyPI is reachable again (verified 2026-10-01)** — `pip download` works, as do
+   `npm install` and Playwright's Chromium (`PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64`).
+   There's still no local FastAPI/pytest: test with the scanner venv plus pure-Python
+   packages overlaid via `PYTHONPATH`, or stage onto the Pi's `/opt/piscope/venv`.
+   (Previously the egress proxy blocked pypi; that's why claude-shim is stdlib-only.)
 
 4. **`claude --bare` disables OAuth.** Per the CLI help, `--bare` accepts only
    `ANTHROPIC_API_KEY`. The shim deliberately does NOT pass `--bare`; if you ever
@@ -275,11 +277,12 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
 
 ## Open items / future work
 
-- **claude-shim is systemd-managed** (since 2026-06-06). Runs under `dev` on the dev
-  host via the `claude-shim.service` unit, config in `/etc/claude-shim.env` (mode 600;
-  generated token + `SHIM_ALLOW_IPS` pinned to the Pi + loopback). Re-run
-  `sudo /home/dev/projects/piscope-radar/tools/claude-shim/install.sh` to converge after
-  changes. NB: the shim now refuses to start on a non-loopback bind with no token
+- **claude-shim is NOT installed right now** (found 2026-09-30: no `/opt/claude-shim`, no
+  unit; only `/etc/claude-shim.env` remains), but the Pi's `claude_cli_url` still points at
+  it, so AI briefs are down. Reinstall with
+  `sudo /home/dev/projects/piscope-radar/tools/claude-shim/install.sh` (it ran as a
+  systemd unit under `dev` from 2026-06-06; config in `/etc/claude-shim.env`, token +
+  `SHIM_ALLOW_IPS` pinned to the Pi + loopback). NB: the shim now refuses to start on a non-loopback bind with no token
   (fail-closed, iter 13), so always keep `SHIM_BEARER_TOKEN` set for the LAN bind.
 - **Generic `unavailable` error envelopes.** Both `/api/explain` and
   `/api/explain/followup` collapse upstream errors into `"no response from <provider>"`.
@@ -317,8 +320,10 @@ every review; full report in `.repo-review/2026-09-30T185602Z/REPORT.md`.
 - **2026-09-30 — Cross-site simple-request audit.** List every POST that takes no
   JSON body (they need no CORS preflight). Each must be harmless or explicitly
   CSRF-guarded; FlightAware's `confirm_over_budget` query param can spend money.
-- **2026-09-30 — claude-shim reinstall gate.** The shim isn't currently installed on
-  claude-dev (only `/etc/claude-shim.env` remains), though the Pi still points
-  `claude_cli_url` at it. Don't reinstall it until `shim.py` runs `claude --print`
-  with the tool surface, MCP and user allow-rules disabled, then canary-test it with
-  a prompt asking it to run `id`. See REPORT.md P1-2.
+- **2026-09-30 — claude-shim must stay text-only.** Its prompt carries
+  unauthenticated LAN input, so `shim.py` runs `claude --print --restricted --tools ""
+  --strict-mcp-config` (fixed 2026-10-01, `a59c9c3`). Check on every review: pipe a
+  prompt through the same flags with `--output-format stream-json --verbose` and
+  confirm the init event lists 0 tools and 0 MCP servers. Without the flags it
+  inherited 24 tools and 10 MCP servers (Gmail, Drive, …). Never add `--bare`
+  (breaks OAuth).
