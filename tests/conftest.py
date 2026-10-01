@@ -18,6 +18,14 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 
+def pytest_configure(config):
+    # starlette >= 1.3 deprecates driving its TestClient with httpx (pointing at
+    # httpx2). That's test-harness only — the app's own outbound httpx client is
+    # unaffected — so silence exactly that message instead of adding a dev dependency.
+    config.addinivalue_line(
+        "filterwarnings", r"ignore:Using `httpx` with `starlette\.testclient` is deprecated")
+
+
 @pytest.fixture()
 def temp_db(monkeypatch):
     """Point the settings store at a fresh temp DB, initialise the schema, and
