@@ -7,6 +7,10 @@ from typing import Any, Optional
 
 EMERGENCY_SQUAWKS = {"7500", "7600", "7700"}
 
+# `military_reason` when the readsb dbFlags military bit set it (shared with the
+# notable panel's reason label so the two read the same).
+MILITARY_DB_FLAG_LABEL = "Military (aircraft DB flag)"
+
 # Plausibility envelope for RF-sourced measurements. ADS-B frames occasionally
 # decode to garbage (live examples from this receiver: an ATR-45 "doing" 1,885 kts,
 # an A330 "at" 126,500 ft) and a single bad frame would otherwise poison all-time
@@ -25,7 +29,9 @@ class Aircraft:
     registration: Optional[str] = None
     type_code: Optional[str] = None
     category: Optional[str] = None
-    military: bool = False
+    military: bool = False               # combined: dbFlags bit OR a notable military rule
+    military_db: bool = False            # raw dbFlags bit only (what the analytics ledger stores)
+    military_reason: Optional[str] = None  # why `military` is set (DB flag / rule label)
     data_source: str = "other"  # adsb_icao / mlat / tisb_icao / mode_s / ...
 
     lat: Optional[float] = None
@@ -121,6 +127,7 @@ class Aircraft:
             "type_code": self.type_code,
             "category": self.category,
             "military": self.military,
+            "military_reason": self.military_reason,
             "data_source": self.data_source,
             "lat": self.lat,
             "lon": self.lon,
@@ -234,6 +241,8 @@ def aircraft_from_wire(row: dict[str, Any], observed_at: float) -> Optional[Airc
         type_code=_strip(row.get("t")),
         category=_strip(row.get("category")),
         military=military,
+        military_db=military,
+        military_reason=MILITARY_DB_FLAG_LABEL if military else None,
         data_source=_strip(row.get("type")) or "other",
         lat=_num(row.get("lat")),
         lon=_num(row.get("lon")),

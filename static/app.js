@@ -625,7 +625,7 @@ function updateSidebarRow(row, ac) {
 
 function badgesFor(ac) {
   const out = [];
-  if (ac.military) out.push('<span class="badge mil" title="Military">MIL</span>');
+  if (ac.military) out.push(`<span class="badge mil" title="${escapeHtml(ac.military_reason ? `Military — ${ac.military_reason}` : 'Military')}">MIL</span>`);
   if (ac.is_emergency_squawk) out.push(`<span class="badge emg" title="Squawk ${escapeHtml(ac.squawk)}">EMG</span>`);
   if (isWatchlisted(ac)) out.push('<span class="badge wch" title="Watchlist">WCH</span>');
   return out.join('');

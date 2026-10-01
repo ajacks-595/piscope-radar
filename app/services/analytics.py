@@ -217,7 +217,10 @@ class SightingsBuffer:
                 row["registration"] = ac.registration
             if ac.type_code:
                 row["type_code"] = ac.type_code.strip().upper()
-            if ac.military:
+            if ac.military_db:
+                # The ledger keeps the raw dbFlags bit: notable.classify_sighting
+                # labels it "aircraft DB flag" and re-derives the rule-based reasons
+                # itself, so storing the combined flag would mislabel those rows.
                 row["military"] = 1
             alt = ac.altitude_baro
             if alt is not None and not ac.on_ground and _ALT_MIN_FT <= alt <= _ALT_MAX_FT:

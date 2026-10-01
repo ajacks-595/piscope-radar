@@ -17,6 +17,7 @@ from . import events as events_store
 from . import events_bus
 from . import hexdb as hexdb_service
 from . import insights as insights_store
+from . import notable as notable_store
 from . import records as records_store
 from . import settings as settings_store
 from . import webhooks as webhooks_service
@@ -509,6 +510,14 @@ class FeedService:
                 ac = aircraft_from_wire(row, now_ts)
                 if not ac:
                     continue
+                if not ac.military:
+                    # dbFlags is only set by receivers with an aircraft database; apply
+                    # the notable panel's hex-range / callsign rules so live alerts see
+                    # the same military aircraft the analytics do.
+                    mil_label = notable_store.live_military_label(ac.hex, ac.callsign)
+                    if mil_label:
+                        ac.military = True
+                        ac.military_reason = mil_label
                 poll_aircraft.append(ac)
                 # If two feeds report the same hex, the later one wins. Preserve the position
                 # iff the newer report omits lat/lon (a mode-S–only echo over an ADS-B fix).
@@ -606,7 +615,8 @@ class FeedService:
                 if ac.military and ac.hex not in self._notified_military:
                     self._notified_military.add(ac.hex)
                     self._daily_military.add(ac.hex)
-                    _fire("military", {"type_code": ac.type_code, "altitude": ac.altitude_baro})
+                    _fire("military", {"type_code": ac.type_code, "altitude": ac.altitude_baro,
+                                        "reason": ac.military_reason})
                 if ac.is_emergency_squawk and ac.hex not in self._notified_emergency:
                     self._notified_emergency.add(ac.hex)
                     self._daily_emergencies.add(ac.hex)
