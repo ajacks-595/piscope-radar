@@ -8,9 +8,10 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .routers import api as api_router
@@ -59,7 +60,8 @@ async def version() -> dict[str, str]:
     return {"version": VERSION}
 
 # Deliberately NO CORS middleware. Browsers enforce same-origin by default; without permissive
-# CORS, a malicious cross-origin page cannot POST to /piscope/api/settings (which has no auth).
+# CORS, a malicious cross-origin page cannot POST JSON to /piscope/api/settings (which has no
+# auth). Body-less "simple" POSTs need the cross-site write guard below as well.
 # If you need genuine cross-origin access (rare; Tailscale, custom DNS), add an explicit allow list
 # here rather than re-introducing a wildcard.
 
@@ -77,9 +79,34 @@ async def version() -> dict[str, str]:
 
 _HOST_GUARD_LOGGED: set[str] = set()
 
+# --- Cross-site write guard -----------------------------------------------------
+# No-CORS only stops cross-origin requests that need a preflight. A POST with no
+# body (or a form/text body) is a CORS "simple" request: the browser sends it
+# without asking, and the response is merely unreadable. That let any web page a
+# LAN user visited fire /api/digest/run, /api/*/test, or FlightAware lookups with
+# confirm_over_budget=true (real AeroAPI spend). Browsers label every request with
+# Sec-Fetch-Site (Origin is the fallback for older ones); refuse state-changing
+# requests a browser marks as coming from another site. Non-browser clients (curl,
+# the `piscope` CLI, dashboards' server-side calls) send neither and are unaffected.
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _is_cross_site_write(request) -> bool:
+    if request.method not in _UNSAFE_METHODS:
+        return False
+    site = request.headers.get("sec-fetch-site")
+    if site is not None:
+        return site not in ("same-origin", "none")
+    origin = request.headers.get("origin")
+    if not origin:
+        return False
+    return urlparse(origin).netloc.lower() != request.headers.get("host", "").lower()
+
 
 @app.middleware("http")
 async def _host_guard_and_headers(request, call_next):
+    if _is_cross_site_write(request):
+        return JSONResponse({"detail": "Cross-site request refused"}, status_code=403)
     if hostguard.enabled():
         host = request.headers.get("host", "")
         if not hostguard.host_allowed(host):

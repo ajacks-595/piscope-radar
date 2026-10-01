@@ -48,6 +48,7 @@ router = APIRouter(prefix="/api")
 # would be ineffective here (see services/ratelimit.py).
 _AI_CALLS_PER_MIN = 60            # /api/explain (miss), /api/explain/followup, /api/digest/run
 _DASHBOARD_RECOMPUTES_PER_MIN = 120   # /api/dashboard/summary cache MISSES only
+_FA_LOOKUPS_PER_MIN = 20          # /api/flightaware/{callsign} — each miss is a billed AeroAPI call
 
 
 # --- Request models (iter 11) -----------------------------------------------
@@ -170,6 +171,10 @@ async def fa_budget() -> dict[str, Any]:
 
 @router.post("/flightaware/{callsign}")
 async def fa_lookup(callsign: str, confirm_over_budget: bool = False) -> dict[str, Any]:
+    # Bound how fast this unauthenticated endpoint can spend money; a human clicking
+    # "Fetch flight data" never gets near this.
+    if not ratelimit.allow("flightaware", limit=_FA_LOOKUPS_PER_MIN, window_s=60.0):
+        raise HTTPException(status_code=429, detail="FlightAware rate limit exceeded; try again shortly")
     budget = settings_store.fa_budget_status()
     if budget.get("over_budget") and not confirm_over_budget:
         # Friendly early return for the UI. The authoritative, race-free gate is
