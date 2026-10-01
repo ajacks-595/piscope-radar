@@ -179,3 +179,30 @@ def test_secret_kept_when_destination_unchanged_or_resupplied(temp_db):
     s.set_many({"cloud_api_vendor": "anthropic", "cloud_api_key": "sk-ant"})
     s.set_many({"cloud_api_vendor": "openai"})
     assert s.get("cloud_api_key") == ""
+
+
+def test_v4_migration_keeps_host_guard_off_on_existing_installs(temp_db):
+    # The guard became default-ON in 1.7.5. An existing install that never set it
+    # must not flip on at upgrade (it could lock out a custom-hostname user); a fresh
+    # install keeps the new default; an explicit choice is never touched.
+    import sqlite3
+    from app.services import settings as s
+
+    def reinit_from_v3(rows):
+        db = sqlite3.connect(temp_db)
+        db.execute("DELETE FROM settings")
+        db.executemany("INSERT INTO settings(key, value) VALUES(?, ?)", rows)
+        db.execute("PRAGMA user_version = 3")
+        db.commit(); db.close()
+        s._CACHE = None
+        s.init_db()
+        return s.get("host_guard_enabled")
+
+    assert s.get("host_guard_enabled") is True                                   # fresh
+    assert reinit_from_v3([("theme", '"nord"')]) is False                       # pre-1.7.5 install
+    assert reinit_from_v3([("theme", '"nord"'), ("host_guard_enabled", "true")]) is True
+    v = sqlite3.connect(temp_db).execute("PRAGMA user_version").fetchone()[0]
+    assert v == 4
+    s.init_db(); s.init_db()                                                     # idempotent
+    s._CACHE = None
+    assert s.get("host_guard_enabled") is True

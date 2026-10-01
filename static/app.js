@@ -2418,6 +2418,8 @@ function populateSettingsModal() {
   if (el('setting-ai-provider'))     el('setting-ai-provider').value = s.ai_provider || '';
   if (el('setting-ai-chat-max-turns')) el('setting-ai-chat-max-turns').value = s.ai_chat_max_turns || 5;
   if (el('setting-frame-ancestors')) el('setting-frame-ancestors').value = s.frame_ancestors || "'self'";
+  if (el('setting-host-guard'))      el('setting-host-guard').checked = !!s.host_guard_enabled;
+  if (el('setting-allowed-hosts'))   el('setting-allowed-hosts').value = s.allowed_hosts || '';
   if (el('setting-ollama-url'))      el('setting-ollama-url').value = s.ollama_url || '';
   if (el('setting-ollama-model'))    el('setting-ollama-model').value = s.ollama_model || 'gemma4:latest';
   if (el('setting-ollama-enabled'))  el('setting-ollama-enabled').checked = !!s.ollama_enabled;
@@ -2542,6 +2544,14 @@ async function saveSettings() {
     smtp_to:      document.getElementById('setting-smtp-to')?.value.trim() || '',
     smtp_use_starttls: !!document.getElementById('setting-smtp-starttls')?.checked,
   };
+  // Network access. Only sent when the controls exist, so a mismatched cached shell
+  // can never silently switch the guard off. The server adds the Host this page was
+  // loaded from to allowed_hosts if the save would otherwise lock it out.
+  const hostGuardEl = document.getElementById('setting-host-guard');
+  if (hostGuardEl) {
+    body.host_guard_enabled = hostGuardEl.checked;
+    body.allowed_hosts = document.getElementById('setting-allowed-hosts')?.value.trim() || '';
+  }
   // SMTP password — only send if the user typed something. Blank means "leave the stored value alone";
   // backend treats `***` the same way (it's the redacted sentinel returned from get_all).
   const pw = document.getElementById('setting-smtp-pass')?.value;

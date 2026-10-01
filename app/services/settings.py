@@ -181,16 +181,17 @@ DEFAULTS: dict[str, Any] = {
     # comfortably bounded on SD storage while still allowing year-over-year views.
     # 0 = keep forever. Pruned alongside the snapshot prune in the feed loop.
     "analytics_retention_days": 365,
-    # ---- DNS-rebinding host guard (iteration 13) ----
-    # OPT-IN (default off): when enabled, rejects requests whose Host header is not
-    # LAN-shaped (see services/hostguard.py) to blunt DNS-rebinding against this
-    # no-auth box. It's off by default because a custom DNS name that legitimately
-    # resolves to the Pi (e.g. `piscope.mylan.example`) is, by Host header alone,
-    # indistinguishable from a rebinding attack — so a default-on guard would break
-    # exactly those setups. To turn it on: set host_guard_enabled=true AND add any
-    # custom hostnames you use to `allowed_hosts` (comma-separated; .local/.lan/
-    # .home.arpa names and private/loopback/CGNAT IP literals are always allowed).
-    "host_guard_enabled": False,
+    # ---- DNS-rebinding host guard (iteration 13; default-on since 1.7.5) ----
+    # Rejects requests whose Host header is not LAN-shaped (see services/hostguard.py)
+    # to blunt DNS rebinding against this no-auth box. A custom DNS name that really
+    # resolves to the Pi (e.g. `piscope.mylan.example`) is indistinguishable from a
+    # rebinding attack by Host alone, so it must be listed in `allowed_hosts`
+    # (Settings → Notifications → Network access, `piscope allow-host <name>`, or
+    # automatically when Settings is saved from that hostname). .local/.lan/.home/
+    # .home.arpa/.internal names and private/loopback/CGNAT IP literals always pass.
+    # Default ON for fresh installs; the v4 migration pins it OFF on installs that
+    # predate the change and never set it, so an upgrade can't lock anyone out.
+    "host_guard_enabled": True,
     "allowed_hosts": "",
     # ---- Weekly summary (analytics feature, phase 4) ----
     # Posts a 7-day rollup (traffic, busiest hour/day, top types/operators,
@@ -412,7 +413,7 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-SCHEMA_VERSION = 3  # bump and add an `if v < N: …` block below whenever the schema changes
+SCHEMA_VERSION = 4  # bump and add an `if v < N: …` block below whenever the schema changes
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -472,6 +473,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "alt_very_high INTEGER NOT NULL DEFAULT 0)"
         )
         conn.execute("PRAGMA user_version = 3")
+    # v3 → v4 (data only, no schema change): the host guard became default-ON. Pin
+    # it OFF on existing installs that never set it, so upgrading can't lock out
+    # anyone who reaches the Pi by a custom hostname; fresh installs keep the new
+    # default. "Existing" = the DB already holds data — a restored backup arrives
+    # with user_version 0 (iterdump drops it) but counts as existing too.
+    if v < 4:
+        has_data = conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM settings) OR EXISTS(SELECT 1 FROM events) "
+            "OR EXISTS(SELECT 1 FROM daily_stats)"
+        ).fetchone()[0]
+        if has_data:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO settings(key, value) VALUES('host_guard_enabled', 'false')")
+            if cur.rowcount:
+                log.warning("host guard left OFF on this existing install (it is now on by "
+                            "default for new installs) — enable it under Settings → "
+                            "Notifications → Network access to block DNS rebinding")
+        conn.execute("PRAGMA user_version = 4")
     conn.commit()
 
 

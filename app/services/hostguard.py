@@ -18,11 +18,13 @@ Allowed by default (no configuration needed):
   * anything listed in the `allowed_hosts` setting (comma-separated, exact
     case-insensitive match, port ignored) — e.g. a Tailscale MagicDNS name
 
-Set `host_guard_enabled` to false to disable entirely.
+Set `host_guard_enabled` to false to disable entirely. It is ON by default for new
+installs since 1.7.5 (installs that predate that keep it off until enabled).
 """
 from __future__ import annotations
 
 import ipaddress
+from typing import Optional
 
 from . import settings as settings_store
 
@@ -40,14 +42,17 @@ def _host_only(host_header: str) -> str:
     return h
 
 
-def host_allowed(host_header: str) -> bool:
-    """True if this Host header is LAN-shaped (or explicitly allow-listed)."""
+def host_allowed(host_header: str, allowed_hosts: Optional[str] = None) -> bool:
+    """True if this Host header is LAN-shaped (or explicitly allow-listed).
+    `allowed_hosts` overrides the stored setting (to test a pending change)."""
     h = _host_only(host_header)
     if not h:
         return False
+    if allowed_hosts is None:
+        allowed_hosts = str(settings_store.get("allowed_hosts") or "")
     extra = {
         t.strip().lower().rstrip(".")
-        for t in str(settings_store.get("allowed_hosts") or "").split(",")
+        for t in allowed_hosts.split(",")
         if t.strip()
     }
     h = h.rstrip(".")            # absolute-form FQDNs ("evil.example.") normalise

@@ -114,8 +114,14 @@ async def _host_guard_and_headers(request, call_next):
                 _HOST_GUARD_LOGGED.add(host)
                 log.warning("host guard rejected Host: %r (add to allowed_hosts "
                             "or set host_guard_enabled=false if legitimate)", host)
+            name = hostguard._host_only(host)[:100] or "(none)"
             return PlainTextResponse(
-                "Misdirected request: this PiScope instance does not serve that host name.\n",
+                f"Misdirected request: this PiScope instance does not serve the host name "
+                f"'{name}'.\n\n"
+                "If that is your own name for this Pi, allow it in either of these ways:\n"
+                "  - open PiScope by its LAN IP address (http://<pi-ip>/piscope), then\n"
+                "    Settings > Notifications > Network access > Allowed host names\n"
+                f"  - or run on the Pi:  piscope allow-host {name}\n",
                 status_code=421,
             )
     response = await call_next(request)
