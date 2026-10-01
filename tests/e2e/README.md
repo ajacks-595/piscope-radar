@@ -63,7 +63,7 @@ tests/e2e/
     cdp.js          # Browser + Page over a minimal CDP/WebSocket client (no deps)
     harness.js      # Checks (assertions) + console/exception capture + report formatting
   tests/
-    01-load.js … 12-pwa.js   # one module per feature area
+    01-load.js … 13-sse.js   # one module per feature area
   TEST_PLAN.md      # full test catalogue (auto + manual + destructive)
   README.md
 ```

@@ -28,7 +28,7 @@ is byte-identical before/after every run.
 
 ## 0. Automated coverage at a glance
 
-Run `node tests/e2e/run.js` (see `README.md`). 13 modules / 156 checks, all non-destructive:
+Run `node tests/e2e/run.js` (see `README.md`). 14 modules / 164 checks, all non-destructive:
 
 | Module | Area | Checks |
 |---|---|---|
@@ -44,6 +44,7 @@ Run `node tests/e2e/run.js` (see `README.md`). 13 modules / 156 checks, all non-
 | 10 | URL share-state | `#center/#zoom/#theme` applied on load; pan writes the hash |
 | 11 | Embed mode | `?embed=1` strips chrome; `interactive=locked` freezes the map |
 | 12 | PWA | `sw.js` scope header + version-stamped cache tag; manifest scope |
+| 13 | Dashboard SSE via proxy | `/api/dashboard/events` first bytes < 5 s (not proxy-buffered); aborted stream reclaimed server-side within ~one 25 s heartbeat |
 | — | Non-destructive guard | settings unchanged across the whole run |
 
 ---
