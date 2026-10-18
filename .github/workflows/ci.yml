@@ -1,7 +1,6 @@
-# CI for automated maintenance (added by onboard-repos.sh, JAC-6 rollout).
 # Tests on Python 3.11 (the production Pi).
-# Runs on pull requests (where paperclip-push --merge reads the result, by job
-# name) and on pushes to main, so a broken main shows up straight away.
+# Runs on pull requests (Dependabot's included) and on pushes to main, so a
+# broken main shows up straight away.
 # Actions are pinned to commit SHAs (tags can be moved).
 name: CI
 
