@@ -22,7 +22,7 @@ python-multipart==0.0.29
 
 # --- Transitive, pinned for full reproducibility ---
 annotated-types==0.7.0
-anyio==4.13.0
+anyio==4.14.2
 certifi==2026.4.22
 click==8.4.0
 h11==0.16.0
