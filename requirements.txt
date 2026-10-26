@@ -20,6 +20,11 @@
 # NOTE: python-multipart is pinned to 0.0.32 (was 0.0.29) for CVE-2026-53537/53538/
 # 53539/53540 — 53539 is a quadratic urlencoded-form parse that blocked the event
 # loop ~1 s per 512 KiB body, reachable pre-auth through /api/import's form parsing.
+#
+# NOTE: certifi 2026.10.19 (was 2026.4.22) for GHSA-6q48-6c7w-9gw2 (critical) —
+# the bundle trusted emSign ECC Root CA - G3, whose intermediates' keys are
+# compromised, so an on-path attacker could intercept the outbound HTTPS httpx
+# makes (enrichment, FlightAware, cloud AI, webhooks). Data-only package.
 
 # --- Direct dependencies (the five install.sh used to install unpinned) ---
 fastapi==0.136.1
@@ -31,7 +36,7 @@ python-multipart==0.0.32
 # --- Transitive, pinned for full reproducibility ---
 annotated-types==0.7.0
 anyio==4.14.2
-certifi==2026.4.22
+certifi==2026.10.19
 click==8.4.0
 h11==0.16.0
 httpcore==1.0.9
