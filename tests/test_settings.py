@@ -144,3 +144,65 @@ def test_stored_garbage_cleaned_on_cache_load(temp_db):
         conn.commit()
     s.reload_cache()
     assert s.get("poll_interval") == 2          # cleaned to default on load
+
+
+def test_redirecting_a_secrets_destination_clears_it(temp_db):
+    # No auth: anyone on the LAN could point the endpoint a secret is sent to at their
+    # own server and press "Test" to receive a key the API never reveals.
+    from app.services import settings as s
+    s.set_many({"cloud_api_vendor": "anthropic", "cloud_api_key": "sk-ant-REAL",
+                "claude_cli_url": "http://10.0.0.155:8090", "claude_cli_token": "tok",
+                "smtp_host": "smtp.example.com", "smtp_pass": "pw"})
+    # Re-pointing (and sending the redaction placeholder doesn't count as supplying it).
+    s.set_many({"cloud_api_vendor": "openai_compatible", "cloud_api_base_url": "http://evil.example/v1",
+                "cloud_api_key": "***"})
+    s.set_many({"claude_cli_url": "http://evil.example:8090"})
+    s.set_many({"smtp_host": "smtp.evil.example"})
+    assert s.get("cloud_api_key") == "" and s.get("claude_cli_token") == "" and s.get("smtp_pass") == ""
+    assert s.get_all(redact=True)["cloud_api_key_set"] is False
+
+
+def test_secret_kept_when_destination_unchanged_or_resupplied(temp_db):
+    from app.services import settings as s
+    s.set_many({"cloud_api_vendor": "openai_compatible", "cloud_api_base_url": "https://llm.lan/v1",
+                "cloud_api_key": "k1", "claude_cli_url": "http://10.0.0.155:8090",
+                "claude_cli_token": "tok", "smtp_host": "smtp.example.com", "smtp_pass": "pw"})
+    # The Settings form resends every field on save; same origin / host keeps secrets.
+    s.set_many({"cloud_api_vendor": "openai_compatible", "cloud_api_base_url": "https://LLM.lan/v2/",
+                "claude_cli_url": "http://10.0.0.155:8090/", "smtp_host": "SMTP.example.com",
+                "theme": "nord"})
+    assert (s.get("cloud_api_key"), s.get("claude_cli_token"), s.get("smtp_pass")) == ("k1", "tok", "pw")
+    # A new destination together with a new secret in the same write is fine.
+    s.set_many({"cloud_api_base_url": "https://other.lan/v1", "cloud_api_key": "k2"})
+    assert s.get("cloud_api_key") == "k2"
+    # Switching hosted vendor moves the key to another company's API: cleared too.
+    s.set_many({"cloud_api_vendor": "anthropic", "cloud_api_key": "sk-ant"})
+    s.set_many({"cloud_api_vendor": "openai"})
+    assert s.get("cloud_api_key") == ""
+
+
+def test_v4_migration_keeps_host_guard_off_on_existing_installs(temp_db):
+    # The guard became default-ON in 1.7.5. An existing install that never set it
+    # must not flip on at upgrade (it could lock out a custom-hostname user); a fresh
+    # install keeps the new default; an explicit choice is never touched.
+    import sqlite3
+    from app.services import settings as s
+
+    def reinit_from_v3(rows):
+        db = sqlite3.connect(temp_db)
+        db.execute("DELETE FROM settings")
+        db.executemany("INSERT INTO settings(key, value) VALUES(?, ?)", rows)
+        db.execute("PRAGMA user_version = 3")
+        db.commit(); db.close()
+        s._CACHE = None
+        s.init_db()
+        return s.get("host_guard_enabled")
+
+    assert s.get("host_guard_enabled") is True                                   # fresh
+    assert reinit_from_v3([("theme", '"nord"')]) is False                       # pre-1.7.5 install
+    assert reinit_from_v3([("theme", '"nord"'), ("host_guard_enabled", "true")]) is True
+    v = sqlite3.connect(temp_db).execute("PRAGMA user_version").fetchone()[0]
+    assert v == 4
+    s.init_db(); s.init_db()                                                     # idempotent
+    s._CACHE = None
+    assert s.get("host_guard_enabled") is True

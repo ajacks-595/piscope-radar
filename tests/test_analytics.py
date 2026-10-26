@@ -37,7 +37,7 @@ def test_migration_creates_analytics_tables(temp_db):
     names = {r["name"] for r in _rows(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"aircraft_sightings", "hourly_stats"} <= names
-    assert _rows("PRAGMA user_version")[0][0] == 3
+    assert _rows("PRAGMA user_version")[0][0] == 4
     indexes = {r["name"] for r in _rows(
         "SELECT name FROM sqlite_master WHERE type='index'")}
     assert "idx_sightings_date" in indexes
@@ -47,7 +47,7 @@ def test_migration_is_idempotent(temp_db):
     from app.services import settings as settings_store
     settings_store.init_db()   # second run on the same DB must not raise
     settings_store.init_db()
-    assert _rows("PRAGMA user_version")[0][0] == 3
+    assert _rows("PRAGMA user_version")[0][0] == 4
 
 
 # --- SightingsBuffer ------------------------------------------------------------
@@ -182,7 +182,7 @@ def test_hourly_row_counters_and_bands(temp_db):
     ts = datetime(2026, 6, 3, 14, 10, tzinfo=timezone.utc).timestamp()
     buf.observe_poll([
         _ac("aaa111", altitude_baro=5000, distance_nm=80.0),        # low
-        _ac("bbb222", altitude_baro=36000, military=True),          # very_high
+        _ac("bbb222", altitude_baro=36000, military=True, military_db=True),  # very_high
         _ac("ccc333"),                                              # no alt → no band
         _ac("ddd444", on_ground=True),                              # ground
     ], ts)
@@ -313,7 +313,7 @@ def _seed_window_data(now: float) -> None:
     buf = SightingsBuffer()
     buf.observe_poll([
         _ac("aaa111", callsign="BAW123", type_code="A320", altitude_baro=35000,
-            ground_speed=420.0, distance_nm=90.0, military=True),
+            ground_speed=420.0, distance_nm=90.0, military=True, military_db=True),
         _ac("bbb222", callsign="GABCD", altitude_baro=2000, distance_nm=10.0),
     ], now - 3600)
     _flush(buf)

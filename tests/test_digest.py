@@ -35,6 +35,48 @@ def test_build_digest_empty_db_is_safe(temp_db):
     assert d["totals"]["events"] == 0
 
 
+def test_send_email_reaches_smtp(temp_db, monkeypatch):
+    # Regression: _send_email called settings_store.get("smtp_use_starttls", True) —
+    # get() takes one argument, so every email digest raised TypeError before any SMTP
+    # I/O (and the "Send test digest" button 500'd). The existing offload test stubs
+    # _send_email wholesale, so it never ran these lines; drive the real function
+    # against a fake SMTP class instead.
+    from app.services import digest as digest_svc
+    from app.services import settings as settings_store
+
+    calls = []
+
+    class _FakeSMTP:
+        def __init__(self, host, port, timeout=None):
+            calls.append(("connect", host, port))
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def ehlo(self):
+            calls.append(("ehlo",))
+        def starttls(self, context=None):
+            calls.append(("starttls",))
+        def login(self, user, password):
+            calls.append(("login", user, password))
+        def send_message(self, msg):
+            calls.append(("send", msg["To"], msg["Subject"]))
+
+    monkeypatch.setattr(digest_svc.smtplib, "SMTP", _FakeSMTP)
+    settings_store.set_many({"smtp_host": "mail.example", "smtp_port": 2525, "smtp_user": "u",
+                             "smtp_pass": "p", "smtp_from": "a@example.com", "smtp_to": "b@example.com"})
+    assert digest_svc._send_email("hello") == (True, None)
+    assert ("connect", "mail.example", 2525) in calls
+    assert ("starttls",) in calls                     # default smtp_use_starttls=True
+    assert ("login", "u", "p") in calls
+    assert ("send", "b@example.com", "PiScope Radar — Daily Digest") in calls
+
+    calls.clear()
+    settings_store.set_one("smtp_use_starttls", False)
+    assert digest_svc._send_email("hello") == (True, None)
+    assert ("starttls",) not in calls
+
+
 def test_build_digest_uses_utc_date_not_local(temp_db, monkeypatch):
     # Regression for B6: build_digest must key the daily_stats lookup by UTC date — the
     # same key the feed loop / events.update_daily_stats write with. Simulate a host whose

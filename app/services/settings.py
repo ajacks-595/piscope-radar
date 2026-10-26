@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
 
 
 log = logging.getLogger("piscope.settings")
@@ -109,12 +110,21 @@ DEFAULTS: dict[str, Any] = {
     # Empty falls back to the legacy `ollama_enabled` flag so existing deployments
     # keep working without an explicit migration step.
     "ai_provider": "",
-    # Cloud LLM provider (Anthropic / OpenAI / Google) — bring-your-own API key.
+    # Cloud LLM provider — bring-your-own API key. Vendors: "anthropic" | "openai" |
+    # "google" (all hard-coded endpoints), plus "openai_compatible" which speaks the
+    # OpenAI chat/completions schema against a user-supplied base URL — Ollama Cloud,
+    # LiteLLM, vLLM, LocalAI, Groq, Together, OpenRouter, etc.
     "cloud_api_enabled": False,
-    "cloud_api_vendor": "anthropic",       # "anthropic" | "openai" | "google"
+    "cloud_api_vendor": "anthropic",       # "anthropic" | "openai" | "google" | "openai_compatible"
     "cloud_api_key": "",
     # Empty model name falls back to a sensible per-vendor default in ai/cloud_api.py.
+    # (No default exists for openai_compatible — set the model your endpoint exposes.)
     "cloud_api_model": "",
+    # Base URL for the openai_compatible vendor, e.g. "https://ollama.com/v1". Should
+    # include the version segment; PiScope POSTs to "<base>/chat/completions" and
+    # GETs "<base>/models". SSRF-validated (blocks link-local / cloud-metadata) since
+    # it's user-supplied and fetched server-side. Ignored by the other vendors.
+    "cloud_api_base_url": "",
     # Claude CLI provider — POSTs to a small shim daemon that wraps `claude -p`.
     # The shim lives on a LAN host that has Claude Code installed and authenticated.
     # See tools/claude-shim/ in the repo for a turnkey daemon + systemd unit.
@@ -171,16 +181,17 @@ DEFAULTS: dict[str, Any] = {
     # comfortably bounded on SD storage while still allowing year-over-year views.
     # 0 = keep forever. Pruned alongside the snapshot prune in the feed loop.
     "analytics_retention_days": 365,
-    # ---- DNS-rebinding host guard (iteration 13) ----
-    # OPT-IN (default off): when enabled, rejects requests whose Host header is not
-    # LAN-shaped (see services/hostguard.py) to blunt DNS-rebinding against this
-    # no-auth box. It's off by default because a custom DNS name that legitimately
-    # resolves to the Pi (e.g. `piscope.mylan.example`) is, by Host header alone,
-    # indistinguishable from a rebinding attack — so a default-on guard would break
-    # exactly those setups. To turn it on: set host_guard_enabled=true AND add any
-    # custom hostnames you use to `allowed_hosts` (comma-separated; .local/.lan/
-    # .home.arpa names and private/loopback/CGNAT IP literals are always allowed).
-    "host_guard_enabled": False,
+    # ---- DNS-rebinding host guard (iteration 13; default-on since 1.7.5) ----
+    # Rejects requests whose Host header is not LAN-shaped (see services/hostguard.py)
+    # to blunt DNS rebinding against this no-auth box. A custom DNS name that really
+    # resolves to the Pi (e.g. `piscope.mylan.example`) is indistinguishable from a
+    # rebinding attack by Host alone, so it must be listed in `allowed_hosts`
+    # (Settings → Notifications → Network access, `piscope allow-host <name>`, or
+    # automatically when Settings is saved from that hostname). .local/.lan/.home/
+    # .home.arpa/.internal names and private/loopback/CGNAT IP literals always pass.
+    # Default ON for fresh installs; the v4 migration pins it OFF on installs that
+    # predate the change and never set it, so an upgrade can't lock anyone out.
+    "host_guard_enabled": True,
     "allowed_hosts": "",
     # ---- Weekly summary (analytics feature, phase 4) ----
     # Posts a 7-day rollup (traffic, busiest hour/day, top types/operators,
@@ -194,6 +205,12 @@ DEFAULTS: dict[str, Any] = {
 
 # Settings the user should never read back over the wire.
 SECRET_KEYS = {"fa_api_key", "openaip_api_key", "smtp_pass", "cloud_api_key", "claude_cli_token"}
+
+# Keys the generic POST /api/settings must not write. digest_latest_json is an
+# internal slot; saved views and webhooks have their own endpoints (/api/views,
+# /api/webhooks) that validate each entry. Writing them raw here bypassed that
+# cleaning and let arbitrary markup into fields the UI renders.
+CLIENT_READONLY_KEYS = {"digest_latest_json", "saved_views_json", "webhooks_json"}
 
 
 # --- Value validation (iteration 13) ------------------------------------------
@@ -334,7 +351,7 @@ _VALIDATORS: dict[str, Callable[[Any], Any]] = {
     # Enums.
     "feed_mode": _v_enum("local", "global"),
     "ai_provider": _v_enum("ollama", "cloud_api", "claude_cli", blank_ok=True),
-    "cloud_api_vendor": _v_enum("anthropic", "openai", "google"),
+    "cloud_api_vendor": _v_enum("anthropic", "openai", "google", "openai_compatible"),
     "trail_colour_mode": _v_enum("single", "altitude", "speed"),
     "map_label_mode": _v_enum("off", "callsign", "full"),
     "weekly_digest_day": _v_enum("mon", "tue", "wed", "thu", "fri", "sat", "sun"),
@@ -348,6 +365,7 @@ _VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "claude_cli_url": _v_str(2048),
     "ollama_model": _v_str(200),
     "cloud_api_model": _v_str(200),
+    "cloud_api_base_url": _v_str(2048),
     "watchlist": _v_str(8192),
     "theme": _v_str(64),
     "map_style": _v_str(64),
@@ -401,7 +419,7 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-SCHEMA_VERSION = 3  # bump and add an `if v < N: …` block below whenever the schema changes
+SCHEMA_VERSION = 4  # bump and add an `if v < N: …` block below whenever the schema changes
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -461,6 +479,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "alt_very_high INTEGER NOT NULL DEFAULT 0)"
         )
         conn.execute("PRAGMA user_version = 3")
+    # v3 → v4 (data only, no schema change): the host guard became default-ON. Pin
+    # it OFF on existing installs that never set it, so upgrading can't lock out
+    # anyone who reaches the Pi by a custom hostname; fresh installs keep the new
+    # default. "Existing" = the DB already holds data — a restored backup arrives
+    # with user_version 0 (iterdump drops it) but counts as existing too.
+    if v < 4:
+        has_data = conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM settings) OR EXISTS(SELECT 1 FROM events) "
+            "OR EXISTS(SELECT 1 FROM daily_stats)"
+        ).fetchone()[0]
+        if has_data:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO settings(key, value) VALUES('host_guard_enabled', 'false')")
+            if cur.rowcount:
+                log.warning("host guard left OFF on this existing install (it is now on by "
+                            "default for new installs) — enable it under Settings → "
+                            "Notifications → Network access to block DNS rebinding")
+        conn.execute("PRAGMA user_version = 4")
     conn.commit()
 
 
@@ -649,31 +685,78 @@ def get_all(redact: bool = True) -> dict[str, Any]:
     return merged
 
 
+# --- Secrets are bound to where they get sent ------------------------------------
+# Redaction keeps secrets off the wire, but this box has no auth: anyone on the LAN
+# could point a secret's destination at their own server (openai_compatible base
+# URL, shim URL, SMTP host) and press "Test" to receive the stored key. Each such
+# secret is tied to its destination; a write that moves the destination without
+# also supplying the secret clears the stored one, so it must be re-entered.
+
+
+def _origin(url: Any) -> str:
+    try:
+        p = urlparse(str(url or "").strip())
+        return f"{p.scheme}://{p.netloc}".lower() if p.scheme and p.netloc else ""
+    except ValueError:
+        return ""
+
+
+def _cloud_api_destination(s: dict[str, Any]) -> str:
+    vendor = str(s.get("cloud_api_vendor") or "").lower()
+    # Hosted vendors have one fixed endpoint each; openai_compatible goes wherever
+    # the base URL points.
+    return _origin(s.get("cloud_api_base_url")) if vendor == "openai_compatible" else vendor
+
+
+_SECRET_DESTINATIONS: dict[str, Callable[[dict[str, Any]], str]] = {
+    "cloud_api_key": _cloud_api_destination,
+    "claude_cli_token": lambda s: _origin(s.get("claude_cli_url")),
+    "smtp_pass": lambda s: str(s.get("smtp_host") or "").strip().lower(),
+}
+
+
+def _unbind_redirected_secrets(pending: dict[str, Any]) -> None:
+    """Add `<secret>: ""` to `pending` for each stored secret whose destination this
+    write changes without supplying a replacement."""
+    current = _CACHE if _CACHE is not None else _populate_cache()
+    merged = {**current, **pending}
+    for secret, destination in _SECRET_DESTINATIONS.items():
+        if secret in pending or not current.get(secret):
+            continue
+        if destination(current) != destination(merged):
+            log.warning("clearing stored %s: its destination changed — re-enter it for "
+                        "the new endpoint", secret)
+            pending[secret] = ""
+
+
 def set_many(values: dict[str, Any]) -> None:
     """Persist a batch of settings updates. Only keys present in DEFAULTS are accepted —
     this whitelists what callers can write so a hostile (or buggy) client cannot pollute the
     settings table with arbitrary keys or shadow internal config."""
     global _CACHE_VERSION
+    pending: dict[str, Any] = {}
+    for k, v in values.items():
+        if k not in DEFAULTS:
+            continue  # whitelist: silently ignore unknown keys
+        if k in SECRET_KEYS and (v == "***" or v is None):
+            # don't overwrite a stored secret with the redaction placeholder
+            continue
+        try:
+            v = _validated(k, v)
+        except (ValueError, TypeError) as exc:
+            log.info("rejecting invalid value for setting %r: %s", k, exc)
+            continue
+        if len(json.dumps(v)) > _MAX_VALUE_BYTES:
+            log.info("rejecting oversized value for setting %r", k)
+            continue
+        pending[k] = v
+    _unbind_redirected_secrets(pending)
     with _connect() as conn:
-        for k, v in values.items():
-            if k not in DEFAULTS:
-                continue  # whitelist: silently ignore unknown keys
-            if k in SECRET_KEYS and (v == "***" or v is None):
-                # don't overwrite a stored secret with the redaction placeholder
-                continue
-            try:
-                v = _validated(k, v)
-            except (ValueError, TypeError) as exc:
-                log.info("rejecting invalid value for setting %r: %s", k, exc)
-                continue
-            payload = json.dumps(v)
-            if len(payload) > _MAX_VALUE_BYTES:
-                log.info("rejecting oversized value for setting %r (%d bytes)", k, len(payload))
-                continue
+        for k, v in pending.items():
             conn.execute(
                 "INSERT INTO settings(key, value) VALUES(?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (k, payload),
+                (k, json.dumps(v)),
             )
         conn.commit()
     # Rebuild the in-memory cache so subsequent reads see the new values without hitting disk.

@@ -8,9 +8,10 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .routers import api as api_router
@@ -49,7 +50,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 
 # Version stamp. Bump whenever you ship a notable user-facing change — the frontend reads
 # this via /piscope/api/version and pops a "✨ What's new" toast on first load after a bump.
-VERSION = "1.7.1"
+VERSION = "1.7.5"
 
 app = FastAPI(title="PiScope Radar", version=VERSION, lifespan=lifespan)
 
@@ -59,7 +60,8 @@ async def version() -> dict[str, str]:
     return {"version": VERSION}
 
 # Deliberately NO CORS middleware. Browsers enforce same-origin by default; without permissive
-# CORS, a malicious cross-origin page cannot POST to /piscope/api/settings (which has no auth).
+# CORS, a malicious cross-origin page cannot POST JSON to /piscope/api/settings (which has no
+# auth). Body-less "simple" POSTs need the cross-site write guard below as well.
 # If you need genuine cross-origin access (rare; Tailscale, custom DNS), add an explicit allow list
 # here rather than re-introducing a wildcard.
 
@@ -77,9 +79,34 @@ async def version() -> dict[str, str]:
 
 _HOST_GUARD_LOGGED: set[str] = set()
 
+# --- Cross-site write guard -----------------------------------------------------
+# No-CORS only stops cross-origin requests that need a preflight. A POST with no
+# body (or a form/text body) is a CORS "simple" request: the browser sends it
+# without asking, and the response is merely unreadable. That let any web page a
+# LAN user visited fire /api/digest/run, /api/*/test, or FlightAware lookups with
+# confirm_over_budget=true (real AeroAPI spend). Browsers label every request with
+# Sec-Fetch-Site (Origin is the fallback for older ones); refuse state-changing
+# requests a browser marks as coming from another site. Non-browser clients (curl,
+# the `piscope` CLI, dashboards' server-side calls) send neither and are unaffected.
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _is_cross_site_write(request) -> bool:
+    if request.method not in _UNSAFE_METHODS:
+        return False
+    site = request.headers.get("sec-fetch-site")
+    if site is not None:
+        return site not in ("same-origin", "none")
+    origin = request.headers.get("origin")
+    if not origin:
+        return False
+    return urlparse(origin).netloc.lower() != request.headers.get("host", "").lower()
+
 
 @app.middleware("http")
 async def _host_guard_and_headers(request, call_next):
+    if _is_cross_site_write(request):
+        return JSONResponse({"detail": "Cross-site request refused"}, status_code=403)
     if hostguard.enabled():
         host = request.headers.get("host", "")
         if not hostguard.host_allowed(host):
@@ -87,8 +114,14 @@ async def _host_guard_and_headers(request, call_next):
                 _HOST_GUARD_LOGGED.add(host)
                 log.warning("host guard rejected Host: %r (add to allowed_hosts "
                             "or set host_guard_enabled=false if legitimate)", host)
+            name = hostguard._host_only(host)[:100] or "(none)"
             return PlainTextResponse(
-                "Misdirected request: this PiScope instance does not serve that host name.\n",
+                f"Misdirected request: this PiScope instance does not serve the host name "
+                f"'{name}'.\n\n"
+                "If that is your own name for this Pi, allow it in either of these ways:\n"
+                "  - open PiScope by its LAN IP address (http://<pi-ip>/piscope), then\n"
+                "    Settings > Notifications > Network access > Allowed host names\n"
+                f"  - or run on the Pi:  piscope allow-host {name}\n",
                 status_code=421,
             )
     response = await call_next(request)
@@ -100,6 +133,15 @@ async def _host_guard_and_headers(request, call_next):
     # so reloads stop re-validating every asset against the Pi.
     if request.url.path.startswith("/piscope/static/") and "v" in request.query_params:
         response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+    # HTML served straight off the static mount (/piscope/static/index.html — StaticFiles
+    # serves the whole directory) renders the full app but skipped the /piscope route's
+    # CSP: frameable by any origin, and inline handlers injected via stored settings
+    # data ran there. Give it the same frame-ancestors policy plus a nonce-less
+    # script-src 'self'. That also blocks the inline embed bootstrap on that copy,
+    # which is fine — /piscope is the supported entry point.
+    if request.url.path.startswith("/piscope/static/") and \
+            response.headers.get("content-type", "").startswith("text/html"):
+        response.headers.setdefault("Content-Security-Policy", _csp_header(script_self_only=True))
     return response
 
 
@@ -120,7 +162,7 @@ async def root() -> RedirectResponse:
 # Read fresh from settings on each request — cheap, and means an admin's
 # `frame_ancestors` change takes effect without restart.
 
-def _csp_header(script_nonce: Optional[str] = None) -> str:
+def _csp_header(script_nonce: Optional[str] = None, *, script_self_only: bool = False) -> str:
     """Build the ENFORCED Content-Security-Policy header value.
 
     Base directives are universally safe: `frame-ancestors` (from the user's
@@ -134,7 +176,10 @@ def _csp_header(script_nonce: Optional[str] = None) -> str:
     script — no `'unsafe-inline'`, so an injected <script> is blocked.
     Promoted from Report-Only in iteration 13 after a clean real-browser
     verification pass on the Pi (iteration 12); the unpkg.com allowance was
-    dropped in 13.2 when Leaflet was vendored under static/vendor/."""
+    dropped in 13.2 when Leaflet was vendored under static/vendor/.
+
+    `script_self_only` (static-mount HTML) enforces `script-src 'self'` with no
+    nonce, so no inline script or handler can run on those pages."""
     raw = (settings_store.get("frame_ancestors") or "'self'").strip()
     # The setting is a comma-separated string of CSP source expressions; the
     # settings layer restricts it to CSP-safe characters at write time.
@@ -148,6 +193,8 @@ def _csp_header(script_nonce: Optional[str] = None) -> str:
     ]
     if script_nonce:
         directives.append(f"script-src 'self' 'nonce-{script_nonce}'")
+    elif script_self_only:
+        directives.append("script-src 'self'")
     return "; ".join(directives)
 
 
