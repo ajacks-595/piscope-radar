@@ -30,7 +30,7 @@
 fastapi==0.136.1
 uvicorn==0.47.0
 httpx==0.28.1
-websockets==16.0
+websockets==17.3
 python-multipart==0.0.32
 
 # --- Transitive, pinned for full reproducibility ---
