@@ -177,7 +177,8 @@ def test_metrics_prometheus_format(client):
 def test_export_returns_zip_without_secrets(client):
     # Guards the S1 refactor end-to-end: /api/export must still produce a zip, and the
     # bundled SQL must not contain stored secret values.
-    import io, zipfile
+    import io
+    import zipfile
     client.post("/piscope/api/settings/fa-key", json={"key": "EXPORT-SECRET-FA"})
     r = client.get("/piscope/api/export")
     assert r.status_code == 200
@@ -246,3 +247,25 @@ def test_require_valid_observer_bounds():
         with pytest.raises(HTTPException) as ei:
             _require_valid_observer(lat, lon)
         assert ei.value.status_code == 400
+
+
+def test_settings_endpoint_refuses_internal_and_endpoint_owned_keys(client):
+    # digest_latest_json is internal; saved views + webhooks have validating endpoints.
+    # Raw writes here put arbitrary markup into fields the UI renders.
+    from app.services import settings as s
+    r = client.post("/piscope/api/settings", json={
+        "theme": "nord",
+        "digest_latest_json": {"totals": {"events": "<img src=x onerror=alert(1)>"}},
+        "saved_views_json": '[{"name":"v","lat":1,"lon":2,"zoom":"<b>x</b>"}]',
+        "webhooks_json": '[{"url":"gopher://x","kind":"evil"}]',
+    })
+    assert r.status_code == 200
+    assert s.get("theme") == "nord"
+    assert s.get("digest_latest_json") is None
+    assert s.get("saved_views_json") == "[]" and s.get("webhooks_json") == "[]"
+    # The dedicated endpoints still work (and clean their input).
+    r = client.post("/piscope/api/views", json={"views": [
+        {"name": "Home", "lat": 55, "lon": -1.6, "zoom": 9},
+        {"name": "Bad", "lat": 1, "lon": 2, "zoom": "<b>x</b>"},   # dropped, not stored
+    ]})
+    assert r.json()["views"] == [{"name": "Home", "lat": 55.0, "lon": -1.6, "zoom": 9}]

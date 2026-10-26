@@ -244,9 +244,11 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
    "Network is unreachable" until sandbox is OFF again. Keep sandbox off when
    anything needs to touch the Pi.
 
-3. **Pip can't reach pypi.** The egress proxy whitelists github.com but not pypi.
-   Don't reach for pip on this host — either rewrite to stdlib (claude-shim) or
-   use the Pi's `/opt/piscope/venv` over SSH for verification.
+3. **PyPI is reachable again (verified 2026-10-01)** — `pip download` works, as do
+   `npm install` and Playwright's Chromium (`PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64`).
+   There's still no local FastAPI/pytest: test with the scanner venv plus pure-Python
+   packages overlaid via `PYTHONPATH`, or stage onto the Pi's `/opt/piscope/venv`.
+   (Previously the egress proxy blocked pypi; that's why claude-shim is stdlib-only.)
 
 4. **`claude --bare` disables OAuth.** Per the CLI help, `--bare` accepts only
    `ANTHROPIC_API_KEY`. The shim deliberately does NOT pass `--bare`; if you ever
@@ -273,13 +275,28 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
    `/opt/piscope`, backups will fail with EROFS until that path is added to the
    unit's `ReadWritePaths` (edit install.sh, re-run it on the Pi).
 
+9. **Restarts log `ERROR: Cancel N running task(s), timeout graceful shutdown exceeded`
+   (+ a `CancelledError` traceback) whenever dashboards hold `/api/dashboard/events` SSE
+   streams open — expected, not a fault.** The unit runs uvicorn with
+   `--timeout-graceful-shutdown 5` (since 2026-10-01): SSE streams never end on their own,
+   so uvicorn waits 5 s, cancels them, then runs the lifespan shutdown normally (look for
+   `Application shutdown complete`). Without the flag every restart hung until systemd's
+   SIGKILL. ASGI gives in-flight requests no shutdown signal, so there's no clean way to
+   end the streams first.
+
+10. **lighttpd must stream `/piscope` responses (`server.stream-response-body = 2` in
+    `99-piscope.conf`, since 2026-10-01).** With lighttpd's default buffering the SSE
+    feed delivered nothing through the proxy and abandoned streams leaked upstream
+    connections. E2E module `13-sse` guards this.
+
 ## Open items / future work
 
-- **claude-shim is systemd-managed** (since 2026-06-06). Runs under `dev` on the dev
-  host via the `claude-shim.service` unit, config in `/etc/claude-shim.env` (mode 600;
-  generated token + `SHIM_ALLOW_IPS` pinned to the Pi + loopback). Re-run
-  `sudo /home/dev/projects/piscope-radar/tools/claude-shim/install.sh` to converge after
-  changes. NB: the shim now refuses to start on a non-loopback bind with no token
+- **claude-shim is NOT installed right now** (found 2026-09-30: no `/opt/claude-shim`, no
+  unit; only `/etc/claude-shim.env` remains), but the Pi's `claude_cli_url` still points at
+  it, so AI briefs are down. Reinstall with
+  `sudo /home/dev/projects/piscope-radar/tools/claude-shim/install.sh` (it ran as a
+  systemd unit under `dev` from 2026-06-06; config in `/etc/claude-shim.env`, token +
+  `SHIM_ALLOW_IPS` pinned to the Pi + loopback). NB: the shim now refuses to start on a non-loopback bind with no token
   (fail-closed, iter 13), so always keep `SHIM_BEARER_TOKEN` set for the LAN bind.
 - **Generic `unavailable` error envelopes.** Both `/api/explain` and
   `/api/explain/followup` collapse upstream errors into `"no response from <provider>"`.
@@ -289,3 +306,38 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
   tag is still `v1.4.0` even though `main` is at v1.8.0.
 - **Co-authored-by footer convention** isn't established in this repo. If you start
   adding it, document it here and in project memory.
+
+## Project-specific repo review additions
+
+Bug classes the 2026-09-30 repo review found with no dedicated test. Run these on
+every review; full report in `.repo-review/2026-09-30T185602Z/REPORT.md`.
+
+- **2026-09-30 — Live vs analytics military classification parity.** The feed only
+  trusted the readsb `dbFlags` bit, which the local tar1090 never sets, so from June
+  the Pi logged 0 military events while `notable.py` rules matched 880 military
+  aircraft. Check: `SELECT COUNT(*) FROM events WHERE kind='military'` over a
+  window against `notable.military_where()` hits in `aircraft_sightings` over the
+  same window. A large mismatch means the alert pipeline is blind.
+- **2026-09-30 — Alert re-fire rate.** De-dup sets re-arm after one missed poll.
+  Check: consecutive same-hex/same-kind events < 10 min apart in `events` (script in
+  `.repo-review/…/event-refire-evidence.txt`). A non-trivial count means webhook spam.
+- **2026-09-30 — Don't stub the function under test.** The email digest crashed on
+  every send for months because the only test monkeypatched `_send_email` wholesale.
+  Stub the I/O boundary (`smtplib.SMTP`, `httpx`), not the function being tested.
+- **2026-09-30 — Diff-skip caches in `app.js` must key on content, not size.** Trails
+  froze once full because the render cache compared only `pts.length`. Browser check:
+  feed synthetic frames through `applyAircraftUpdate` and compare each polyline's
+  last latlng with the newest trail point (`.repo-review/…/trail-synthetic.js` pattern).
+- **2026-09-30 — Every HTML response carries the CSP, not just `/piscope`.**
+  `StaticFiles` also serves `static/index.html`. Check `curl -I` on
+  `/piscope/static/index.html` for `frame-ancestors` and `script-src`.
+- **2026-09-30 — Cross-site simple-request audit.** List every POST that takes no
+  JSON body (they need no CORS preflight). Each must be harmless or explicitly
+  CSRF-guarded; FlightAware's `confirm_over_budget` query param can spend money.
+- **2026-09-30 — claude-shim must stay text-only.** Its prompt carries
+  unauthenticated LAN input, so `shim.py` runs `claude --print --restricted --tools ""
+  --strict-mcp-config` (fixed 2026-10-01, `a59c9c3`). Check on every review: pipe a
+  prompt through the same flags with `--output-format stream-json --verbose` and
+  confirm the init event lists 0 tools and 0 MCP servers. Without the flags it
+  inherited 24 tools and 10 MCP servers (Gmail, Drive, …). Never add `--bare`
+  (breaks OAuth).

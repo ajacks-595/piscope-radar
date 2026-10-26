@@ -69,3 +69,62 @@ def test_stale_feed_status_pruned(temp_db, monkeypatch):
 
     assert "old_extra" not in feed.feed_status
     assert "primary" in feed.feed_status   # the configured global feed
+
+
+def _flicker_feed(monkeypatch):
+    """Feed whose (healthy) upstream returns whatever `rows` currently holds."""
+    from app.services.feed import FeedService
+    from app.services import events_bus, webhooks
+    feed = FeedService()
+    rows = []
+
+    async def _ok(name, url, *, kind):
+        feed.feed_status[name] = {"kind": kind, "url": url, "ok": True, "rows": len(rows)}
+        return [dict(r) for r in rows]
+    monkeypatch.setattr(feed, "_fetch_one", _ok)
+    hooks, bus = [], []
+    monkeypatch.setattr(webhooks, "fan_out", lambda kind, ac: hooks.append(kind))
+    real_publish = events_bus.publish
+    monkeypatch.setattr(events_bus, "publish",
+                        lambda kind, **kw: (bus.append(kind), real_publish(kind, **kw))[1])
+    return feed, rows, hooks, bus
+
+
+MIL = {"hex": "ae07db", "flight": "RCH688", "lat": 51.1, "lon": -1.0, "alt_baro": 30000}
+EMG = {"hex": "400aaa", "flight": "BAW9", "lat": 51.2, "lon": -1.1, "alt_baro": 8000, "squawk": "7700"}
+
+
+def test_single_missed_poll_does_not_refire_alerts(temp_db, monkeypatch):
+    # A fringe contact dropping out for one poll used to re-arm the de-dup, so it
+    # re-alerted (webhook + SSE + event row) the moment it came back.
+    from app.services import events as events_store
+    feed, rows, hooks, bus = _flicker_feed(monkeypatch)
+    rows[:] = [MIL, EMG]
+    asyncio.run(feed._poll_once())
+    rows[:] = []                       # both flicker out for one poll
+    asyncio.run(feed._poll_once())
+    rows[:] = [MIL, EMG]               # ...and come back
+    asyncio.run(feed._poll_once())
+
+    assert hooks.count("military") == 1 and hooks.count("emergency") == 1
+    assert len(events_store.recent_events(kind="military")) == 1
+    assert len(events_store.recent_events(kind="emergency")) == 1
+    assert "emergency_resolved" not in bus    # a blip isn't "coverage lost"
+
+
+def test_rearms_after_grace_period(temp_db, monkeypatch):
+    from app.services.feed import REARM_GRACE_S
+    feed, rows, hooks, bus = _flicker_feed(monkeypatch)
+    rows[:] = [MIL, EMG]
+    asyncio.run(feed._poll_once())
+    rows[:] = []
+    # Pretend both were last seen longer ago than the grace window.
+    for h in ("ae07db", "400aaa"):
+        feed._notified_last_seen[h] = time.time() - REARM_GRACE_S - 5
+    asyncio.run(feed._poll_once())
+    assert not feed._notified_military and not feed._notified_emergency
+    assert bus.count("emergency_resolved") == 1
+    assert not feed._notified_last_seen      # bookkeeping pruned with the re-arm
+    rows[:] = [MIL, EMG]
+    asyncio.run(feed._poll_once())
+    assert hooks.count("military") == 2 and hooks.count("emergency") == 2

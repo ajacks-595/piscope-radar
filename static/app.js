@@ -625,7 +625,7 @@ function updateSidebarRow(row, ac) {
 
 function badgesFor(ac) {
   const out = [];
-  if (ac.military) out.push('<span class="badge mil" title="Military">MIL</span>');
+  if (ac.military) out.push(`<span class="badge mil" title="${escapeHtml(ac.military_reason ? `Military — ${ac.military_reason}` : 'Military')}">MIL</span>`);
   if (ac.is_emergency_squawk) out.push(`<span class="badge emg" title="Squawk ${escapeHtml(ac.squawk)}">EMG</span>`);
   if (isWatchlisted(ac)) out.push('<span class="badge wch" title="Watchlist">WCH</span>');
   return out.join('');
@@ -830,7 +830,18 @@ function applyTileLayerForTheme() {
   // tiles past their max, which manifested as "the map disappears when I zoom in". Setting
   // the layer's maxZoom makes Leaflet show the previous level's tiles scaled up instead.
   const layerMax = preset.maxZoom || 18;
-  tileLayer = L.tileLayer(preset.url, { attribution: preset.attribution, maxZoom: layerMax }).addTo(map);
+  // OSM's volunteer tile servers (and the OSM-France HOT / CyclOSM / OpenTopoMap presets)
+  // reject tile requests that arrive with no Referer — "403r. Referer is required" per their
+  // tile usage policy. Our pages send a global `Referrer-Policy: no-referrer` (app/main.py)
+  // which would strip it, so override it for the tile <img>s only: Leaflet copies this option
+  // onto each tile element's referrerpolicy attribute, and a per-element policy wins over the
+  // document policy. `strict-origin-when-cross-origin` leaks only the origin (a LAN host) to
+  // the tile CDN and nothing on a downgrade; the rest of the app keeps no-referrer.
+  tileLayer = L.tileLayer(preset.url, {
+    attribution: preset.attribution,
+    maxZoom: layerMax,
+    referrerPolicy: 'strict-origin-when-cross-origin',
+  }).addTo(map);
   // Toggle the map root's "dark filter" attribute so the CSS rule for inverting light
   // tiles applies (or doesn't). Cleaner than swapping classes per preset.
   const mapEl = document.getElementById('map');
@@ -1266,8 +1277,11 @@ function speedColor(speed) {
 }
 
 // Cache the parameters that drove the last trail render per hex, so we can short-circuit
-// the (expensive) rebuild for aircraft that didn't actually move this poll.
-const _trailRenderCache = new Map();   // hex → { len, mode, fade, isSel, anySel }
+// the (expensive) rebuild for aircraft that didn't actually move this poll. `last` is the
+// newest point's array (a fresh object per append) — length alone can't be the key: once a
+// trail reaches trail_length each append shifts one point out, the length stays constant,
+// and the drawn trail froze while the aircraft flew on.
+const _trailRenderCache = new Map();   // hex → { len, last, mode, fade, isSel, anySel }
 
 function refreshTrails() {
   if (!map) return;
@@ -1283,12 +1297,13 @@ function refreshTrails() {
     // Diff-skip: if nothing that affects the trail's rendering changed since last poll,
     // leave the existing polylines alone. The hot path here is "the aircraft is on the
     // map but didn't move", which is most aircraft on most ticks.
+    const last = pts[pts.length - 1];
     const cached = _trailRenderCache.get(hex);
-    if (cached && cached.len === pts.length && cached.mode === mode && cached.fade === fade
-        && cached.isSel === isSel && cached.anySel === anySel) {
+    if (cached && cached.len === pts.length && cached.last === last && cached.mode === mode
+        && cached.fade === fade && cached.isSel === isSel && cached.anySel === anySel) {
       continue;
     }
-    _trailRenderCache.set(hex, { len: pts.length, mode, fade, isSel, anySel });
+    _trailRenderCache.set(hex, { len: pts.length, last, mode, fade, isSel, anySel });
 
     const baseOpacity = anySel ? (isSel ? 0.95 : 0.18) : 0.55;
     const weight = isSel ? 2.5 : 1.2;
@@ -1391,6 +1406,24 @@ function selectAircraft(hex, { pan }) {
   if (typeof scheduleUrlStateWrite === 'function') scheduleUrlStateWrite();
 }
 
+// Clear the current selection and return the detail panel to its empty state. The missing
+// counterpart to selectAircraft — without it the panel had no close control, so on mobile
+// (where it's a full-screen overlay) the only way out was a full page reload.
+function deselectAircraft() {
+  const prev = state.selectedHex;
+  if (!prev) return;
+  state.selectedHex = null;
+  state.selectedEnrichment = null;
+  state._pendingSelect = null;   // drop any not-yet-consumed URL selection too
+  refreshRowSelection(prev, false);
+  refreshMapMarkers();
+  refreshTrails();
+  if (routeLineLayer) routeLineLayer.clearLayers();
+  renderDetailPanel(null);
+  // Strip select= from the share URL so a reload / next write doesn't re-open it.
+  if (typeof scheduleUrlStateWrite === 'function') scheduleUrlStateWrite();
+}
+
 function refreshRowSelection(hex, on) {
   // CSS.escape: in global/extra-feed mode the hex comes from an upstream we don't
   // control, so a value containing a quote or backslash would otherwise throw a
@@ -1402,15 +1435,22 @@ function refreshRowSelection(hex, on) {
 function renderDetailPanel(ac) {
   const empty = document.getElementById('detail-empty');
   const content = document.getElementById('detail-content');
+  const panel = document.getElementById('detail');
   if (!ac) {
     empty.hidden = false;
     content.hidden = true;
+    // On narrow screens (.detail is a slide-in overlay) this slides it back off so the
+    // map is reachable again. Inert on desktop, where .detail.open has no CSS effect —
+    // the rule lives only inside the ≤900px media query and the panel is a fixed column.
+    if (panel) panel.classList.remove('open');
     return;
   }
   empty.hidden = true;
   content.hidden = false;
+  if (panel) panel.classList.add('open');
   state.selectedEnrichment = { hex: ac.hex, callsign: ac.callsign };
   content.innerHTML = `
+    <div class="detail-close-bar"><button class="icon-button" id="detail-close" type="button" title="Close (Esc)" aria-label="Close aircraft details">✕</button></div>
     <section>
       <div class="detail-header">
         <span class="callsign">${escapeHtml(ac.display_name)}</span>
@@ -1450,6 +1490,7 @@ function renderDetailPanel(ac) {
       <div class="detail-quick-links" id="quick-links">${quickLinks(ac)}</div>
     </section>
   `;
+  document.getElementById('detail-close').addEventListener('click', deselectAircraft);
   document.getElementById('fa-fetch-btn').addEventListener('click', () => fetchFlightAware(ac));
   document.getElementById('bookmark-toggle').addEventListener('click', toggleBookmarkSelected);
   // Show the AI section only when /api/explain/status reports the backend is configured.
@@ -1780,6 +1821,15 @@ function updateAIProviderPanel() {
   }
 }
 
+// Cloud-API vendor dropdown: the Base URL field is only relevant to the
+// `openai_compatible` vendor (Ollama Cloud / LiteLLM / vLLM / Groq / …), so
+// show it only for that choice. Called on settings open and on vendor change.
+function updateCloudApiVendorFields() {
+  const vendor = document.getElementById('setting-cloud-api-vendor')?.value || 'anthropic';
+  const field = document.getElementById('cloud-api-base-url-field');
+  if (field) field.hidden = (vendor !== 'openai_compatible');
+}
+
 // Settings → AI "Test connection" buttons. All three save the user's typed values
 // first so the test reflects what they'd actually be saving (you don't want to
 // confuse "I changed the URL but didn't save" with "the URL doesn't work").
@@ -1822,7 +1872,8 @@ async function testCloudApiConnection() {
   out.style.color = '';
   const vendor = document.getElementById('setting-cloud-api-vendor')?.value || 'anthropic';
   const model = document.getElementById('setting-cloud-api-model')?.value.trim() || '';
-  const body = { cloud_api_vendor: vendor, cloud_api_model: model };
+  const baseUrl = document.getElementById('setting-cloud-api-base-url')?.value.trim() || '';
+  const body = { cloud_api_vendor: vendor, cloud_api_model: model, cloud_api_base_url: baseUrl };
   const key = document.getElementById('setting-cloud-api-key')?.value;
   if (key && key !== '***') body.cloud_api_key = key;
   try {
@@ -1830,12 +1881,15 @@ async function testCloudApiConnection() {
     const res = await fetch('/piscope/api/cloud-api/test', { method: 'POST' });
     const data = await res.json();
     if (data.ok) {
+      // "endpoint reachable" reads right for the keyless openai_compatible vendor;
+      // the hosted vendors are validating an API key, so "key works" is accurate there.
+      const okPhrase = vendor === 'openai_compatible' ? 'endpoint reachable' : `${vendor} key works`;
       const m = data.configured_model;
       if (m && !data.model_present) {
-        out.textContent = `✓ key works, but model "${m}" wasn't in the list (have: ${(data.models || []).slice(0,3).join(', ') || 'none'})`;
+        out.textContent = `✓ ${okPhrase}, but model "${m}" wasn't in the list (have: ${(data.models || []).slice(0,3).join(', ') || 'none'})`;
         out.style.color = 'var(--alert)';
       } else {
-        out.textContent = `✓ ${vendor} key works — ${data.models?.length || 0} models available`;
+        out.textContent = `✓ ${okPhrase} — ${data.models?.length || 0} models available`;
         out.style.color = 'var(--accent)';
       }
     } else {
@@ -2364,14 +2418,18 @@ function populateSettingsModal() {
   if (el('setting-ai-provider'))     el('setting-ai-provider').value = s.ai_provider || '';
   if (el('setting-ai-chat-max-turns')) el('setting-ai-chat-max-turns').value = s.ai_chat_max_turns || 5;
   if (el('setting-frame-ancestors')) el('setting-frame-ancestors').value = s.frame_ancestors || "'self'";
+  if (el('setting-host-guard'))      el('setting-host-guard').checked = !!s.host_guard_enabled;
+  if (el('setting-allowed-hosts'))   el('setting-allowed-hosts').value = s.allowed_hosts || '';
   if (el('setting-ollama-url'))      el('setting-ollama-url').value = s.ollama_url || '';
   if (el('setting-ollama-model'))    el('setting-ollama-model').value = s.ollama_model || 'gemma4:latest';
   if (el('setting-ollama-enabled'))  el('setting-ollama-enabled').checked = !!s.ollama_enabled;
   if (el('setting-cloud-api-vendor'))   el('setting-cloud-api-vendor').value = s.cloud_api_vendor || 'anthropic';
+  if (el('setting-cloud-api-base-url')) el('setting-cloud-api-base-url').value = s.cloud_api_base_url || '';
   if (el('setting-cloud-api-key'))      el('setting-cloud-api-key').value = '';
   if (el('cloud-api-key-status'))       el('cloud-api-key-status').textContent = s.cloud_api_key_set ? 'A key is currently stored. Leave blank to keep it.' : 'No key stored yet.';
   if (el('setting-cloud-api-model'))    el('setting-cloud-api-model').value = s.cloud_api_model || '';
   if (el('setting-cloud-api-enabled'))  el('setting-cloud-api-enabled').checked = !!s.cloud_api_enabled;
+  updateCloudApiVendorFields();
   if (el('setting-claude-cli-url'))     el('setting-claude-cli-url').value = s.claude_cli_url || '';
   if (el('setting-claude-cli-token'))   el('setting-claude-cli-token').value = '';
   if (el('claude-cli-token-status'))    el('claude-cli-token-status').textContent = s.claude_cli_token_set ? 'A token is currently stored. Leave blank to keep it.' : 'No token stored yet.';
@@ -2466,6 +2524,7 @@ async function saveSettings() {
     ollama_model:    document.getElementById('setting-ollama-model')?.value.trim() || 'gemma4:latest',
     ollama_enabled:  !!document.getElementById('setting-ollama-enabled')?.checked,
     cloud_api_vendor:  document.getElementById('setting-cloud-api-vendor')?.value || 'anthropic',
+    cloud_api_base_url: document.getElementById('setting-cloud-api-base-url')?.value.trim() || '',
     cloud_api_model:   document.getElementById('setting-cloud-api-model')?.value.trim() || '',
     cloud_api_enabled: !!document.getElementById('setting-cloud-api-enabled')?.checked,
     claude_cli_url:     document.getElementById('setting-claude-cli-url')?.value.trim() || '',
@@ -2485,6 +2544,14 @@ async function saveSettings() {
     smtp_to:      document.getElementById('setting-smtp-to')?.value.trim() || '',
     smtp_use_starttls: !!document.getElementById('setting-smtp-starttls')?.checked,
   };
+  // Network access. Only sent when the controls exist, so a mismatched cached shell
+  // can never silently switch the guard off. The server adds the Host this page was
+  // loaded from to allowed_hosts if the save would otherwise lock it out.
+  const hostGuardEl = document.getElementById('setting-host-guard');
+  if (hostGuardEl) {
+    body.host_guard_enabled = hostGuardEl.checked;
+    body.allowed_hosts = document.getElementById('setting-allowed-hosts')?.value.trim() || '';
+  }
   // SMTP password — only send if the user typed something. Blank means "leave the stored value alone";
   // backend treats `***` the same way (it's the redacted sentinel returned from get_all).
   const pw = document.getElementById('setting-smtp-pass')?.value;
@@ -2990,7 +3057,7 @@ async function loadViews() {
   savedViewsCache.forEach((v) => {
     const li = document.createElement('li');
     li.innerHTML = `
-      <span><div class="vname">${escapeHtml(v.name)}</div><div class="vmeta">${v.lat.toFixed(2)}, ${v.lon.toFixed(2)} · z${v.zoom}</div></span>
+      <span><div class="vname">${escapeHtml(v.name)}</div><div class="vmeta">${Number(v.lat).toFixed(2)}, ${Number(v.lon).toFixed(2)} · z${Number(v.zoom) || ''}</div></span>
       <button class="secondary go">Go</button>
       <button class="secondary del">Delete</button>
     `;
@@ -3512,9 +3579,9 @@ function paintDigestCard(digest) {
   const t = digest.totals || {};
   const by = t.by_kind || {};
   const byBits = Object.entries(by).sort((a, b) => b[1] - a[1])
-    .map(([k, v]) => `<span class="digest-pill">${escapeHtml(k)} ×${v}</span>`).join('');
+    .map(([k, v]) => `<span class="digest-pill">${escapeHtml(k)} ×${Number(v) || 0}</span>`).join('');
   const topTypes = (digest.top_types || []).slice(0, 8)
-    .map((r) => `<tr><td>${escapeHtml(r.type_code)}</td><td>${r.sightings}</td></tr>`).join('');
+    .map((r) => `<tr><td>${escapeHtml(r.type_code)}</td><td>${Number(r.sightings) || 0}</td></tr>`).join('');
   const newTypes = (digest.new_types_in_window || []).map((t) => `<code>${escapeHtml(t)}</code>`).join(' ');
   const callouts = (digest.callouts || []).slice(0, 10).map((c) => {
     const when = new Date((c.ts || 0) * 1000).toLocaleTimeString();
@@ -3528,10 +3595,10 @@ function paintDigestCard(digest) {
     : '';
   card.innerHTML = `
     <section class="digest-headlines">
-      <div class="digest-stat"><div class="digest-stat-value">${t.events || 0}</div><div class="hint">alerts</div></div>
-      <div class="digest-stat"><div class="digest-stat-value">${t.unique_aircraft_today || 0}</div><div class="hint">unique today</div></div>
-      <div class="digest-stat"><div class="digest-stat-value">${t.peak_concurrent_aircraft || 0}</div><div class="hint">peak concurrent</div></div>
-      <div class="digest-stat"><div class="digest-stat-value">${Math.round(t.max_range_nm_today || 0)}</div><div class="hint">max range nm</div></div>
+      <div class="digest-stat"><div class="digest-stat-value">${Number(t.events) || 0}</div><div class="hint">alerts</div></div>
+      <div class="digest-stat"><div class="digest-stat-value">${Number(t.unique_aircraft_today) || 0}</div><div class="hint">unique today</div></div>
+      <div class="digest-stat"><div class="digest-stat-value">${Number(t.peak_concurrent_aircraft) || 0}</div><div class="hint">peak concurrent</div></div>
+      <div class="digest-stat"><div class="digest-stat-value">${Math.round(Number(t.max_range_nm_today) || 0)}</div><div class="hint">max range nm</div></div>
     </section>
     ${byBits ? `<div class="digest-breakdown" style="margin:8px 0">${byBits}</div>` : ''}
     ${topTypes ? `<section><h4>Top types in window</h4><table class="stats-table"><thead><tr><th>Type</th><th>Sightings</th></tr></thead><tbody>${topTypes}</tbody></table></section>` : ''}
@@ -3788,7 +3855,14 @@ function handleKeyboard(e) {
     }
     return;
   }
-  if (e.key === 'Escape') { hideContextMenu(); closeSettings(); closeEvents(); closeStats(); closeViews(); closeKeyboardHelp(); closeOperatorProfile(); }
+  if (e.key === 'Escape') {
+    // Escape dismisses the topmost layer. If a modal or the context menu is open it closes
+    // that and leaves the aircraft selection intact; otherwise it closes the detail panel.
+    const modalWasOpen = !!document.querySelector('.modal:not([hidden])');
+    const menuWasOpen = !!contextMenuEl;
+    hideContextMenu(); closeSettings(); closeEvents(); closeStats(); closeViews(); closeKeyboardHelp(); closeOperatorProfile();
+    if (!modalWasOpen && !menuWasOpen && state.selectedHex) deselectAircraft();
+  }
 }
 
 // Move the sidebar selection by `delta` rows (1 = down, -1 = up). Reads order directly
@@ -4065,6 +4139,7 @@ function bindUI() {
   document.getElementById('test-cloud-api-btn')?.addEventListener('click', testCloudApiConnection);
   document.getElementById('test-claude-cli-btn')?.addEventListener('click', testClaudeCliConnection);
   document.getElementById('setting-ai-provider')?.addEventListener('change', updateAIProviderPanel);
+  document.getElementById('setting-cloud-api-vendor')?.addEventListener('change', updateCloudApiVendorFields);
   document.getElementById('import-db').addEventListener('change', handleDbImport);
   document.addEventListener('keydown', handleKeyboard);
   // Bookmark right-click on aircraft markers

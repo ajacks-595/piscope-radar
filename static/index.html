@@ -558,13 +558,13 @@
 
         <section class="tab-section" data-section="ai">
           <h3>AI explanations</h3>
-          <p class="hint">Pick a backend for the "Explain this aircraft" button and the daily digest commentary. Three options: a local LLM via Ollama, a cloud API (your own Anthropic / OpenAI / Google key), or a Claude CLI shim that uses an existing Claude Code subscription. The Explain button hides itself when the selected provider isn't configured.</p>
+          <p class="hint">Pick a backend for the "Explain this aircraft" button and the daily digest commentary. Options: a local LLM via Ollama, a cloud API (your own Anthropic / OpenAI / Google key, or any OpenAI-compatible endpoint such as Ollama Cloud / LiteLLM / vLLM), or a Claude CLI shim that uses an existing Claude Code subscription. The Explain button hides itself when the selected provider isn't configured.</p>
           <div class="field">
             <label for="setting-ai-provider">Provider</label>
             <select id="setting-ai-provider">
               <option value="">None (AI disabled)</option>
               <option value="ollama">Ollama — local LLM</option>
-              <option value="cloud_api">Cloud API — Anthropic / OpenAI / Google</option>
+              <option value="cloud_api">Cloud API — Anthropic / OpenAI / Google / OpenAI-compatible</option>
               <option value="claude_cli">Claude CLI — shim over your Claude Code subscription</option>
             </select>
             <span class="hint">Each provider keeps its own config below — switching providers doesn't wipe the others' settings.</span>
@@ -600,7 +600,13 @@
                 <option value="anthropic">Anthropic (Claude)</option>
                 <option value="openai">OpenAI (GPT)</option>
                 <option value="google">Google (Gemini)</option>
+                <option value="openai_compatible">OpenAI-compatible — Ollama Cloud, LiteLLM, vLLM, Groq…</option>
               </select>
+            </div>
+            <div class="field" id="cloud-api-base-url-field" hidden>
+              <label for="setting-cloud-api-base-url">Base URL</label>
+              <input id="setting-cloud-api-base-url" type="url" placeholder="https://ollama.com/v1" autocomplete="off" />
+              <span class="hint">OpenAI-compatible <code>/v1</code> endpoint (must include the version segment). Examples: Ollama Cloud <code>https://ollama.com/v1</code>, Groq <code>https://api.groq.com/openai/v1</code>, LiteLLM <code>http://10.0.0.x:4000/v1</code>. The Pi must be able to reach it; link-local / cloud-metadata addresses are refused. Changing the endpoint (or the vendor) clears the stored API key — re-enter it with the new URL.</span>
             </div>
             <div class="field">
               <label for="setting-cloud-api-key">API key</label>
@@ -610,7 +616,7 @@
             <div class="field">
               <label for="setting-cloud-api-model">Model (optional)</label>
               <input id="setting-cloud-api-model" type="text" placeholder="(vendor default)" autocomplete="off" />
-              <span class="hint">Empty falls back to a cheap-and-capable default per vendor: <code>claude-haiku-4-5</code>, <code>gpt-4o-mini</code>, or <code>gemini-2.5-flash</code>.</span>
+              <span class="hint">Empty falls back to a cheap-and-capable default per vendor: <code>claude-haiku-4-5</code>, <code>gpt-4o-mini</code>, or <code>gemini-2.5-flash</code>. <strong>Required for OpenAI-compatible endpoints</strong> — set the model name your host exposes (e.g. <code>gpt-oss:120b</code> on Ollama Cloud).</span>
             </div>
             <label class="checkbox-row"><input id="setting-cloud-api-enabled" type="checkbox" /> Enable cloud API</label>
             <div class="fa-action-row" style="margin-top:8px">
@@ -623,7 +629,7 @@
             <div class="field">
               <label for="setting-claude-cli-url">Shim URL</label>
               <input id="setting-claude-cli-url" type="url" placeholder="http://10.0.0.x:8090" autocomplete="off" />
-              <span class="hint">Points at a <code>claude-shim</code> daemon (see <code>tools/claude-shim/</code> in the repo).</span>
+              <span class="hint">Points at a <code>claude-shim</code> daemon (see <code>tools/claude-shim/</code> in the repo). Changing the URL clears the stored token — re-enter it.</span>
             </div>
             <div class="field">
               <label for="setting-claude-cli-token">Bearer token</label>
@@ -668,6 +674,15 @@
             <input id="setting-frame-ancestors" type="text" placeholder="'self', http://10.0.0.x:8090, https://home.example.com" />
             <span class="hint">Takes effect on next page load — affects both the main UI and the embedded map view.</span>
           </div>
+          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 14px 0;" />
+          <h3>Network access</h3>
+          <p class="hint">PiScope has no login, so a malicious website could use DNS rebinding to reach it through your browser. With this on, requests are only served for LAN-style host names — IP addresses, single-label names like <code>piaware</code>, and <code>.local</code>/<code>.lan</code>/<code>.home</code>/<code>.home.arpa</code>/<code>.internal</code> — plus any names listed below. The host name you are using right now is added automatically when you save.</p>
+          <label class="checkbox-row"><input id="setting-host-guard" type="checkbox" /> Only serve LAN host names (DNS-rebinding guard)</label>
+          <div class="field">
+            <label for="setting-allowed-hosts">Allowed host names</label>
+            <input id="setting-allowed-hosts" type="text" placeholder="piscope.example.com, pi.tailnet.ts.net" autocomplete="off" />
+            <span class="hint">Comma-separated, exact match, port ignored. Also settable on the Pi with <code>piscope allow-host &lt;name&gt;</code>.</span>
+          </div>
         </section>
 
         <section class="tab-section" data-section="digest">
@@ -684,7 +699,7 @@
           <label class="checkbox-row"><input id="setting-digest-email" type="checkbox" /> Email via SMTP</label>
           <hr style="border:0;border-top:1px solid var(--separator);margin:10px 0;" />
           <h4>SMTP (used only if email delivery is enabled)</h4>
-          <div class="field"><label for="setting-smtp-host">SMTP host</label><input id="setting-smtp-host" type="text" placeholder="smtp.example.com" autocomplete="off" /></div>
+          <div class="field"><label for="setting-smtp-host">SMTP host</label><input id="setting-smtp-host" type="text" placeholder="smtp.example.com" autocomplete="off" /><span class="hint">Changing the host clears the stored password — re-enter it.</span></div>
           <div class="field"><label for="setting-smtp-port">SMTP port</label><input id="setting-smtp-port" type="number" min="1" max="65535" placeholder="587" /></div>
           <div class="field"><label for="setting-smtp-user">Username</label><input id="setting-smtp-user" type="text" autocomplete="off" /></div>
           <div class="field"><label for="setting-smtp-pass">Password</label><input id="setting-smtp-pass" type="password" placeholder="paste password (write-only)" autocomplete="off" /></div>

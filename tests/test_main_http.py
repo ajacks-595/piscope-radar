@@ -54,13 +54,102 @@ def test_security_headers_on_api_and_static(client):
     # Versioned static assets are immutable-cached; unversioned ones are not.
     r = client.get("/piscope/static/app.css?v=9.9.9")
     assert "immutable" in (r.headers.get("cache-control") or "")
+
+
+def test_static_mount_html_gets_csp(client):
+    # /piscope/static/index.html renders the whole app straight off the static mount.
+    # It used to carry no CSP at all: any origin could frame it (clickjacking past the
+    # frame_ancestors setting) and inline handlers from stored settings data executed.
+    client.post("/piscope/api/settings", json={"frame_ancestors": "'self', https://dash.example"})
+    r = client.get("/piscope/static/index.html")
+    assert r.status_code == 200
+    csp = r.headers.get("content-security-policy") or ""
+    assert csp.startswith("frame-ancestors 'self' https://dash.example")
+    assert "script-src 'self'" in csp
+    assert "unsafe-inline" not in csp and "nonce-" not in csp
+    # Non-HTML static assets are unaffected.
+    assert client.get("/piscope/static/app.js").headers.get("content-security-policy") is None
+
+
+def test_cross_site_writes_refused(client, monkeypatch):
+    # Body-less POSTs are CORS "simple" requests: a hostile page can fire them with
+    # no preflight. Browsers tag them Sec-Fetch-Site (Origin on older browsers).
+    from app.services import digest as digest_svc
+    ran = []
+
+    async def _fake_run(**kw):
+        ran.append(1)
+        return {"generated_at": 0}
+    monkeypatch.setattr(digest_svc, "run_digest", _fake_run)
+
+    for headers in ({"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"},
+                    {"Origin": "http://evil.example"}, {"Origin": "null"}):
+        r = client.post("/piscope/api/digest/run", headers=headers)
+        assert r.status_code == 403, headers
+    assert client.post("/piscope/api/flightaware/RCH123?confirm_over_budget=true",
+                       headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+    assert not ran
+    # Same-origin browser requests, direct navigation and non-browser clients pass.
+    for headers in ({"Sec-Fetch-Site": "same-origin"}, {"Sec-Fetch-Site": "none"},
+                    {"Origin": "http://testserver"}, {}):
+        assert client.post("/piscope/api/digest/run", headers=headers).status_code == 200, headers
+    assert len(ran) == 4
+    # Reads are untouched (dashboards consume GETs cross-origin server-side).
+    assert client.get("/piscope/api/version", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 200
+
+
+def test_flightaware_lookups_rate_limited(client, monkeypatch):
+    from app.services import flightaware
+    calls = []
+
+    async def _fake_lookup(callsign, *, allow_over_budget=False):
+        calls.append(callsign)
+        return {"flight": None}
+    monkeypatch.setattr(flightaware, "lookup", _fake_lookup)
+    codes = [client.post(f"/piscope/api/flightaware/TST{i}").status_code for i in range(25)]
+    assert codes[:20] == [200] * 20 and set(codes[20:]) == {429}
+    assert len(calls) == 20
+
+
+def test_tile_layer_overrides_referrer_policy(client):
+    # Regression guard: the page-wide `Referrer-Policy: no-referrer` (asserted above)
+    # strips the Referer from every sub-request, which makes OSM's volunteer tile
+    # servers answer "403r. Referer is required" and blank the map. The base Leaflet
+    # tile layer must therefore opt back in to a Referer via a per-element
+    # referrerPolicy, which overrides the document policy for just those tile <img>s.
+    # If a refactor drops this option, tiles silently break again — fail loudly here.
+    js = client.get("/piscope/static/app.js").text
+    assert "referrerPolicy:" in js
+    # Must be one of the policies OSM's usage policy accepts (i.e. not 'no-referrer'
+    # or 'same-origin'); we ship the most privacy-preserving acceptable value.
+    assert "'strict-origin-when-cross-origin'" in js
     r = client.get("/piscope/static/app.css")
     assert "immutable" not in (r.headers.get("cache-control") or "")
 
 
+def test_detail_panel_has_close_control(client):
+    # Regression guard: the aircraft detail panel must ship a way to dismiss it. It had
+    # none — no close button, no deselect, and Escape skipped it — so on mobile (where the
+    # panel is a full-screen `.detail.open` overlay) the only way back to the map was a
+    # full page reload. Keep the close button + its deselect handler wired.
+    js = client.get("/piscope/static/app.js").text
+    assert "function deselectAircraft" in js   # the clear-selection / close handler
+    assert "detail-close" in js                # the ✕ button (wired to deselectAircraft)
+
+
+def test_trail_render_cache_keys_on_newest_point(client):
+    # Regression guard: refreshTrails' diff-skip cache was keyed on trail length. Once a
+    # trail reaches trail_length every append shifts one point out, the length stays
+    # constant, and the drawn trail froze — on the live Pi every full trail lagged its
+    # aircraft by up to 9 nm after 30 s. The key must include the newest point.
+    js = client.get("/piscope/static/app.js").text
+    assert "const last = pts[pts.length - 1];" in js
+    assert "cached.last === last" in js
+
+
 def test_host_guard_blocks_public_hostnames(client):
     from app.services import settings as s
-    s.set_one("host_guard_enabled", True)   # opt-in; off by default
+    s.set_one("host_guard_enabled", True)
     # Enabled: a public FQDN in Host (the DNS-rebinding signature) is rejected…
     r = client.get("/piscope/api/version", headers={"host": "evil.example.com"})
     assert r.status_code == 421
@@ -74,7 +163,7 @@ def test_host_guard_blocks_public_hostnames(client):
 
 def test_host_guard_allow_list_and_disable(client):
     from app.services import settings as s
-    s.set_one("host_guard_enabled", True)   # opt-in; off by default
+    s.set_one("host_guard_enabled", True)
     s.set_one("allowed_hosts", "piscope.my-tailnet.ts.net")
     r = client.get("/piscope/api/version", headers={"host": "piscope.my-tailnet.ts.net"})
     assert r.status_code == 200
@@ -135,3 +224,29 @@ def test_health_reports_feed_staleness(client):
     assert body["status"] == "degraded"
     assert body["last_poll_age_s"] > 30
     feed_service.last_poll_at = 0.0   # reset for other tests
+
+
+def test_host_guard_on_by_default_for_fresh_install(client):
+    # temp_db is a brand-new DB → the 1.7.5 default (guard ON) applies.
+    r = client.get("/piscope/api/version", headers={"host": "evil.example.com"})
+    assert r.status_code == 421
+    assert "piscope allow-host evil.example.com" in r.text      # tells the owner how to fix it
+    assert client.get("/piscope/api/version", headers={"host": "10.0.0.231"}).status_code == 200
+
+
+def test_saving_settings_never_locks_out_the_current_host(client):
+    from app.services import settings as s
+    s.set_one("host_guard_enabled", False)
+    # Owner browsing via a custom DNS name turns the guard on: that name is kept.
+    r = client.post("/piscope/api/settings", headers={"host": "piscope.example.com"},
+                    json={"host_guard_enabled": True, "allowed_hosts": "pi.tailnet.ts.net"})
+    assert r.status_code == 200
+    assert s.get("allowed_hosts") == "pi.tailnet.ts.net, piscope.example.com"
+    assert client.get("/piscope/api/version", headers={"host": "piscope.example.com"}).status_code == 200
+    assert client.get("/piscope/api/version", headers={"host": "evil.example.com"}).status_code == 421
+    # Clearing the list from that same name keeps it; LAN-shaped hosts add nothing.
+    client.post("/piscope/api/settings", headers={"host": "piscope.example.com"},
+                json={"allowed_hosts": ""})
+    assert s.get("allowed_hosts") == "piscope.example.com"
+    client.post("/piscope/api/settings", headers={"host": "10.0.0.231"}, json={"allowed_hosts": ""})
+    assert s.get("allowed_hosts") == ""
