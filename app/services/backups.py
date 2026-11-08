@@ -6,15 +6,13 @@ backup itself only fires when the day rolls over, and we keep the last 14 zip fi
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 import os
-import time
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from . import restore
 from . import settings as settings_store
 
 
@@ -36,13 +34,16 @@ def _write_backup(dir_path: Path) -> Optional[Path]:
     target = _backup_path(dir_path)
     # Online backup + secret-stripping (shared with /api/export): the daily zip lands on
     # disk and may be synced/emailed, so it must NOT carry plaintext API keys / SMTP pass /
-    # provider tokens. redacted_sql_dump blanks them in a throwaway in-memory copy.
-    dump = settings_store.redacted_sql_dump(db_path)
-    bio = io.BytesIO()
-    with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("piscope.sql", dump)
-        zf.writestr("created_at.txt", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + "\n")
-    target.write_bytes(bio.getvalue())
+    # provider tokens. The dump streams straight into a sibling temp file that is
+    # renamed into place, so a crash mid-write never leaves a truncated "latest" zip
+    # and the dump is never held in memory (the Pi 3 has ~1 GB and no swap).
+    partial = target.with_name(target.name + ".partial")
+    try:
+        with open(partial, "wb") as fh:
+            restore.write_backup_zip(db_path, fh, {"created_at.txt": restore.utc_stamp()})
+        os.replace(partial, target)
+    finally:
+        partial.unlink(missing_ok=True)
     return target
 
 

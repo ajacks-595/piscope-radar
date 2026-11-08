@@ -109,6 +109,7 @@ const MARKER_HTML = `<div class="ac-svg-wrap">${AIRCRAFT_SVG}</div><div class="a
 // Maps callsign -> { origin_iata, destination_iata } or null if no route exists.
 const _routeCache = new Map();
 const _routeInFlight = new Set();
+const _routeRetryAt = new Map();   // callsign -> epoch ms before which we don't re-ask
 
 const state = {
   aircraft: new Map(),
@@ -337,7 +338,13 @@ function etaToOverhead(ac) {
   return { minutes: t, distance_nm: cpaDist };
 }
 
+// Resolved by the first aircraft frame from either source (WS snapshot or REST
+// fallback) — init() waits on it so the boot sequence (and __piscopeReady) follows
+// the first render, as it did when init awaited the REST fetch outright.
+let _onFirstAircraftFrame = null;
+
 function applyAircraftUpdate(data) {
+  if (_onFirstAircraftFrame) { _onFirstAircraftFrame(); _onFirstAircraftFrame = null; }
   state.connectionState = data.connection_state || 'polling';
   state.receiver = data.receiver || state.receiver;
   state.feedNow = data.now;
@@ -1065,13 +1072,16 @@ function refreshMapMarkers() {
     if (ac.lat == null || ac.lon == null) continue;
     seen.add(ac.hex);
     const existing = aircraftMarkers.get(ac.hex);
+    // Diff-skip: stringify everything visible into a signature and only touch the DOM
+    // when the signature changes. With 600+ aircraft updating every 2 s, this drops
+    // the per-tick CPU dramatically (most aircraft are unchanged from poll to poll).
+    // display_name / type_code feed the label and the accessible name, and change when
+    // enrichment backfills them — without them here those went stale.
+    const sig = `${ac.lat}|${ac.lon}|${ac.heading ?? 0}|${ac.altitude_band}|`
+              + `${ac.is_emergency_squawk?1:0}|${ac.on_ground?1:0}|${ac.military?1:0}|`
+              + `${state.selectedHex === ac.hex?1:0}|${state.settings.map_label_mode || 'off'}|`
+              + `${ac.display_name || ''}|${ac.type_code || ''}`;
     if (existing) {
-      // Diff-skip: stringify everything visible into a signature and only touch the DOM
-      // when the signature changes. With 600+ aircraft updating every 2 s, this drops
-      // the per-tick CPU dramatically (most aircraft are unchanged from poll to poll).
-      const sig = `${ac.lat}|${ac.lon}|${ac.heading ?? 0}|${ac.altitude_band}|`
-                + `${ac.is_emergency_squawk?1:0}|${ac.on_ground?1:0}|${ac.military?1:0}|`
-                + `${state.selectedHex === ac.hex?1:0}|${state.settings.map_label_mode || 'off'}`;
       if (existing._sig !== sig) {
         existing._sig = sig;
         existing.setLatLng([ac.lat, ac.lon]);
@@ -1079,7 +1089,8 @@ function refreshMapMarkers() {
       }
     } else {
       const marker = createMarker(ac);
-      marker.addTo(markersLayer);
+      marker._sig = sig;
+      marker.addTo(markersLayer);   // the 'add' handler applies the visual state
       aircraftMarkers.set(ac.hex, marker);
     }
   }
@@ -1102,12 +1113,17 @@ function buildSnapshotAircraft() {
   return out;
 }
 
+// Marker hit box: the glyph is always 22 px, but the clickable box is 24 px with a
+// mouse and 32 px on touch screens (WCAG 2.5.8 / Lighthouse target-size want ≥ 24 px).
+// Must match the .aircraft-marker sizes in app.css.
+const MARKER_BOX_PX = window.matchMedia && window.matchMedia('(pointer: coarse)').matches ? 32 : 24;
+
 function createMarker(ac) {
   const icon = L.divIcon({
     className: 'aircraft-marker',
     html: MARKER_HTML,
-    iconSize: [22, 22],
-    iconAnchor: [11, 11],
+    iconSize: [MARKER_BOX_PX, MARKER_BOX_PX],
+    iconAnchor: [MARKER_BOX_PX / 2, MARKER_BOX_PX / 2],
   });
   const marker = L.marker([ac.lat, ac.lon], { icon, riseOnHover: true });
   // Belt-and-braces label click: the label sits outside the 22×22 icon bounding box,
@@ -1116,6 +1132,11 @@ function createMarker(ac) {
   // Attaching an explicit handler on the marker's DOM after first render guarantees
   // the label is a proper click target across all browsers.
   marker.on('add', () => {
+    // The icon element only exists once the marker is on the map, so a brand-new (or
+    // re-added) marker gets its rotation / colour / classes / accessible name here.
+    // createMarker's own updateMarkerVisual() call runs before that and was a no-op,
+    // which left new markers unstyled and unnamed until their signature next changed.
+    updateMarkerVisual(marker, state.aircraft.get(ac.hex) || ac);
     const el = marker.getElement();
     const label = el?.querySelector('.ac-label');
     if (label) label.onclick = (e) => {
@@ -1140,7 +1161,6 @@ function createMarker(ac) {
       { label: 'Open on adsb.fi', run: () => window.open(`https://globe.adsb.fi/?icao=${ac.hex}`, '_blank', 'noopener') },
     ]);
   });
-  updateMarkerVisual(marker, ac);
   return marker;
 }
 
@@ -1159,6 +1179,11 @@ function updateMarkerVisual(marker, ac) {
   if (ac.is_emergency_squawk) cls += ' emergency';
   if (ac.military) cls += ' military';
   el.className = cls;
+  // Leaflet gives keyboard-focusable markers role="button"; give that button a name
+  // (screen readers announced an unnamed button per aircraft). Name + type only — both
+  // stable, so this doesn't rewrite the DOM on every position update.
+  const accName = (ac.display_name || ac.hex.toUpperCase()) + (ac.type_code ? `, ${ac.type_code}` : '');
+  if (el.getAttribute('aria-label') !== accName) el.setAttribute('aria-label', accName);
   el.style.color = ac.is_emergency_squawk ? 'var(--alert)' : resolveBandColor(ac.altitude_band);
   el.style.zIndex = isSelected ? 1000 : (ac.is_emergency_squawk ? 800 : '');
   updateMarkerLabel(el, ac);
@@ -1212,23 +1237,32 @@ function maybePrefetchRoutes() {
     _routePrefetchScheduled = false;
     const callsigns = new Set();
     for (const ac of state.aircraft.values()) {
-      if (ac.callsign && !_routeCache.has(ac.callsign) && !_routeInFlight.has(ac.callsign)) {
+      if (ac.callsign && !_routeCache.has(ac.callsign) && !_routeInFlight.has(ac.callsign)
+          && !((_routeRetryAt.get(ac.callsign) || 0) > Date.now())) {
         callsigns.add(ac.callsign);
       }
     }
     // Cap per-cycle work — at 400 aircraft we'd hammer the server otherwise.
     const batch = [...callsigns].slice(0, 20);
+    // Bound the label route cache like the enrichment caches: a wall dashboard sees
+    // thousands of callsigns a day. Oldest entries go first (Map insertion order).
+    while (_routeCache.size > 4000) _routeCache.delete(_routeCache.keys().next().value);
     for (const cs of batch) {
       _routeInFlight.add(cs);
       try {
-        const data = await fetch(API.adsbdb(cs)).then((r) => r.json());
-        if (data && (data.origin_iata || data.destination_iata)) {
+        const data = await fetchJsonOk(API.adsbdb(cs));
+        if (data === null) {
+          // Transient upstream failure: retry this callsign in a couple of minutes
+          // rather than caching "no route" for the rest of the session.
+          _routeRetryAt.set(cs, Date.now() + 120000);
+          if (_routeRetryAt.size > 4000) _routeRetryAt.delete(_routeRetryAt.keys().next().value);
+        } else if (data.origin_iata || data.destination_iata) {
           _routeCache.set(cs, { origin_iata: data.origin_iata, destination_iata: data.destination_iata });
         } else {
           _routeCache.set(cs, null);
         }
       } catch (e) {
-        _routeCache.set(cs, null);
+        _routeRetryAt.set(cs, Date.now() + 120000);
       } finally {
         _routeInFlight.delete(cs);
       }
@@ -1659,7 +1693,7 @@ function updateDetailLiveSection() {
 async function fetchEnrichment(ac) {
   // hexdb (registration, type)
   const hex = ac.hex;
-  cachedFetch('hexdb', hex, () => fetch(API.hexdb(hex)).then((r) => r.json())).then((data) => {
+  cachedFetch('hexdb', hex, () => fetchJsonOk(API.hexdb(hex))).then((data) => {
     if (!data) return;
     // Guard against a slow lookup for a previously-selected aircraft repainting
     // the now-current aircraft's subtitle (the photo/route callbacks below
@@ -1675,7 +1709,7 @@ async function fetchEnrichment(ac) {
   // photo gallery — render a small carousel for any aircraft with more than one photo.
   const photoEl = document.getElementById('detail-photo');
   if (photoEl) {
-    cachedFetch('photo', hex, () => fetch(API.photo(hex)).then((r) => r.json())).then((data) => {
+    cachedFetch('photo', hex, () => fetchJsonOk(API.photo(hex))).then((data) => {
       if (!photoEl.isConnected) return;
       const photos = Array.isArray(data?.photos) ? data.photos
         : (data?.photo_url ? [{ url: data.photo_url, photographer: data.photographer, link: data.link }] : []);
@@ -1693,7 +1727,7 @@ async function fetchEnrichment(ac) {
   const routeEl = document.getElementById('detail-route');
   if (routeEl) {
     if (!ac.callsign) { routeEl.innerHTML = '<span class="hint">No callsign — cannot look up route.</span>'; return; }
-    cachedFetch('adsbdb', ac.callsign, () => fetch(API.adsbdb(ac.callsign)).then((r) => r.json())).then((data) => {
+    cachedFetch('adsbdb', ac.callsign, () => fetchJsonOk(API.adsbdb(ac.callsign))).then((data) => {
       if (!routeEl.isConnected) return;
       if (data && data.origin_icao && data.destination_icao) {
         routeEl.innerHTML = `
@@ -1719,11 +1753,21 @@ async function fetchEnrichment(ac) {
           });
         }
         drawRouteLineOnMap(data, ac);
+      } else if (data === null) {
+        // Upstream hiccup (502/429) — not cached, so re-selecting retries it.
+        routeEl.innerHTML = '<span class="hint err">Route lookup unavailable — try again shortly</span>';
       } else {
         routeEl.innerHTML = '<span class="hint">No route found</span>';
       }
     }).catch(() => routeEl.innerHTML = '<span class="hint err">Route lookup failed</span>');
   }
+}
+
+// JSON body of a successful response, or null for any non-2xx (the enrichment
+// endpoints answer 502 when an upstream is down). Throws only on network errors.
+async function fetchJsonOk(url) {
+  const r = await fetch(url);
+  return r.ok ? r.json() : null;
 }
 
 const _ENRICH_CACHE_CAP = 2000;   // per kind (hexdb/adsbdb/photo)
@@ -1737,6 +1781,9 @@ function cachedFetch(cacheKey, key, fn) {
     return Promise.resolve(v);
   }
   return fn().then((data) => {
+    // null = transient failure: don't pin it for the whole session (the server backs
+    // off upstream retries itself), so the next selection can succeed.
+    if (data == null) return data;
     cache.set(key, data);
     // Bound growth: a busy receiver sees thousands of distinct hexes/callsigns a
     // day, so an uncapped Map leaked tens of MB over a multi-day wall-dashboard
@@ -1782,7 +1829,17 @@ async function syncAiSection(ac) {
       // Prefer the iteration-7 structured `provider` block (gives a meaningful label for
       // any provider). Fall back to legacy `model` for browsers still on the iter-6 shell.
       const label = status.provider?.model || status.model || '';
-      hint.textContent = label ? `via ${label}` : '';
+      // reachable === false → the last background ping failed (e.g. the claude-shim
+      // is down); say so up front instead of letting every click fail. null = unknown.
+      if (status.provider?.reachable === false) {
+        hint.textContent = `⚠ ${label || 'AI provider'} unreachable`;
+        hint.title = status.provider.error || '';
+        hint.classList.add('err');
+      } else {
+        hint.textContent = label ? `via ${label}` : '';
+        hint.title = '';
+        hint.classList.remove('err');
+      }
     }
     // Replace the click handler each render so it always targets the current aircraft.
     btn.onclick = () => fetchExplain(ac);
@@ -2252,7 +2309,9 @@ async function loadSettings() {
   state.settings = await res.json();
   applySettingsToUI();
   populateSettingsModal();
-  await refreshBudget();
+  // The FlightAware budget bar isn't needed to draw the map; don't hold map setup
+  // (and so the first tile, the LCP) behind another round-trip.
+  refreshBudget();
 }
 
 // Single source of truth for theme application — both the topbar select and the
@@ -2447,9 +2506,11 @@ function populateSettingsModal() {
   if (el('setting-smtp-port'))       el('setting-smtp-port').value = s.smtp_port || 587;
   if (el('setting-smtp-user'))       el('setting-smtp-user').value = s.smtp_user || '';
   if (el('setting-smtp-pass'))       el('setting-smtp-pass').value = '';
+  if (el('smtp-pass-status'))        el('smtp-pass-status').textContent = s.smtp_pass_set ? 'A password is currently stored. Leave blank to keep it.' : 'No password stored.';
   if (el('setting-smtp-from'))       el('setting-smtp-from').value = s.smtp_from || '';
   if (el('setting-smtp-to'))         el('setting-smtp-to').value = s.smtp_to || '';
   if (el('setting-smtp-starttls'))   el('setting-smtp-starttls').checked = s.smtp_use_starttls !== false;
+  if (el('setting-smtp-ssl'))        el('setting-smtp-ssl').checked = !!s.smtp_use_ssl;
 }
 
 // Latitude / longitude validators — returns the parsed number or null. Anything outside the
@@ -2543,6 +2604,7 @@ async function saveSettings() {
     smtp_from:    document.getElementById('setting-smtp-from')?.value.trim() || '',
     smtp_to:      document.getElementById('setting-smtp-to')?.value.trim() || '',
     smtp_use_starttls: !!document.getElementById('setting-smtp-starttls')?.checked,
+    smtp_use_ssl: !!document.getElementById('setting-smtp-ssl')?.checked,
   };
   // Network access. Only sent when the controls exist, so a mismatched cached shell
   // can never silently switch the guard off. The server adds the Host this page was
@@ -3786,8 +3848,14 @@ async function handleDbImport(e) {
     const res = await fetch(API.importDb, { method: 'POST', headers: { 'X-PiScope-Import': '1' }, body: fd });
     const data = await res.json();
     if (!res.ok) { status.textContent = `Failed: ${data.detail || res.statusText}`; status.className = 'hint err'; return; }
-    status.textContent = 'Restored! Reloading…'; status.className = 'hint ok';
-    setTimeout(() => location.reload(), 800);
+    // The server resets settings rows the backup carried invalid values for; give the
+    // user time to read which ones before the reload.
+    const reset = Array.isArray(data.settings_reset) ? data.settings_reset : [];
+    status.textContent = reset.length
+      ? `Restored, but these settings were invalid and reset to defaults: ${reset.join(', ')}. Reloading…`
+      : 'Restored! Reloading…';
+    status.className = 'hint ok';
+    setTimeout(() => location.reload(), reset.length ? 5000 : 800);
   } catch (err) {
     status.textContent = `Error: ${err.message}`; status.className = 'hint err';
   } finally { e.target.value = ''; }
@@ -4280,8 +4348,9 @@ function installDropHandler() {
       const res = await fetch(API.importDb, { method: 'POST', headers: { 'X-PiScope-Import': '1' }, body: fd });
       const data = await res.json();
       if (!res.ok) { toast(`Restore failed: ${data.detail || res.statusText}`); return; }
-      toast('Restored! Reloading…');
-      setTimeout(() => location.reload(), 800);
+      const reset = Array.isArray(data.settings_reset) ? data.settings_reset : [];
+      toast(reset.length ? `Restored; reset invalid settings: ${reset.join(', ')}` : 'Restored! Reloading…');
+      setTimeout(() => location.reload(), reset.length ? 4000 : 800);
     } catch (err) { toast(`Restore failed: ${err.message}`); }
   });
 }
@@ -4544,25 +4613,57 @@ async function init() {
     map.on('moveend', updateEmbedExpandLink);
     map.on('zoomend', updateEmbedExpandLink);
   }
+  const firstFrame = new Promise((resolve) => { _onFirstAircraftFrame = resolve; });
   const client = new PiScopeClient();
   client.connect();
-  // Best-effort initial REST fetch in case WS hasn't connected yet
-  try {
-    const res = await fetch('/piscope/api/aircraft');
-    if (res.ok) applyAircraftUpdate(await res.json());
-  } catch (e) {}
+  // The WS sends a full snapshot as soon as it connects, so only fall back to the
+  // REST snapshot if no frame has arrived shortly (e.g. a proxy that doesn't pass the
+  // WS upgrade). Fetching both unconditionally downloaded the same ~200 KB twice on
+  // every load — a real cost on mobile (2026-11-08 Lighthouse review).
+  const restFallback = setTimeout(async () => {
+    if (!_onFirstAircraftFrame) return;   // WS already delivered
+    try {
+      const res = await fetch('/piscope/api/aircraft');
+      if (res.ok) applyAircraftUpdate(await res.json());
+    } catch (e) {}
+  }, 1500);
+  await Promise.race([firstFrame, new Promise((r) => setTimeout(r, 6000))]);
+  clearTimeout(restFallback);
   // PWA — register the service worker. We use the `/piscope/sw.js` route (not the static
   // file) because that response sets `Service-Worker-Allowed: /piscope`, which is required
   // for the SW to control the whole /piscope tree from a file that lives inside /piscope/static.
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/piscope/sw.js', { scope: '/piscope' }).catch(() => {});
   }
+  renderPwaStatus();
   // Polish add-ons
   installDropHandler();
   checkVersionBump();
   bindWizard();
   // Wait a beat so the toast doesn't collide with a fresh-load version-bump toast.
   setTimeout(maybeShowOnboarding, 400);
+  // Stable automation hook: init() has finished wiring everything (E2E boot gate).
+  window.__piscopeReady = true;
+}
+
+// Service workers only exist in a secure context (HTTPS, or http://localhost). On the
+// usual http://<pi-ip>/piscope the browser hides navigator.serviceWorker entirely, so
+// registration above is skipped and there is no offline shell — say so in Settings
+// rather than letting the README's PWA promise fail silently.
+function renderPwaStatus() {
+  const el = document.getElementById('pwa-status');
+  if (!el) return;
+  if ('serviceWorker' in navigator) {
+    el.textContent = 'Offline app shell is active in this browser. Use your browser\'s ' +
+      '"Install" or "Add to Home Screen" to install PiScope as an app.';
+    el.className = 'hint ok';
+  } else {
+    el.textContent = 'This page is served over plain HTTP, so the browser disables service ' +
+      'workers: "Add to Home Screen" still makes a shortcut, but there is no offline app shell. ' +
+      'For the full PWA, serve PiScope over HTTPS (with authentication in front of it) or open ' +
+      'it as http://localhost on the Pi itself.';
+    el.className = 'hint';
+  }
 }
 
 document.addEventListener('DOMContentLoaded', init);

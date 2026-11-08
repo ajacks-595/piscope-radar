@@ -56,12 +56,28 @@ def _load_rules() -> dict[str, Any]:
              "unusual": dict(_UNUSUAL_DEFAULTS)}
     try:
         raw = json.loads(_DATA_PATH.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:   # missing/unreadable file, bad JSON or UTF-8
         log.warning("notable_rules.json unavailable (%s); military rules limited to dbFlags", exc)
         return empty
+    if not isinstance(raw, dict):
+        # A hand-edit that leaves a list/scalar at the top level used to raise
+        # AttributeError at import time and stop the whole app from starting.
+        log.warning("notable_rules.json: top level must be a JSON object; ignoring the file")
+        return empty
+
+    def _section(key: str, kind: type) -> Any:
+        """A top-level section of the expected container type, else an empty one."""
+        value = raw.get(key)
+        if value is None:
+            return kind()
+        if not isinstance(value, kind):
+            log.warning("notable_rules.json: %s must be a JSON %s; ignoring it", key,
+                        "array" if kind is list else "object")
+            return kind()
+        return value
 
     ranges: list[dict[str, str]] = []
-    for entry in raw.get("military_hex_ranges") or []:
+    for entry in _section("military_hex_ranges", list):
         if not isinstance(entry, dict):
             continue
         start = str(entry.get("start") or "").strip().lower()
@@ -73,7 +89,7 @@ def _load_rules() -> dict[str, Any]:
                        "label": str(entry.get("label") or f"{start}-{end}")[:80]})
 
     prefixes: dict[str, str] = {}
-    for code, label in (raw.get("military_callsign_prefixes") or {}).items():
+    for code, label in _section("military_callsign_prefixes", dict).items():
         code = str(code).strip().upper()
         if not _PREFIX_RE.match(code) or not isinstance(label, str) or not label:
             log.warning("notable_rules.json: dropping malformed prefix %r", code)
@@ -88,7 +104,7 @@ def _load_rules() -> dict[str, Any]:
         for key in ("low_alt_max_ft", "high_alt_min_ft", "no_callsign_min_polls"):
             try:
                 unusual[key] = int(raw_unusual.get(key, _UNUSUAL_DEFAULTS[key]))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 log.warning("notable_rules.json: non-numeric unusual.%s — using default", key)
 
     return {"military_hex_ranges": ranges, "military_callsign_prefixes": prefixes,
@@ -232,7 +248,8 @@ def notable_in_window(since_ts: Optional[float], limit: int = 80) -> dict[str, A
 
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT hex, date, first_ts, last_ts, polls, callsign, registration, "
+            # bandit B608 false positive: fragments/placeholder lists are constant SQL; values are bound
+            "SELECT hex, date, first_ts, last_ts, polls, callsign, registration, "  # nosec B608
             "type_code, military, max_alt, min_alt, max_gs, max_range_nm "
             f"FROM aircraft_sightings WHERE {sight_where} AND {cand_where} "
             "ORDER BY last_ts DESC LIMIT 2000",
@@ -316,16 +333,31 @@ def returning_in_window(since_ts: Optional[float], min_days: int = 2,
     min_days = max(2, min(int(min_days or 2), 365))
     limit = max(1, min(int(limit or 100), 500))
 
+    # (hex, date) is the PRIMARY KEY, so COUNT(*) per hex IS the distinct-day count —
+    # COUNT(DISTINCT date) made SQLite build a temp b-tree per group (~4.7 s on the
+    # Pi 3 over a 212k-row ledger). With a window, only hexes active in it can
+    # qualify, so the idx_sightings_date range picks those first and the GROUP BY
+    # walks just their PK ranges. The window's first UTC day may hold rows from
+    # before since_ts; HAVING last_seen >= since_ts keeps the result exact.
+    params: list[Any] = []
+    active_filter = ""
+    if since_ts:
+        since_date = time.strftime("%Y-%m-%d", time.gmtime(since_ts))
+        active_filter = "WHERE hex IN (SELECT hex FROM aircraft_sightings WHERE date >= ?) "
+        params.append(since_date)
+    params += [min_days, since_ts or 0, limit]
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT hex, COUNT(DISTINCT date) AS days_seen, MIN(first_ts) AS first_seen, "
+            # bandit B608 false positive: fragments/placeholder lists are constant SQL; values are bound
+            "SELECT hex, COUNT(*) AS days_seen, MIN(first_ts) AS first_seen, "  # nosec B608
             "       MAX(last_ts) AS last_seen, SUM(polls) AS total_polls, "
             "       MAX(military) AS military "
             "FROM aircraft_sightings "
+            + active_filter +
             "GROUP BY hex "
             "HAVING days_seen >= ? AND last_seen >= ? "
             "ORDER BY days_seen DESC, last_seen DESC LIMIT ?",
-            (min_days, since_ts or 0, limit),
+            params,
         ).fetchall()
         out = [dict(r) for r in rows]
         latest: dict[str, dict[str, Any]] = {}
@@ -334,7 +366,8 @@ def returning_in_window(since_ts: Optional[float], min_days: int = 2,
             # airline frames; show the most recent non-null per hex).
             marks = ",".join("?" * len(out))
             attr_rows = conn.execute(
-                "SELECT hex, callsign, registration, type_code FROM aircraft_sightings "
+                # bandit B608 false positive: fragments/placeholder lists are constant SQL; values are bound
+                "SELECT hex, callsign, registration, type_code FROM aircraft_sightings "  # nosec B608
                 f"WHERE hex IN ({marks}) ORDER BY date ASC",
                 [r["hex"] for r in out],
             ).fetchall()

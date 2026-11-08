@@ -54,7 +54,7 @@ def _safe_text(value: Any, max_len: int = 80) -> str:
 def _bounded_int(value: Any, lo: int, hi: int) -> Optional[int]:
     try:
         n = int(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # OverflowError: int(inf)
         return None
     if not (lo <= n <= hi):
         return None
@@ -64,7 +64,7 @@ def _bounded_int(value: Any, lo: int, hi: int) -> Optional[int]:
 def _bounded_float(value: Any, lo: float, hi: float) -> Optional[float]:
     try:
         n = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # OverflowError: float(10**400)
         return None
     if not (lo <= n <= hi):
         return None

@@ -49,7 +49,7 @@ def temp_db(monkeypatch):
     # file, and the import test writes a .pre-import.bak; unlinking only the .db
     # leaked the rest into the temp dir (measured: ~1,900 orphaned -wal files /
     # 417 MB on the Pi, whose /tmp is on the SD card).
-    for suffix in ("", "-wal", "-shm", ".pre-import.bak", ".import.tmp"):
+    for suffix in ("", "-wal", "-shm", ".pre-import.bak", ".import.tmp", ".import.tmp.scratch"):
         try:
             os.unlink(path + suffix)
         except OSError:

@@ -103,7 +103,10 @@ def test_buffer_altitude_spike_gate(temp_db):
     """In-envelope single-frame spikes (live example: A339 'at' 46,675 ft) must
     not register as extremes; the gate self-heals within one frame."""
     buf = SightingsBuffer()
-    ts = time.time()
+    # Noon UTC today, not time.time(): the coverage-gap half spans 10 minutes, and the
+    # ledger is keyed by UTC day, so a run in the last 10 minutes before midnight split
+    # the sighting across two rows and failed (seen at 23:51 UTC, 2026-11-08).
+    ts = (time.time() // 86400) * 86400 + 12 * 3600
     buf.observe_poll([_ac(altitude_baro=37000)], ts)
     buf.observe_poll([_ac(altitude_baro=46675)], ts + 2)   # spike — gated
     buf.observe_poll([_ac(altitude_baro=37200)], ts + 4)   # lag frame (vs spike) — gated

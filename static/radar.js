@@ -104,10 +104,19 @@ class RadarSweep {
     const trailFraction = this.variant === 'modern' ? 0.25 : 0.45;
     const trailArc = Math.PI * 2 * trailFraction;
 
-    // Pull accent colour from the theme.
-    const styles = getComputedStyle(document.documentElement);
-    const accent = styles.getPropertyValue('--accent').trim() || '#00ff40';
-    const accentMuted = styles.getPropertyValue('--accent-muted').trim() || accent;
+    // Accent colours from the theme. getComputedStyle every frame (~30 fps) forced a
+    // style recalc per frame; resolve them only when the theme changes. The key is the
+    // data-theme attribute plus the root's inline style (embed mode sets theme tokens
+    // there) — both plain attribute reads, no style recalc.
+    const root = document.documentElement;
+    const colorKey = (root.getAttribute('data-theme') || '') + '|' + root.style.cssText;
+    if (colorKey !== this._colorKey) {
+      const styles = getComputedStyle(root);
+      const a = styles.getPropertyValue('--accent').trim() || '#00ff40';
+      this._colors = { accent: a, accentMuted: styles.getPropertyValue('--accent-muted').trim() || a };
+      this._colorKey = colorKey;
+    }
+    const { accent, accentMuted } = this._colors;
 
     this._drawSweep(ctx, cx, cy, radius, angle, trailArc, accent);
     this._drawLeadingEdge(ctx, cx, cy, radius, angle, accent);

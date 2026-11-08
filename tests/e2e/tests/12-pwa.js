@@ -19,6 +19,13 @@ module.exports = {
       t.ok('manifest parses and is scoped to /piscope/', m && /\/piscope/.test(m.scope || ''), JSON.stringify(m && m.scope));
     }
 
+    // Secure-context honesty (2026-11-08 P2-5): navigator.serviceWorker only exists on
+    // HTTPS / localhost. Settings → General must say which mode this browser is in.
+    const pwa = await page.evaluate(`(()=>{const el=document.getElementById('pwa-status');return {sw:'serviceWorker' in navigator, secure:window.isSecureContext, text:el?el.textContent:''};})()`);
+    t.ok('PWA status hint present in Settings → General', pwa.text.length > 0, JSON.stringify(pwa));
+    t.ok('PWA hint matches service-worker availability', pwa.sw ? /active/i.test(pwa.text) : /plain HTTP/i.test(pwa.text), JSON.stringify(pwa));
+    t.eq('serviceWorker API present exactly in a secure context', pwa.sw, pwa.secure);
+
     // SW registration (async after load) — give it a moment, then check; soft if not yet ready.
     await sleep(800);
     const reg = await page.evaluate(`navigator.serviceWorker?navigator.serviceWorker.getRegistration('/piscope/').then(r=>r?{scope:r.scope}:null).catch(()=>null):null`);

@@ -20,13 +20,53 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Union
 
 from . import settings as settings_store
 from ._http import get_client, validate_external_url_async
 
 
 log = logging.getLogger("piscope.webhooks")
+
+# Event kinds an endpoint may subscribe to. Beyond the four aircraft kinds this includes
+# the watchdog system kinds (feed_down/feed_recovered) and the daily digest: the Settings
+# UI offers checkboxes for all of these and the feed loop / digest service fan out to them,
+# so they MUST survive the save filter. (Previously only the four aircraft kinds were kept,
+# which silently disabled receiver-offline alerts and digest-to-webhook delivery.)
+WEBHOOK_EVENT_TYPES = frozenset({
+    "emergency", "military", "watchlist", "rare",
+    "feed_down", "feed_recovered", "digest", "weekly_digest",
+})
+WEBHOOK_KINDS = frozenset({"discord", "slack", "mattermost", "ntfy", "generic"})
+MAX_ENDPOINTS = 50
+
+
+def clean_endpoints(endpoints: Any) -> list[dict[str, Any]]:
+    """Normalise a client- or backup-supplied webhook list: http(s) URLs only, known
+    kinds and event types, labels capped. Lenient by design — a bad entry is dropped,
+    it doesn't fail the whole list. Shared by POST /api/webhooks and /api/import."""
+    if not isinstance(endpoints, list):
+        return []
+    clean: list[dict[str, Any]] = []
+    for ep in endpoints[:MAX_ENDPOINTS]:
+        if not isinstance(ep, dict):
+            continue
+        url = ep.get("url")
+        url = url.strip() if isinstance(url, str) else ""
+        if not url.startswith(("http://", "https://")) or len(url) > 2048:
+            continue
+        kind = ep.get("kind")
+        kind = kind.lower() if isinstance(kind, str) else "generic"
+        if kind not in WEBHOOK_KINDS:
+            kind = "generic"
+        types = ep.get("types")
+        types = [t for t in types if isinstance(t, str) and t in WEBHOOK_EVENT_TYPES] \
+            if isinstance(types, list) else []
+        label = ep.get("label")
+        clean.append({"kind": kind, "url": url, "types": types,
+                      "label": label[:60] if isinstance(label, str) else ""})
+    return clean
+
 
 # Strong references to in-flight fire-and-forget posts. asyncio only holds a weak
 # reference to tasks created via create_task, so without this a webhook POST can be
@@ -67,8 +107,9 @@ def _format_text(kind: str, ac: dict[str, Any]) -> str:
     return f"{label}: **{name}** ({type_code}, {dist_str}){extra_str} at {when}"
 
 
-def _body_for(kind_endpoint: str, message: str, ac: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """Return (content_type, body_dict) tailored to the endpoint flavour."""
+def _body_for(kind_endpoint: str, message: str, ac: dict[str, Any]) -> tuple[str, Union[str, dict[str, Any]]]:
+    """Return (content_type, body) tailored to the endpoint flavour: a JSON-able dict,
+    or plain text for ntfy."""
     if kind_endpoint == "discord":
         return "application/json", {"content": message}
     if kind_endpoint in ("slack", "mattermost"):
@@ -99,7 +140,7 @@ async def _post_one(endpoint: dict[str, Any], message: str, ac: dict[str, Any]) 
     try:
         content_type, body = _body_for(kind_endpoint, message, ac)
         client = await get_client()
-        if kind_endpoint == "ntfy":
+        if isinstance(body, str):   # ntfy
             # ntfy expects text/plain body + optional Title / Tags headers.
             headers = {
                 "Content-Type": "text/plain; charset=utf-8",

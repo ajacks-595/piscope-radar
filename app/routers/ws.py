@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
@@ -13,6 +14,8 @@ from ..services.feed import feed_service
 log = logging.getLogger("piscope.ws")
 
 router = APIRouter()
+
+_LAST_CAP_LOG = 0.0
 
 
 def _origin_is_same_host(ws: WebSocket) -> bool:
@@ -46,9 +49,21 @@ async def aircraft_ws(ws: WebSocket) -> None:
         log.warning("Rejected cross-origin WS connect from %s", ws.headers.get("origin"))
         await ws.close(code=status.WS_1008_POLICY_VIOLATION)
         return
-    await ws.accept()
     queue = feed_service.subscribe()
+    if queue is None:
+        global _LAST_CAP_LOG
+        now = time.monotonic()
+        if now - _LAST_CAP_LOG > 60.0:   # a connect flood must not flood the journal too
+            _LAST_CAP_LOG = now
+            log.warning("Rejecting WS connects: live-map subscriber limit reached")
+        # Accept-then-close so the browser sees 1013 "Try Again Later" (a close
+        # before accept surfaces only as an opaque handshake failure).
+        await ws.accept()
+        await ws.close(code=status.WS_1013_TRY_AGAIN_LATER)
+        return
     try:
+        # Inside the try so the finally unsubscribes even if the handshake fails.
+        await ws.accept()
         # Send the latest snapshot immediately so the UI doesn't have to wait
         # for the next poll cycle. Initial-connect snapshot is rare (once per
         # client connect), so still using send_json here is fine.

@@ -10,7 +10,7 @@ module.exports = {
     t.ok('detail content hidden in embed', !(await page.visible('#detail-content')));
     await t.visible('map still present in embed', page, '#map');
 
-    const locked = await page.evaluate(`(typeof map!=='undefined'&&map&&map.dragging)?(!map.dragging.enabled()):null`);
+    const locked = await page.evaluate(`(window.__map&&window.__map.dragging)?(!window.__map.dragging.enabled()):null`);
     t.ok('interactive=locked disables map dragging', locked === true, String(locked));
     t.gt('embed expand link present', await page.count('#embed-expand-link'), 0);
 

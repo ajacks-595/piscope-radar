@@ -58,9 +58,15 @@ a { color: var(--accent); }
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
-.pill.idle    { background: var(--separator); color: var(--secondary-text); }
-.pill.polling { background: var(--accent-muted); color: var(--primary-text); }
-.pill.error   { background: var(--alert); color: #fff; }
+/* Text on --surface-bg clears WCAG AA (4.5:1) in every theme but Solarized Dark, whose
+   own body text sits at that level; the old fills (--accent-muted / --separator) failed
+   in most themes (nord: 3.5:1). State is carried by the ring colour instead. */
+.pill.idle    { background: var(--surface-bg); color: var(--primary-text); box-shadow: inset 0 0 0 1px var(--separator); }
+.pill.polling { background: var(--surface-bg); color: var(--primary-text); box-shadow: inset 0 0 0 1px var(--accent); }
+/* White on --alert failed AA in 13 of 15 themes (nord 4.1:1); black clears it in all but
+   Sectional, whose darker red keeps white (5.1:1). */
+.pill.error   { background: var(--alert); color: #000; }
+[data-theme="sectional"] .pill.error { color: #fff; }
 
 .topbar-actions { display: flex; align-items: center; gap: 8px; }
 .icon-button {
@@ -613,7 +619,7 @@ input[type="range"] {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  color: var(--tertiary-text);
+  color: var(--secondary-text);   /* --tertiary-text is decorative: ~1.4:1 in several themes */
   padding: 40px 24px;
   text-align: center;
   font-size: 12px;
@@ -822,16 +828,23 @@ input[type="range"] {
   position: absolute !important;
   top: 0;
   left: 0;
-  width: 22px;
-  height: 22px;
+  /* 24 px hit box around a 22 px glyph (the inset below); 32 px on touch screens.
+     Keep in sync with MARKER_BOX_PX in app.js. */
+  width: 24px;
+  height: 24px;
   pointer-events: auto;
 }
 .aircraft-marker .ac-svg-wrap {
   position: absolute;
-  inset: 0;
+  inset: 1px;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+@media (pointer: coarse) {
+  .aircraft-marker { width: 32px; height: 32px; }
+  .aircraft-marker .ac-svg-wrap { inset: 5px; }
+  .aircraft-marker .ac-label { left: 29px; top: 3px; }
 }
 .aircraft-marker svg {
   width: 100%;
@@ -858,8 +871,9 @@ input[type="range"] {
    Two styles: compact (callsign only) and full (tar1090-style block). */
 .aircraft-marker .ac-label {
   position: absolute;
-  left: 24px;
-  top: -2px;
+  /* Same spot beside the glyph as before the hit box grew: glyph edge + 2 px. */
+  left: 25px;
+  top: -1px;
   /* Clickable: the entire label area selects the aircraft, matching the icon's behaviour.
      Previously pointer-events: none meant only the small SVG was a hit target. `cursor:
      pointer` makes the affordance obvious. */

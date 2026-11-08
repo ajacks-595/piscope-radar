@@ -66,8 +66,8 @@ serves a polished LAN web UI on `http://<pi>/piscope`: live map with Leaflet, th
 sweep, detail panel with route + photo + AI brief, events log, polar coverage diagram,
 heatmap, historical analytics (traffic patterns, operators, notable/returning aircraft,
 weekly Mattermost-ready summary), webhooks, replay, PWA install. No auth — LAN-only by
-design. Currently `VERSION = "1.6.0"` (see `app/main.py`); latest tag `v1.5.0` — converges
-at next `main` promotion.
+design. Currently `VERSION = "1.7.6"` on `dev` (see `app/main.py`); `main` and the latest
+tag are `v1.7.5` — they converge at the next `main` promotion.
 
 ## Architecture & tech stack
 
@@ -83,7 +83,9 @@ at next `main` promotion.
   never overwrite via rsync). Tables: settings, events, daily_stats, feed_snapshots,
   aircraft_notes, seen_types, polar_coverage, position_heatmap, bookmarks, records,
   fa_budget, aircraft_sightings, hourly_stats. Migrations live in
-  `app/services/settings.py:_migrate` keyed off `PRAGMA user_version` (currently 3).
+  `app/services/settings.py:_migrate` keyed off `PRAGMA user_version` (currently 4 =
+  `settings.SCHEMA_VERSION`; tests assert a fresh DB lands on it). Schema creation lives in
+  `settings.ensure_schema(conn)`, which `/api/import` also uses to build the restore target.
   The two analytics tables (v3) are derived, fed by the feed loop via
   `analytics.SightingsBuffer`, and pruned to `analytics_retention_days` (default 365);
   `events` is deliberately never pruned — it doubles as notable-aircraft history.
@@ -302,8 +304,18 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
   `/api/explain/followup` collapse upstream errors into `"no response from <provider>"`.
   Plumbing the shim's `error` field (and the cloud API vendor's error message)
   through to the frontend would make debugging much easier — known polish opportunity.
-- **GitHub Release page for v1.4.0+ is deferred** until a larger milestone. Latest
-  tag is still `v1.4.0` even though `main` is at v1.8.0.
+- **GitHub Release pages are deferred** until a larger milestone. Tags exist up to
+  `v1.7.5` (= `main`), but the last GitHub Release page is `v1.4.0`.
+- **Pending Pi-side config (needs sudo, from the 2026-11-08 fixes):** re-run
+  `sudo bash install.sh` on the Pi to pick up (a) uvicorn `--no-server-header` in the
+  unit and (b) the corrected lighttpd `server.max-request-size = 66560` — the unit is
+  KILObytes, so the deployed `26214400` is a 25 GiB no-op cap. Until then a backup
+  upload is bounded only by the app's own 64 MiB check.
+- **Dependency refresh is tested but not applied.** fastapi 0.162 / starlette 1.10 /
+  uvicorn 0.54 / websockets 17.4 / pydantic 2.14 / anyio 4.16 / python-multipart 0.0.33
+  pass the full suite (2026-11-08), but fastapi ≥ that line adds `opentelemetry-api` as a
+  hard dependency — a new package on the Pi, against the no-new-deps rule. Decide before
+  bumping; Pi-test either way.
 - **Co-authored-by footer convention** isn't established in this repo. If you start
   adding it, document it here and in project memory.
 
@@ -341,3 +353,64 @@ every review; full report in `.repo-review/2026-09-30T185602Z/REPORT.md`.
   confirm the init event lists 0 tools and 0 MCP servers. Without the flags it
   inherited 24 tools and 10 MCP servers (Gmail, Drive, …). Never add `--bare`
   (breaks OAuth).
+
+Full report for the 2026-11-08 review: `.repo-review/2026-11-08T121013Z/REPORT.md`.
+
+- **2026-11-08 — Reject non-finite settings numbers on write AND cache load.**
+  `settings._v_int` does `int(float(v))`; raw JSON `Infinity`/`1e400` raises
+  `OverflowError`, which `set_many`/`_populate_cache` don't catch. A crafted
+  `/api/import` dump containing `poll_interval='Infinity'` wedges every
+  settings-dependent endpoint (and kills the feed task). Test: raw `POST
+  /api/settings` with `Infinity` must be 400 (not 500), and importing a dump with
+  a non-finite settings value must leave the service responsive.
+- **2026-11-08 — SSRF guard must unwrap IPv4-mapped IPv6.** On the Pi's Python
+  3.11, `::ffff:169.254.169.254` is not `is_link_local`, and
+  `::ffff:100.100.100.200` is never in the blocked set; `/api/webhooks/test`
+  accepted both (200) while dotted/decimal/hex forms were blocked. Test every
+  encoded form including `ip.ipv4_mapped` recursion; never let httpx receive a
+  mapped metadata address.
+- **2026-11-08 — Backup import must cap the decompressed `piscope.sql`.** The
+  20 MB compressed upload cap does not bound `zf.read()`; a zip bomb can exhaust
+  Pi memory. Test a zip whose `file_size` exceeds the cap is rejected before
+  materialising, and keep the ATTACH/DETACH authorizer (it also denies
+  `VACUUM INTO`, verified).
+- **2026-11-08 — E2E boot gate must not use `typeof map`.** The `<div id="map">`
+  named DOM global satisfies it before `app.js` loads, so modules 01/02/03/07/11
+  flake on a slow link. Use `window.__map && typeof window.__map.getZoom ===
+  'function'` (or add `window.__piscopeReady = true` at the end of `init()`).
+  With the fixed gate the suite is 164/164.
+- **2026-11-08 — PWA/service worker needs a secure context.** On
+  `http://<pi-ip>/piscope`, `navigator.serviceWorker` is `undefined` and the
+  registration is silently skipped, so the README's LAN-HTTP PWA claim is not
+  true. Test the secure-context branch explicitly (HTTPS/localhost), or surface
+  a UI hint when the API is unavailable.
+
+Bug classes the 2026-11-08 fix pass found with no dedicated test (now covered by
+`tests/test_review_2026_11.py` and e2e module `14-a11y`):
+
+- **2026-11-08 — FastAPI's 422 handler 500s on non-finite input.** Python's JSON
+  parser accepts `NaN`/`Infinity` (and turns `1e400` into `inf`); the default handler
+  echoes the bad `input` and starlette's strict encoder then raises. `main.py` now
+  installs a handler that stringifies them. Check: POST `{"altitude_baro": Infinity}`
+  to every pydantic-validated endpoint → 422, never 500. Fuzz query floats with
+  `inf`/`nan`/`1e309` too (`/api/dashboard/summary` int()'d them for its cache key).
+- **2026-11-08 — A restore must rebuild into the canonical schema, not trust the
+  dump's.** A dump redefining `settings` without its PRIMARY KEY broke every upsert.
+  `services/restore.py` copies rows into `ensure_schema()` tables under a whitelist
+  authorizer (no SELECT/functions/triggers/views/PRAGMA, UPDATE only on
+  sqlite_master). Re-derive the whitelist from a real export if iterdump changes:
+  log authorizer actions while restoring (see the review's probe script pattern).
+- **2026-11-08 — Size backup caps from the live DB, not a guess.** The live export was
+  already 15.9 MB against a 20 MB upload cap (≈ +3 MB/month toward 365-day
+  retention). Check `zip size / cap` each review; restore must stay streaming (Pi
+  3 = 921 MB RAM, no swap; measured 65 s / 64 MB RSS for 50 MB of SQL).
+- **2026-11-08 — lighttpd size directives are in KB.** `server.max-request-size`
+  counts kilobytes; verify units for every proxy limit against the lighttpd docs.
+- **2026-11-08 — requirements.txt must equal the Pi freeze.** Three transitive pins
+  (annotated-doc, pydantic-core, typing-inspection) were missing. Check: fresh venv
+  from requirements.txt, `pip freeze` == the pin list (modulo `_`/`-`).
+- **2026-11-08 — Contrast across ALL themes, not the one Lighthouse saw.** Lighthouse
+  only audits the active theme; compute WCAG ratios for every `[data-theme]` token
+  pair a component uses (state variants too — the pill's error fill failed in 13/15
+  themes while the audited state passed).
+

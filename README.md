@@ -36,7 +36,7 @@
 - **Multi-receiver merge** — point at extra tar1090s and dedupe by hex
 - **Dashboard integration** — drop PiScope into a home dashboard: a chrome-less embeddable map view, a JSON summary API, and a real-time event stream (see [Dashboard integration](#dashboard-integration))
 - **Browser notifications + audio chimes** with stereo-panning by aircraft bearing
-- **PWA install** — adds to your phone homescreen, offline-aware
+- **PWA install** — adds to your phone homescreen; offline app shell when served over HTTPS (see [Mobile / PWA](#mobile--pwa))
 - **Keyboard shortcuts** for everything (`?` for help)
 - **`piscope` admin CLI** for status / logs / backup / restore / health
 
@@ -76,6 +76,15 @@ stays readable.
 The topbar wraps onto a second row below 900 px. Install to your phone homescreen via
 the browser's "Add to Home Screen" — it gets a manifest + service worker and behaves
 like a real app.
+
+> **The offline shell needs HTTPS.** Browsers only run service workers in a *secure
+> context*: an `https://` origin, or `http://localhost`. On the plain
+> `http://<pi-ip>/piscope` LAN URL, "Add to Home Screen" still creates a homescreen
+> shortcut from the manifest, but the browser disables the service worker, so there is
+> no offline app shell. For the full PWA, put PiScope behind an HTTPS reverse proxy (or a
+> tunnel such as Cloudflare Tunnel) **with authentication in front of it**, since PiScope
+> itself has none. Settings → General → *Install as an app* shows which mode your
+> browser is in.
 
 <img src="docs/screenshots/09-mobile.jpg" alt="Mobile responsive layout" width="320" />
 
@@ -194,7 +203,8 @@ piscope help
   Shared prompt-building, sanitisation, LRU cache, and in-flight de-duplication; each provider
   is a small module behind a common `generate` / `ping` interface.
 - **PWA** — manifest + service worker. App shell is cached for offline-ish use; live data
-  always hits the network.
+  always hits the network. Service workers need a secure context (HTTPS or localhost), so
+  on plain-HTTP LAN access only the manifest-based homescreen shortcut applies.
 
 ## Tech stack at a glance
 

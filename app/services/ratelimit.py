@@ -47,8 +47,3 @@ def allow(name: str, *, limit: int, window_s: float) -> bool:
 def reset() -> None:
     """Clear all buckets. Used by the test fixtures for isolation."""
     _BUCKETS.clear()
-
-
-def _bucket_size(name: str) -> int:
-    """Current in-window count for a bucket (diagnostics / tests)."""
-    return len(_BUCKETS.get(name, ()))

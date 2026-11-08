@@ -193,13 +193,13 @@
           <div class="dual-slider">
             <div class="dual-track"></div>
             <div class="dual-fill" id="alt-fill"></div>
-            <input id="alt-min" type="range" min="0" max="60000" step="500" value="0" />
-            <input id="alt-max" type="range" min="0" max="60000" step="500" value="60000" />
+            <input id="alt-min" type="range" aria-label="Minimum altitude (feet)" min="0" max="60000" step="500" value="0" />
+            <input id="alt-max" type="range" aria-label="Maximum altitude (feet)" min="0" max="60000" step="500" value="60000" />
           </div>
         </div>
         <div class="filter-row range-row">
           <label>Max distance <span class="range-values"><span id="dist-max-val">∞</span> nm</span></label>
-          <input id="dist-max" type="range" min="10" max="500" step="10" value="500" />
+          <input id="dist-max" type="range" aria-label="Maximum distance (nautical miles)" min="10" max="500" step="10" value="500" />
         </div>
         <label class="checkbox-row">
           <input id="show-ground" type="checkbox" checked /> Show ground traffic
@@ -702,10 +702,11 @@
           <div class="field"><label for="setting-smtp-host">SMTP host</label><input id="setting-smtp-host" type="text" placeholder="smtp.example.com" autocomplete="off" /><span class="hint">Changing the host clears the stored password — re-enter it.</span></div>
           <div class="field"><label for="setting-smtp-port">SMTP port</label><input id="setting-smtp-port" type="number" min="1" max="65535" placeholder="587" /></div>
           <div class="field"><label for="setting-smtp-user">Username</label><input id="setting-smtp-user" type="text" autocomplete="off" /></div>
-          <div class="field"><label for="setting-smtp-pass">Password</label><input id="setting-smtp-pass" type="password" placeholder="paste password (write-only)" autocomplete="off" /></div>
+          <div class="field"><label for="setting-smtp-pass">Password</label><input id="setting-smtp-pass" type="password" placeholder="paste password (write-only)" autocomplete="off" /><span class="hint" id="smtp-pass-status"></span></div>
           <div class="field"><label for="setting-smtp-from">From</label><input id="setting-smtp-from" type="email" placeholder="piscope@yourdomain" /></div>
           <div class="field"><label for="setting-smtp-to">To</label><input id="setting-smtp-to" type="email" placeholder="you@yourdomain" /></div>
-          <label class="checkbox-row"><input id="setting-smtp-starttls" type="checkbox" /> Use STARTTLS (recommended)</label>
+          <label class="checkbox-row"><input id="setting-smtp-starttls" type="checkbox" /> Use STARTTLS (recommended, usually port 587)</label>
+          <label class="checkbox-row"><input id="setting-smtp-ssl" type="checkbox" /> Use implicit TLS / SMTPS instead (usually port 465)</label>
           <hr style="border:0;border-top:1px solid var(--separator);margin:14px 0;" />
           <h3>Weekly summary</h3>
           <p class="hint">Once a week, a 7-day rollup (traffic, busiest hour/day, top types and operators, notable + new returning aircraft, records broken) is posted to every webhook subscribed to <code>weekly_digest</code> under Notifications. For Mattermost, add a <em>Mattermost webhook</em> there pointing at your channel's incoming-webhook URL and tick <em>Weekly</em>.</p>
@@ -782,6 +783,9 @@
               This value is embedded in the User-Agent header as <code>PiScope-Radar/1.0 (+&lt;your value&gt;)</code>.
             </span>
           </div>
+          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 8px 0;" />
+          <h3>Install as an app (PWA)</h3>
+          <p id="pwa-status" class="hint" aria-live="polite"></p>
         </section>
       </div>
       <footer class="modal-footer">
@@ -790,9 +794,12 @@
     </div>
   </div>
 
-  <script src="/piscope/static/vendor/leaflet/leaflet.js"></script>
-  <script src="/piscope/static/vendor/leaflet.heat/leaflet-heat.js"></script>
-  <script src="/piscope/static/radar.js"></script>
-  <script src="/piscope/static/app.js"></script>
+  <!-- defer: download in parallel with parsing, execute in this order after the document
+       is parsed but before DOMContentLoaded (which app.js's init() listens for). Plain
+       synchronous tags were render-blocking — ~1.7 s on Lighthouse's throttled mobile run. -->
+  <script defer src="/piscope/static/vendor/leaflet/leaflet.js"></script>
+  <script defer src="/piscope/static/vendor/leaflet.heat/leaflet-heat.js"></script>
+  <script defer src="/piscope/static/radar.js"></script>
+  <script defer src="/piscope/static/app.js"></script>
 </body>
 </html>

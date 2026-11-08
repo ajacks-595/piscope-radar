@@ -33,7 +33,7 @@ import logging
 from typing import Any, Optional
 
 from .. import settings as settings_store
-from .._http import get_client, validate_external_url
+from .._http import get_client, validate_external_url, validate_external_url_async
 
 
 log = logging.getLogger("piscope.ai.cloud_api")
@@ -99,6 +99,10 @@ async def ping() -> dict[str, Any]:
         base = _base_url()
         if base is None:
             return {"ok": False, "error": "Base URL not set, wrong scheme, or blocked (link-local/metadata)"}
+        try:
+            await validate_external_url_async(base, resolve=True)
+        except ValueError as exc:
+            return {"ok": False, "error": f"URL blocked: {exc}"}
     elif not key:
         return {"ok": False, "error": "API key not set"}
     model = _model()
@@ -157,6 +161,11 @@ async def generate(prompt: str, *, num_predict: int = 360, temperature: float = 
         base = _base_url()
         if base is None:
             log.info("openai_compatible base URL not set or blocked")
+            return None
+        try:
+            await validate_external_url_async(base, resolve=True)
+        except ValueError as exc:
+            log.info("openai_compatible base URL refused: %s", exc)
             return None
     elif not key:
         return None
