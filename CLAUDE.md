@@ -66,15 +66,18 @@ serves a polished LAN web UI on `http://<pi>/piscope`: live map with Leaflet, th
 sweep, detail panel with route + photo + AI brief, events log, polar coverage diagram,
 heatmap, historical analytics (traffic patterns, operators, notable/returning aircraft,
 weekly Mattermost-ready summary), webhooks, replay, PWA install. No auth — LAN-only by
-design. Currently `VERSION = "1.7.6"` on `dev` (see `app/main.py`); `main` and the latest
-tag are `v1.7.5` — they converge at the next `main` promotion.
+design. Currently `VERSION = "1.8.0"` on `dev` (see `app/main.py`) — the UI redesign;
+`main` and the latest tag are `v1.7.5` — they converge at the next `main` promotion.
 
 ## Architecture & tech stack
 
 - **Backend** — Python 3.9+, FastAPI + asyncio + httpx + uvicorn, SQLite (WAL mode).
   Polls a tar1090 instance every 2 s, fans out via WebSocket, enriches via hexdb /
   adsbdb / planespotters / FlightAware.
-- **Frontend** — vanilla HTML/CSS/JS, no framework. Leaflet 1.9.4 + Leaflet.heat 0.2.0
+- **Frontend** — vanilla HTML/CSS/JS, no framework, no build step. Since 1.8.0 the map is
+  **full-bleed** and all chrome (top bar, aircraft list, map-control rail, detail panel,
+  popovers) floats over it as translucent "glass" panels — see *UI shell* under Key
+  conventions. Leaflet 1.9.4 + Leaflet.heat 0.2.0
   **vendored under `static/vendor/`** (since 1.7.1 — no CDN at runtime; the files were
   byte-verified against the SRI pins that previously guarded the unpkg copies; CSP
   script-src is `'self'` + nonce only). Canvas radar-sweep overlay (`static/radar.js`),
@@ -158,14 +161,21 @@ app/
       cloud_api.py         # Anthropic / OpenAI / Google dispatcher
       claude_cli.py        # HTTP client for the shim daemon
 static/
-  index.html               # Single-page shell
-  app.js / app.css         # All client logic + styles
+  index.html               # Single-page shell + inline icon sprite + the one inline bootstrap script
+  app.js / app.css         # All client logic + styles (app.css derives glass/hairline/text tokens)
   radar.js                 # Canvas radar-sweep overlay
   sw.js                    # Service worker — CACHE auto-derived on the wire (iter 9.4)
-  themes.css               # 11 themes
+  themes.css               # 15 theme palettes (+ `external` for embeds); `midnight` is the default
+  icons/piscope.svg        # App icon (favicon / manifest)
+  icons/aircraft.svg       # Jet silhouette — list-row glyph mask + notification icon
   data/airports.json       # Bundled airport overlay
 docs/screenshots/          # README screenshots
 tools/
+  gen-icons.js             # Source of truth for the icon sprite + aircraft silhouettes
+                           # (`node tools/gen-icons.js` rewrites the sprite in index.html; `--check` verifies)
+  dev/                     # Local harness: mock_tar1090.py (synthetic feed, placeholder London
+                           # receiver) + run_dev.py (PiScope on 127.0.0.1 with a throwaway DB).
+                           # http://localhost is a secure context, so the service worker runs here.
   claude-shim/             # Stdlib-only HTTP daemon that wraps `claude --print`.
                            # Runs on the dev host. shim.py + install.sh + systemd unit + README.
 install.sh                 # Pi installer (run as `sudo bash install.sh` ON the Pi)
@@ -226,6 +236,29 @@ service; existing `piscope.db` is backed up to `piscope.db.bak` first.
 - **Cache invalidation by versioning, not eviction.** `_PROMPT_VERSION` in
   `ai/_common.py` is part of every cache key; bump it when the prompt template
   changes so old entries get bypassed.
+- **UI shell (1.8.0).** The rules that keep the redesign coherent:
+  - *Layout:* `#map` fills the viewport; panels are absolutely positioned over it. State
+    lives on `<html>`: `data-sidebar="collapsed"` (desktop, remembered in localStorage) /
+    `"open"` (drawer, ≤860px), `data-detail="open"`, `data-glass="off"`. CSS turns those
+    into `--inset-left/right`; `mapInsets()` in app.js is the JS twin. **Any pan/fit must
+    go through `panToVisible` / `ensureVisible` / `centerForVisible` / `fitToData`** — a
+    bare `map.panTo` centres under a panel.
+  - *Icons:* never emoji. Add to `ICONS` in `tools/gen-icons.js`, run it, then use
+    `<svg class="icon"><use href="#i-NAME"/></svg>` in markup or `icon('NAME')` in app.js.
+    `tests/test_ui_shell.py` fails on a referenced-but-undefined (or unused) icon.
+  - *Colour tokens:* themes define only the base palette in `themes.css`, as plain
+    `rgb()`/`#hex` (radar.js parses them). `app.css` derives `--glass-bg`, `--hairline`,
+    `--hover`, `--accent-soft`, … with `color-mix()`. For **text/icons on a panel** use
+    `--accent-text` / `--alert-text` / `--success-text` / `--warning-text`, not the raw
+    fill tokens (per-theme `--accent-lift` / `--status-lift` keep them AA-legible).
+    `--on-accent` / `--on-alert` / `--on-warning` are the ink colours for fills.
+  - *Controls:* icon buttons need `aria-label`; hover hints are `data-tip` (CSS tooltips,
+    `data-tip-pos="start|end|left|right"` at screen edges), not `title`.
+  - *One inline script.* `index.html` has exactly one bare `<script>` (the pre-paint
+    bootstrap: stale-service-worker guard, stored theme/prefs, embed params); the
+    `/piscope` route stamps the CSP nonce onto it. No inline handlers anywhere.
+  - *Per-browser prefs* (collapsed list, filter panel, translucent panels, last theme
+    for first paint) are localStorage `piscope_*` keys, deliberately not server settings.
 - **Commits use "Iteration N (part M): subject" prefix** for multi-part iterations,
   plain "subject" for one-shot changes. See `git log --oneline` for the established
   style.
@@ -291,7 +324,34 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
     feed delivered nothing through the proxy and abandoned streams leaked upstream
     connections. E2E module `13-sse` guards this.
 
+11. **Service worker + browser HTTP cache (fixed in 1.8.0 — keep it fixed).** Two bugs
+    made secure-context installs (HTTPS / localhost; not the plain-HTTP Pi) run old assets
+    after an upgrade: `cache.addAll()` went through the HTTP cache, so a *new* worker could
+    precache the previous release's CSS and serve it cache-first; and `caches.match()` +
+    `ignoreSearch` let a not-yet-replaced worker answer the new page's `?v=` requests from
+    its old cache. `sw.js` now precaches with `cache: 'reload'`, reads only its own cache,
+    and steps aside when `?v=` ≠ its shell version; `index.html`'s bootstrap compares the
+    stamped `<meta name="piscope-shell">` tag with the cache names and, if a worker from
+    another build is in control, purges + unregisters + reloads once. E2E `12-pwa` compares
+    every cached shell file with what the server serves.
+
+12. **CartoDB basemaps need an API key now.** `basemaps.cartocdn.com` answers every keyless
+    tile request with an "API KEY REQUIRED" placeholder (HTTP 200, same ~2.5 kB PNG for
+    every tile; seen 2026-11-10). The six Carto presets were removed and the themes that
+    defaulted to them moved to Esri bases. A stored `map_style` naming one falls back to
+    the theme default. If maps look wrong, suspect the tile provider before the code.
+
+13. **Headless Chrome is `(hover: none)`.** CSS tooltips (`[data-tip]`) are disabled for
+    touch devices via that media query, so they never show in headless screenshots; force
+    them with an injected style if you need to capture one. Also: static assets are
+    `immutable` per `?v=VERSION`, so `tests/e2e/lib/cdp.js` disables the HTTP cache —
+    otherwise iterating on CSS/JS under one VERSION tests yesterday's files.
+
 ## Open items / future work
+
+- **1.8.0 (UI redesign) is on `dev` only** — not deployed to the Pi, not pushed. The README
+  screenshots were regenerated from a synthetic feed (placeholder London receiver, drawn
+  sample photo); re-shoot from real traffic if preferred.
 
 - **claude-shim is NOT installed right now** (found 2026-09-30: no `/opt/claude-shim`, no
   unit; only `/etc/claude-shim.env` remains), but the Pi's `claude_cli_url` still points at
@@ -384,6 +444,29 @@ Full report for the 2026-11-08 review: `.repo-review/2026-11-08T121013Z/REPORT.m
   registration is silently skipped, so the README's LAN-HTTP PWA claim is not
   true. Test the secure-context branch explicitly (HTTPS/localhost), or surface
   a UI hint when the API is unavailable.
+
+Bug classes found during the 2026-11-10 UI redesign (1.8.0) with no dedicated test at the
+time (now covered by `tests/test_ui_shell.py` and e2e modules `12-pwa`, `15-shell`):
+
+- **2026-11-10 — The service worker's cache must equal what the server serves.** A new
+  worker precached stale CSS from the HTTP cache (gotcha #11). Check on HTTPS/localhost:
+  for every entry in the current `piscope-shell-*` cache, cached body == `fetch(url,
+  {cache:'reload'})` body; and no other `piscope-shell-*` cache lingers after activation.
+- **2026-11-10 — Third-party tile providers change terms.** Carto started returning
+  placeholder tiles with HTTP 200 (gotcha #12), so nothing errored. Check each theme's
+  default basemap in a browser: two different tiles must not be byte-identical, and the
+  E2E "tiles rendered" check alone does not prove they are maps.
+- **2026-11-10 — Canvas colours built by string-append.** The polar chart did
+  `accent + '33'`, valid only for `#hex` tokens; in `rgb()` themes the fill silently fell
+  back to an opaque blob. Any colour handed to canvas / Leaflet must go through
+  `colorWithAlpha()` (radar.js) and be tested in an `rgb()` theme and a `#hex` theme.
+- **2026-11-10 — Text colour ≠ fill colour.** Status/accent tokens tuned as fills failed
+  AA as small text in five themes. Re-run a contrast audit over **derived** pairs too
+  (accent text on the accent wash, secondary text on tiles), compositing the alpha
+  washes over the panel colour; raw token pairs miss them.
+- **2026-11-10 — Pans must respect the floating panels.** With a full-bleed map, a bare
+  `map.panTo()` puts the target under the list or the detail panel. E2E `15-shell` asserts
+  the selected aircraft's container point lies between `mapInsets()`.
 
 Bug classes the 2026-11-08 fix pass found with no dedicated test (now covered by
 `tests/test_review_2026_11.py` and e2e module `14-a11y`):

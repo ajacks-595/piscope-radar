@@ -28,23 +28,25 @@ is byte-identical before/after every run.
 
 ## 0. Automated coverage at a glance
 
-Run `node tests/e2e/run.js` (see `README.md`). 14 modules / 164 checks, all non-destructive:
+Run `node tests/e2e/run.js` (see `README.md`). 15 modules / 270 checks, all non-destructive:
 
 | Module | Area | Checks |
 |---|---|---|
 | 01 | Page load & shell | title, map, tiles, sidebar, topbar, `/api/version`, `/health`, zero load exceptions |
 | 02 | API (read-only) | 24 GET endpoints → 2xx + shape |
 | 03 | Sidebar filters | search / sort / category / altitude (ephemeral) |
-| 04 | Detail panel | select, ✕ close, Esc, modal-layering, mobile slide on/off-screen |
+| 04 | Detail panel | select, ✕ close, Esc, modal-layering, phone bottom sheet slides on/off-screen |
 | 05 | Modals | open/✕/Esc for events·stats·views·settings; events+stats tabs; analytics ranges; `?` help |
 | 06 | Keyboard | `/ e s v z r ?` and Esc (ephemeral shortcuts only) |
-| 07 | Themes | all 14 themes via `applyTheme(persist:false)`; radar canvas; terminal grid |
-| 08 | Overlay controls | presence + `aria-pressed` of the 8 toggles (no clicks — they persist) |
+| 07 | Themes | all 15 themes via `applyTheme(persist:false)`, each resolving its palette tokens; picker options match; radar canvas; terminal grid |
+| 08 | Overlay controls | top-bar / map-rail controls; opens the Layers popover and checks the 6 overlay switches, label-mode control and badge (no clicks — they persist) |
 | 09 | Replay | enter via `p`, slider range, scrub, exit to live |
 | 10 | URL share-state | `#center/#zoom/#theme` applied on load; pan writes the hash |
 | 11 | Embed mode | `?embed=1` strips chrome; `interactive=locked` freezes the map |
-| 12 | PWA | `sw.js` scope header + version-stamped cache tag; manifest scope |
+| 12 | PWA | `sw.js` scope header + version-stamped cache tag matching the page's shell-tag meta; manifest scope; in a secure context every cached shell file equals what the server serves |
 | 13 | Dashboard SSE via proxy | `/api/dashboard/events` first bytes < 5 s (not proxy-buffered); aborted stream reclaimed server-side within ~one 25 s heartbeat |
+| 14 | Accessibility smoke | slider + marker names, hit-box size, contrast of pill / list rows / active chip (alpha-aware) |
+| 15 | UI shell | icon sprite + button names, full-bleed map + `mapInsets()`, rail zoom, list collapse (`[`) and phone drawer, layers / theme / overflow popovers, category chips, filter panel + badge, selection stays in the clear map area |
 | — | Non-destructive guard | settings unchanged across the whole run |
 
 ---
@@ -116,23 +118,26 @@ Run `node tests/e2e/run.js` (see `README.md`). 14 modules / 164 checks, all non-
 
 | ID | Pri | Mode | Case |
 |---|---|---|---|
-| PS-THEME-01 | P1 | 🤖 `[07]` | All 14 themes apply to `<html data-theme>` (driven via `persist:false` so no write). |
+| PS-THEME-01 | P1 | 🤖 `[07]` | All 15 themes apply to `<html data-theme>` and resolve their palette tokens (driven via `persist:false` so no write). |
 | PS-THEME-02 | P2 | 🤖 `[07]` | Radar themes render `#radar-canvas`; terminal theme draws the coordinate grid. |
-| PS-THEME-03 | P2 | ⚠️ DESTRUCTIVE | Pick a theme from `#theme-select` (persists `theme`). **Restore:** re-select the original theme. |
+| PS-THEME-03 | P2 | ⚠️ DESTRUCTIVE | Pick a theme card in the top-bar theme popover (`#open-themes`) or Settings → Appearance (persists `theme`). **Restore:** re-select the original theme. |
+| PS-THEME-05 | P2 | 🤖 `[15]` | Theme popover shows one card per theme with exactly the active one marked; swatches render their own palettes. |
+| PS-THEME-06 | P3 | 👁 MANUAL | Settings → Appearance → *Translucent panels* off makes every panel opaque (per-browser, `localStorage`); reload keeps it. **Restore:** switch back on. |
 | PS-THEME-04 | P3 | 👁 MANUAL | Dark-filter tile presets invert correctly (`#map[data-tile-filter="dark"]`); marker colours track altitude bands. |
 
 ## 7. Overlays & modes — `PS-OVL`
 
 | ID | Pri | Mode | Case |
 |---|---|---|---|
-| PS-OVL-01 | P1 | 🤖 `[08]` | The 8 toggle controls exist with a valid `aria-pressed` (read-only — they persist on click). |
+| PS-OVL-01 | P1 | 🤖 `[08]` | The toggle controls exist with a valid `aria-pressed` — audio / follow / replay on the bars, the six overlays inside the Layers popover (`#open-layers` or `L`). Read-only — they persist on click. |
 | PS-OVL-02 | P1 | 🤖 `[09]` | Replay (`p`/`#toggle-replay`) is ephemeral: bar appears, slider scrubs, `#replay-live` exits. |
-| PS-OVL-03 | P2 | ⚠️ DESTRUCTIVE | Weather (`#toggle-weather`) adds a RainViewer layer (persists `weather_overlay_enabled`). **Restore:** toggle off. |
-| PS-OVL-04 | P2 | ⚠️ DESTRUCTIVE | Day/night (`#toggle-day-night`) draws the terminator (persists). **Restore:** toggle off. |
+| PS-OVL-03 | P2 | ⚠️ DESTRUCTIVE | Weather (Layers → `#toggle-weather`, or `w`) adds a RainViewer layer (persists `weather_overlay_enabled`). **Restore:** toggle off. |
+| PS-OVL-04 | P2 | ⚠️ DESTRUCTIVE | Day/night (Layers → `#toggle-day-night`, or `n`) draws the terminator (persists). **Restore:** toggle off. |
 | PS-OVL-05 | P2 | ⚠️ DESTRUCTIVE | Heatmap (`#toggle-heatmap`) renders the activity layer; Airports (`#toggle-airports`) shows zoom-aware markers. **Restore:** toggle off. |
 | PS-OVL-06 | P3 | ⚠️ DESTRUCTIVE | Audio (`#toggle-audio` / `a`) plays a confirmation blip + alert chimes (persists). **Restore:** toggle off. Needs speakers. |
 | PS-OVL-07 | P3 | ⚠️ DESTRUCTIVE | Follow (`#toggle-follow` / `f`) keeps the map centred on the selection (persists). **Restore:** toggle off. |
 | PS-OVL-08 | P3 | ⚠️ DESTRUCTIVE | Aviation overlay (`#toggle-aero`) needs an OpenAIP key in Settings; verifies the tile proxy. |
+| PS-OVL-09 | P2 | ⚠️ DESTRUCTIVE | Layers → Range rings (`#toggle-rings`) and the Aircraft-labels control (`#label-mode`) apply at once and persist (`range_rings_enabled`, `map_label_mode`); reopening Settings → Map shows the same values. **Restore:** set them back. |
 
 ## 8. Replay · URL share · Embed · PWA — `PS-PLAT`
 
@@ -152,7 +157,7 @@ Run `node tests/e2e/run.js` (see `README.md`). 14 modules / 164 checks, all non-
 | ID | Pri | Mode | Case |
 |---|---|---|---|
 | PS-EVT-01 | P2 | 🤖 `[02]` | `GET /api/events` and `?kind=military|emergency|watchlist|rare` return event arrays. |
-| PS-EVT-02 | P2 | 👁 MANUAL | Event log lists recent events with kind/hex/callsign/distance; the topbar `#events-badge` reflects the count. |
+| PS-EVT-02 | P2 | 👁 MANUAL | Event log lists recent events with kind/hex/callsign/distance; the top-bar `#events-badge` reflects the count; a row whose aircraft is still in view selects it when clicked. |
 | PS-EVT-03 | P3 | 👁 MANUAL | Emergency squawk (7500/7600/7700) raises a banner + log entry (observe opportunistically; cannot force). |
 
 ## 10. Analytics, records, bookmarks, notes — `PS-ANL`

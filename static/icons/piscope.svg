@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- PiScope app icon: a radar scope — two range rings, the sweep, the receiver and one contact. -->
+  <rect width="64" height="64" rx="14" fill="#0a0e16"/>
+  <path d="M32 32 L49.5 14.5 A24.75 24.75 0 0 1 56.75 32 Z" fill="#3ddcb0" opacity="0.22"/>
+  <g fill="none" stroke="#3ddcb0" stroke-linecap="round">
+    <circle cx="32" cy="32" r="24" stroke-width="3.5"/>
+    <circle cx="32" cy="32" r="12.5" stroke-width="2.5" opacity="0.5"/>
+    <path d="M32 32 L49 15" stroke-width="3.5"/>
+  </g>
+  <circle cx="32" cy="32" r="4" fill="#3ddcb0"/>
+  <circle cx="44.5" cy="42" r="3.4" fill="#ffffff"/>
+</svg>

@@ -30,7 +30,9 @@ DEFAULTS: dict[str, Any] = {
     "poll_interval": 2,
     "trail_length": 30,
     "show_ground": True,
-    "theme": "radar",                      # AppTheme rawValue from Swift app
+    # Theme id (a [data-theme] block in static/themes.css). "midnight" since 1.8.0;
+    # installs that never chose a theme pick it up, anyone who picked one keeps theirs.
+    "theme": "midnight",
     "map_style": "automatic",
     "range_rings_enabled": True,
     "range_rings_nm": "50,100,150,200",

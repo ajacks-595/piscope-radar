@@ -1,30 +1,84 @@
 <!doctype html>
-<html lang="en" data-theme="radar">
+<html lang="en" data-theme="midnight">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>PiScope Radar</title>
-  <link rel="icon" type="image/svg+xml" href="/piscope/static/icons/aircraft.svg" />
+  <link rel="icon" type="image/svg+xml" href="/piscope/static/icons/piscope.svg" />
   <link rel="manifest" href="/piscope/static/manifest.webmanifest" />
-  <meta name="theme-color" content="#00ff40" />
+  <meta name="theme-color" content="#101622" />
+  <!-- Shell cache tag: the /piscope route fills this in with the same tag it writes into
+       sw.js, so the bootstrap below can spot a service worker left over from another build. -->
+  <meta name="piscope-shell" content="" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="apple-touch-icon" href="/piscope/static/icons/aircraft.svg" />
+  <link rel="apple-touch-icon" href="/piscope/static/icons/piscope.svg" />
   <script>
-  // ---- Embed bootstrap (iter 9.1) ----------------------------------------------
-  // Runs before any stylesheet or app code so the embed chrome strip applies on the
-  // very first paint — no flash of full UI. Parses URL query params (NOT the `#`
-  // fragment, which the main app uses for human-shareable state), stores the parsed
-  // config on `window.__embed` for app.js to consume, and stamps `data-embed`
-  // + theme + external theme tokens onto <html> so CSS selectors hit immediately.
+  // ---- Pre-paint bootstrap -------------------------------------------------------
+  // The ONLY inline script on the page (the /piscope route stamps its CSP nonce onto
+  // it). Runs before any stylesheet or app code, in three parts:
   //
-  // Anything that fails here is logged and swallowed — embed bootstrap must never
-  // break the main app for a non-embed visitor.
+  //  1. UI state that must be right on the very first paint: the last theme this
+  //     browser used and the "translucent panels" preference, both from localStorage,
+  //     so a reload doesn't flash the default theme before /api/settings answers.
+  //     Skipped in embed mode — an iframe owns its look via URL params.
+  //  2. Embed bootstrap (iter 9.1): parses the URL query params (NOT the `#` fragment,
+  //     which the main app uses for human-shareable state), stores the parsed config
+  //     on `window.__embed` for app.js to consume, and stamps `data-embed` + theme +
+  //     external theme tokens onto <html> so CSS selectors hit immediately.
+  //
+  //  0. Stale service-worker guard (secure contexts only — plain-HTTP LAN installs have
+  //     no service worker). A worker installed by an earlier build answers this page's
+  //     ?v=… asset requests from ITS cache until it is replaced, so the first load
+  //     after an upgrade paired new HTML with old JS/CSS. If the controlling worker's
+  //     cache is not the one this page was built for: drop the stale caches, unregister
+  //     the worker and reload once from the network. The sessionStorage marker makes
+  //     it at most one reload per build — never a loop.
+  //
+  // Anything that fails here is logged and swallowed — the bootstrap must never
+  // break the main app.
   (function () {
     try {
-      var qs = new URLSearchParams(location.search);
-      var raw = qs.get('embed');
-      if (!raw || raw === '0' || raw === 'false' || raw === 'no') return;
+      var tagEl = document.querySelector('meta[name="piscope-shell"]');
+      var expected = (tagEl && tagEl.content) || '';
+      if (expected.indexOf('piscope-shell-') === 0 && window.caches &&
+          'serviceWorker' in navigator && navigator.serviceWorker.controller) {
+        caches.keys().then(function (keys) {
+          var stale = keys.filter(function (k) { return k.indexOf('piscope-shell-') === 0 && k !== expected; });
+          if (!stale.length) return null;
+          try {
+            if (sessionStorage.getItem('piscope_shell_purged') === expected) return null;
+            sessionStorage.setItem('piscope_shell_purged', expected);
+          } catch (e) { return null; }      // can't record the attempt → don't risk a reload loop
+          return Promise.all(stale.map(function (k) { return caches.delete(k); }))
+            .then(function () { return navigator.serviceWorker.getRegistrations(); })
+            .then(function (regs) {
+              return Promise.all(regs.filter(function (r) { return r.scope.indexOf('/piscope') >= 0; })
+                .map(function (r) { return r.unregister(); }));
+            })
+            .then(function () { location.reload(); });
+        }).catch(function () {});
+      }
+    } catch (e) { /* never block the app */ }
+  })();
+  (function () {
+    var root = document.documentElement;
+    var qs, raw;
+    try {
+      qs = new URLSearchParams(location.search);
+      raw = qs.get('embed');
+    } catch (e) { return; }
+    var isEmbed = !!raw && raw !== '0' && raw !== 'false' && raw !== 'no';
+    if (!isEmbed) {
+      try {
+        var stored = localStorage.getItem('piscope_theme');
+        if (stored && /^[A-Za-z0-9]{1,32}$/.test(stored)) root.setAttribute('data-theme', stored);
+        if (localStorage.getItem('piscope_glass') === '0') root.setAttribute('data-glass', 'off');
+        if (localStorage.getItem('piscope_sidebar') === 'collapsed') root.setAttribute('data-sidebar', 'collapsed');
+      } catch (e) { /* storage blocked — defaults are fine */ }
+      return;
+    }
+    try {
       var num = function (k) {
         var v = parseFloat(qs.get(k));
         return Number.isFinite(v) ? v : null;
@@ -64,15 +118,15 @@
         text: qs.get('text'),
       };
       window.__embed = cfg;
-      document.documentElement.setAttribute('data-embed', '1');
-      document.documentElement.setAttribute('data-embed-interactive', cfg.interactive);
-      if (cfg.theme) document.documentElement.setAttribute('data-theme', cfg.theme);
+      root.setAttribute('data-embed', '1');
+      root.setAttribute('data-embed-interactive', cfg.interactive);
+      if (cfg.theme) root.setAttribute('data-theme', cfg.theme);
       // Stamp external theme tokens onto <html>'s style so var(--accent, …) lookups
       // pick them up before app.css loads. Mapping is from the URL-friendly token
       // names (accent/bg/surface/text) to the actual CSS variable names PiScope
       // uses internally. When `?theme=external` is also set, the data-theme block
       // in themes.css provides sane defaults for any unspecified variables.
-      var s = document.documentElement.style;
+      var s = root.style;
       if (cfg.accent) {
         s.setProperty('--accent', cfg.accent);
         s.setProperty('--accent-muted', cfg.accent);
@@ -89,12 +143,12 @@
       if (cfg.themeMode === 'auto' && window.matchMedia) {
         var mq = window.matchMedia('(prefers-color-scheme: dark)');
         var apply = function () {
-          document.documentElement.setAttribute('data-color-mode', mq.matches ? 'dark' : 'light');
+          root.setAttribute('data-color-mode', mq.matches ? 'dark' : 'light');
         };
         apply();
         if (mq.addEventListener) mq.addEventListener('change', apply);
       } else if (cfg.themeMode === 'dark' || cfg.themeMode === 'light') {
-        document.documentElement.setAttribute('data-color-mode', cfg.themeMode);
+        root.setAttribute('data-color-mode', cfg.themeMode);
       }
     } catch (e) {
       if (window.console) window.console.warn('[piscope embed bootstrap]', e);
@@ -111,73 +165,177 @@
   <link rel="stylesheet" href="/piscope/static/app.css" />
 </head>
 <body>
+  <!-- Icon sprite. Original line icons on a 24px grid, generated by tools/gen-icons.js
+       (edit there, then paste). Inline so icons need no extra request, inherit
+       currentColor from the theme, and work under the script-src CSP. -->
+  <svg xmlns="http://www.w3.org/2000/svg" class="icon-sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.6" opacity=".55"/><path d="M12 12L18.4 5.6"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="16.6" cy="15.6" r="1.25" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h9M19 7h1M4 12h1M11 12h9M4 17h7M17 17h3"/><circle cx="16" cy="7" r="2.4"/><circle cx="8" cy="12" r="2.4"/><circle cx="14" cy="17" r="2.4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5.5v13M5.5 12h13"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12h13"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 6.5L15 12l-5.5 5.5"/></symbol>
+    <symbol id="i-chevron-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6.5L9 12l5.5 5.5"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19.5v-15M6 10.5l6-6 6 6"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l8.5 4.6-8.5 4.6-8.5-4.6L12 3.5z"/><path d="M3.5 12.4l8.5 4.6 8.5-4.6"/><path d="M3.5 16.6l8.5 4.6 8.5-4.6"/></symbol>
+    <symbol id="i-fit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 9.5v-5h5M19.5 9.5v-5h-5M4.5 14.5v5h5M19.5 14.5v5h-5"/></symbol>
+    <symbol id="i-locate" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="6.2"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><path d="M12 2.5v3.3M12 18.2v3.3M2.5 12h3.3M18.2 12h3.3"/></symbol>
+    <symbol id="i-follow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 4L4.8 10.2l6.3 2.7 2.7 6.3L20 4z"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.6 2.2H4.9l1.6-2.2z"/><path d="M10 21a2.2 2.2 0 0 0 4 0"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 4.5v15h15"/><path d="M9 15.5v-4M13 15.5v-8M17 15.5v-6"/></symbol>
+    <symbol id="i-bookmark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4.5h10a1 1 0 0 1 1 1v14l-6-3.8-6 3.8v-14a1 1 0 0 1 1-1z"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.6L14.29 9.24L20.37 9.68L15.71 13.61L17.17 19.52L12 16.3L6.83 19.52L8.29 13.61L3.63 9.68L9.71 9.24Z"/></symbol>
+    <symbol id="i-star-fill" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.6L14.29 9.24L20.37 9.68L15.71 13.61L17.17 19.52L12 16.3L6.83 19.52L8.29 13.61L3.63 9.68L9.71 9.24Z" fill="currentColor"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 1 0 8-8 8.6 8.6 0 0 0-5.9 2.4L4 8.5"/><path d="M4 4v4.5h4.5"/><path d="M12 8v4.4l2.9 1.8"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.6v4.8h3.4l4.6 4V5.6l-4.6 4H4z"/><path d="M15.5 9.2a4 4 0 0 1 0 5.6M18.2 6.6a7.6 7.6 0 0 1 0 10.8"/></symbol>
+    <symbol id="i-volume-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.6v4.8h3.4l4.6 4V5.6l-4.6 4H4z"/><path d="M16 9.6l4.8 4.8M20.8 9.6L16 14.4"/></symbol>
+    <symbol id="i-theme" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.34 5.1L10.75 2.68L13.25 2.68L13.66 5.1L15.71 5.95L17.7 4.53L19.47 6.3L18.05 8.29L18.9 10.34L21.32 10.75L21.32 13.25L18.9 13.66L18.05 15.71L19.47 17.7L17.7 19.47L15.71 18.05L13.66 18.9L13.25 21.32L10.75 21.32L10.34 18.9L8.29 18.05L6.3 19.47L4.53 17.7L5.95 15.71L5.1 13.66L2.68 13.25L2.68 10.75L5.1 10.34L5.95 8.29L4.53 6.3L6.3 4.53L8.29 5.95Z"/><circle cx="12" cy="12" r="2.9"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2.8" y="6" width="18.4" height="12" rx="2.4"/><path d="M6.5 10h.01M10.2 10h.01M13.8 10h.01M17.5 10h.01M6.5 13.6h.01M17.5 13.6h.01M9.6 13.9h4.8"/></symbol>
+    <symbol id="i-plane" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.8c.9 0 1.5 1.3 1.5 3v3.4l7 4.3v2l-7-2.1v4l2 1.6v1.6L12 19.7l-3.5.9V19l2-1.6v-4l-7 2.1v-2l7-4.3V5.8c0-1.7.6-3 1.5-3z"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.5-5.7-6.5-10.6a6.5 6.5 0 0 1 13 0C18.5 15.3 12 21 12 21z"/><circle cx="12" cy="10.4" r="2.3"/></symbol>
+    <symbol id="i-airport" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20.5l2.2-17h9.6l2.2 17"/><path d="M12 6.5v2.4M12 12v2.4M12 17.5v2.6"/></symbol>
+    <symbol id="i-airspace" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4"/><path d="M12 3.5v4.5M12 16v4.5M3.5 12H8M16 12h4.5"/></symbol>
+    <symbol id="i-weather" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7.2 16.5a4 4 0 0 1 .5-7.97 5.3 5.3 0 0 1 10.3 1.3 3.4 3.4 0 0 1-.6 6.67"/><path d="M9 18.6l-.9 2.4M12.7 18.6l-.9 2.4M16.4 18.6l-.9 2.4"/></symbol>
+    <symbol id="i-heat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2c.6 3-1.3 4.4-2.8 6.2-1.4 1.7-2.5 3.4-2.5 5.6a5.3 5.3 0 0 0 10.6 0c0-2.4-1.3-3.9-2.4-5-.3 1.4-.9 2.2-1.9 2.7.5-3.2-.3-6.4-1-9.5z"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 14.2A8 8 0 0 1 9.8 4.5a8 8 0 1 0 9.7 9.7z"/></symbol>
+    <symbol id="i-rings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4.8h5.2V10"/><path d="M19.2 4.8l-8 8"/><path d="M17.5 14v4a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 18V8A1.5 1.5 0 0 1 6 6.5h4"/></symbol>
+    <symbol id="i-sparkles" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4.5l1.7 4.6 4.6 1.7-4.6 1.7L11 17.1l-1.7-4.6-4.6-1.7 4.6-1.7L11 4.5z"/><path d="M18 15.2v4.2M15.9 17.3h4.2"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.6"/><path d="M9.5 4.5v15"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.5" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5v10.5M7.5 10.8L12 15.3l4.5-4.5M5 19.5h14"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5V5M7.5 9.3L12 4.8l4.5 4.5M5 19.5h14"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.2l8.6 15H3.4L12 4.2z"/><path d="M12 10v4.2"/><circle cx="12" cy="16.6" r=".9" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-antenna" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12.2V21"/><circle cx="12" cy="10" r="1.7"/><path d="M8.3 13.7a5.3 5.3 0 0 1 0-7.4M15.7 6.3a5.3 5.3 0 0 1 0 7.4M5.5 16.5a9.2 9.2 0 0 1 0-13M18.5 3.5a9.2 9.2 0 0 1 0 13"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.2 13.8a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.1 1.1"/><path d="M13.8 10.2a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.1-1.1"/></symbol>
+    <symbol id="i-live" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path d="M7.4 16.6a6.5 6.5 0 0 1 0-9.2M16.6 7.4a6.5 6.5 0 0 1 0 9.2M4.6 19.4a10.5 10.5 0 0 1 0-14.8M19.4 4.6a10.5 10.5 0 0 1 0 14.8"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="6" r="2.4"/><path d="M8.4 18H14a3.5 3.5 0 0 0 0-7h-4a3.5 3.5 0 0 1 0-7h5.6"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="14" rx="2.4"/><circle cx="8.8" cy="10" r="1.6"/><path d="M4.5 17.5l5-4.6 3.4 3 2.6-2.3 4 3.6"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5.5" width="17" height="13" rx="2.4"/><path d="M4.5 7.5l7.5 5.6 7.5-5.6"/></symbol>
+    <symbol id="i-map" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5L3.5 7v12L9 17l6 2 5.5-2V5L15 7 9 5z"/><path d="M9 5v12M15 7v12"/></symbol>
+  </svg>
+
   <!-- Embed-only "open in PiScope" link. Rendered as a real <a> so middle-click /
        cmd-click work; suppressed by CSS when not in embed mode. Href is filled in
        by the embed runtime in app.js so it tracks live center/zoom/selection. -->
   <a id="embed-expand-link" class="embed-expand-link" href="/piscope" target="_blank" rel="noopener" hidden>↗ open in PiScope</a>
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand-icon">⊙</span>
-      <span class="brand-name">PISCOPE RADAR</span>
-    </div>
-    <div class="status-line">
-      <span id="connection-pill" class="pill idle">idle</span>
-      <span class="status-divider">·</span>
-      <span><span id="aircraft-count">0</span> contacts</span>
-      <span class="status-divider">·</span>
-      <span id="messages-rate">— msg/s</span>
-      <span class="status-divider">·</span>
-      <span id="receiver-loc">no receiver</span>
-    </div>
-    <div class="topbar-actions">
-      <button id="toggle-audio" class="icon-button" title="Audio alerts (off)" aria-pressed="false">🔇</button>
-      <button id="toggle-follow" class="icon-button" title="Follow selected aircraft" aria-pressed="false">📍</button>
-      <button id="open-events" class="icon-button" title="Event log">⚠<span id="events-badge" class="topbar-badge" hidden>0</span></button>
-      <button id="open-stats" class="icon-button" title="Stats &amp; receiver health">📊</button>
-      <button id="toggle-replay" class="icon-button" title="Replay timeline" aria-pressed="false">⏪</button>
-      <button id="toggle-aero" class="icon-button" title="Aviation overlay (OpenAIP)" aria-pressed="false">✈</button>
-      <button id="toggle-airports" class="icon-button" title="Airport overlay (large + medium)" aria-pressed="false">🛫</button>
-      <button id="toggle-weather" class="icon-button" title="Weather radar overlay" aria-pressed="false">⛅</button>
-      <button id="toggle-heatmap" class="icon-button" title="Traffic heatmap" aria-pressed="false">🔥</button>
-      <button id="toggle-day-night" class="icon-button" title="Day / night terminator" aria-pressed="false">🌓</button>
-      <button id="open-views" class="icon-button" title="Saved views">⭐</button>
-      <button id="fit-data" class="icon-button" title="Fit to data (Z)">⊕</button>
-      <button id="recenter" class="icon-button" title="Recenter on receiver (R)">⌖</button>
-      <label class="theme-picker">
-        <select id="theme-select" aria-label="Theme">
-          <option value="radar">Radar (Classic)</option>
-          <option value="radarModern">Radar (Modern)</option>
-          <option value="terminal">Terminal</option>
-          <option value="dark">Dark</option>
-          <option value="light">Light</option>
-          <option value="tactical">Tactical</option>
-          <option value="sectional">Sectional</option>
-          <option value="solarizedDark">Solarized Dark</option>
-          <option value="solarizedLight">Solarized Light</option>
-          <option value="nord">Nord</option>
-          <option value="synthwave">Synthwave</option>
-          <option value="dracula">Dracula</option>
-          <option value="tokyoNight">Tokyo Night</option>
-          <option value="catppuccinMocha">Catppuccin Mocha</option>
-        </select>
-      </label>
-      <button id="open-settings" class="icon-button" title="Settings">⚙</button>
-    </div>
-  </header>
 
-  <main class="layout">
-    <!-- SIDEBAR -->
-    <aside class="sidebar" id="sidebar">
+  <!-- The map is full-bleed; every piece of chrome below floats above it. -->
+  <main class="app" id="app">
+    <section class="map-section" aria-label="Live map">
+      <div id="map"></div>
+      <canvas id="radar-canvas" class="radar-canvas"></canvas>
+    </section>
+
+    <!-- TOP BAR -->
+    <header class="topbar glass" id="topbar">
+      <button id="toggle-sidebar" class="icon-button" type="button" aria-label="Toggle aircraft list" aria-pressed="true" data-tip="Aircraft list · [" data-tip-pos="start">
+        <svg class="icon" aria-hidden="true"><use href="#i-panel"/></svg>
+      </button>
+      <div class="brand">
+        <svg class="brand-mark" aria-hidden="true"><use href="#i-logo"/></svg>
+        <span class="brand-name">PiScope<span class="brand-sub">Radar</span></span>
+      </div>
+      <div class="status-line">
+        <span id="connection-pill" class="pill idle" role="status">Idle</span>
+        <span class="stat"><strong id="aircraft-count">0</strong><span class="stat-label">aircraft</span></span>
+        <span class="stat stat-range" id="range-stat" hidden><strong id="range-max">—</strong><span class="stat-label">nm max</span></span>
+        <span class="stat stat-rx"><svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg><span id="receiver-loc">no receiver</span></span>
+      </div>
+      <div class="topbar-actions">
+        <button id="open-events" class="icon-button" type="button" aria-label="Event log" data-tip="Events · E">
+          <svg class="icon" aria-hidden="true"><use href="#i-bell"/></svg>
+          <span id="events-badge" class="topbar-badge" hidden>0</span>
+        </button>
+        <button id="open-stats" class="icon-button collapsible" type="button" aria-label="Stats and receiver health" data-tip="Stats · S">
+          <svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg>
+        </button>
+        <button id="open-views" class="icon-button collapsible" type="button" aria-label="Saved views" data-tip="Saved views · V">
+          <svg class="icon" aria-hidden="true"><use href="#i-bookmark"/></svg>
+        </button>
+        <button id="toggle-replay" class="icon-button collapsible" type="button" aria-label="Replay timeline" aria-pressed="false" data-tip="Replay · P">
+          <svg class="icon" aria-hidden="true"><use href="#i-history"/></svg>
+        </button>
+        <span class="topbar-sep collapsible" aria-hidden="true"></span>
+        <button id="toggle-audio" class="icon-button collapsible" type="button" aria-label="Audio alerts" aria-pressed="false" data-tip="Audio alerts · A">
+          <svg class="icon" aria-hidden="true"><use href="#i-volume-off"/></svg>
+        </button>
+        <button id="open-themes" class="icon-button collapsible" type="button" aria-label="Theme" aria-haspopup="dialog" aria-expanded="false" data-tip="Theme">
+          <svg class="icon" aria-hidden="true"><use href="#i-theme"/></svg>
+        </button>
+        <button id="open-help" class="icon-button collapsible" type="button" aria-label="Keyboard shortcuts" data-tip="Shortcuts · ?" data-tip-pos="end">
+          <svg class="icon" aria-hidden="true"><use href="#i-keyboard"/></svg>
+        </button>
+        <button id="open-settings" class="icon-button collapsible-phone" type="button" aria-label="Settings" data-tip="Settings" data-tip-pos="end">
+          <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
+        </button>
+        <button id="open-more" class="icon-button phone-only" type="button" aria-label="More" aria-haspopup="menu" aria-expanded="false">
+          <svg class="icon" aria-hidden="true"><use href="#i-more"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- SIDEBAR — aircraft list -->
+    <aside class="sidebar glass" id="sidebar" aria-label="Aircraft list">
       <div class="filter-bar">
-        <input id="filter-search" type="search" placeholder="Search callsign / reg / hex / type" />
-        <div class="filter-row">
-          <select id="filter-category" aria-label="Category">
-            <option value="all">All categories</option>
-            <option value="commercial">Commercial</option>
-            <option value="military">Military</option>
-            <option value="ga">General aviation</option>
-            <option value="heli">Helicopter</option>
-          </select>
+        <div class="search-row">
+          <label class="search-field">
+            <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+            <input id="filter-search" type="search" placeholder="Search callsign, reg, hex, type" aria-label="Search aircraft" autocomplete="off" spellcheck="false" />
+            <kbd aria-hidden="true">/</kbd>
+          </label>
+          <button id="toggle-filters" class="icon-button" type="button" aria-label="Filters" aria-expanded="false" aria-controls="filter-panel" data-tip="Filters">
+            <svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>
+            <span id="filters-badge" class="dot-badge" hidden></span>
+          </button>
+        </div>
+        <div class="chip-row" id="category-chips" role="group" aria-label="Category">
+          <button class="chip-btn active" type="button" data-category="all" aria-pressed="true">All<span class="n" id="cat-n-all">0</span></button>
+          <button class="chip-btn" type="button" data-category="commercial" aria-pressed="false">Commercial<span class="n" id="cat-n-commercial">0</span></button>
+          <button class="chip-btn" type="button" data-category="military" aria-pressed="false">Military<span class="n" id="cat-n-military">0</span></button>
+          <button class="chip-btn" type="button" data-category="ga" aria-pressed="false">GA<span class="n" id="cat-n-ga">0</span></button>
+          <button class="chip-btn" type="button" data-category="heli" aria-pressed="false">Heli<span class="n" id="cat-n-heli">0</span></button>
+        </div>
+        <!-- The chips above drive this select; it stays the single source of truth for
+             the category filter (and what the E2E suite and embed mode set). -->
+        <select id="filter-category" aria-label="Category" hidden>
+          <option value="all">All categories</option>
+          <option value="commercial">Commercial</option>
+          <option value="military">Military</option>
+          <option value="ga">General aviation</option>
+          <option value="heli">Helicopter</option>
+        </select>
+        <div class="filter-panel" id="filter-panel" hidden>
+          <div class="range-row">
+            <label for="alt-min">Altitude
+              <span class="range-values"><span id="alt-min-val">0</span> – <span id="alt-max-val">60k</span> ft</span>
+            </label>
+            <div class="dual-slider">
+              <div class="dual-track"></div>
+              <div class="dual-fill" id="alt-fill"></div>
+              <input id="alt-min" type="range" aria-label="Minimum altitude (feet)" min="0" max="60000" step="500" value="0" />
+              <input id="alt-max" type="range" aria-label="Maximum altitude (feet)" min="0" max="60000" step="500" value="60000" />
+            </div>
+          </div>
+          <div class="range-row">
+            <label for="dist-max">Max distance <span class="range-values"><span id="dist-max-val">∞</span> nm</span></label>
+            <input id="dist-max" type="range" aria-label="Maximum distance (nautical miles)" min="10" max="500" step="10" value="500" />
+          </div>
+          <div class="filter-foot">
+            <label class="checkbox-row">
+              <input id="show-ground" type="checkbox" checked /> <span>Show ground traffic</span>
+            </label>
+            <button id="reset-filters" class="link-button" type="button">Reset</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="list-head">
+        <span class="list-count"><strong id="list-count">0</strong> <span id="list-count-label">aircraft</span></span>
+        <label class="sort-field">
+          <span>Sort</span>
           <select id="filter-sort" aria-label="Sort by">
             <option value="distance">Distance</option>
             <option value="callsign">Callsign</option>
@@ -185,66 +343,160 @@
             <option value="speed">Speed</option>
             <option value="signal">Signal</option>
           </select>
-        </div>
-        <div class="filter-row range-row">
-          <label>Altitude
-            <span class="range-values"><span id="alt-min-val">0</span> – <span id="alt-max-val">60k</span> ft</span>
-          </label>
-          <div class="dual-slider">
-            <div class="dual-track"></div>
-            <div class="dual-fill" id="alt-fill"></div>
-            <input id="alt-min" type="range" aria-label="Minimum altitude (feet)" min="0" max="60000" step="500" value="0" />
-            <input id="alt-max" type="range" aria-label="Maximum altitude (feet)" min="0" max="60000" step="500" value="60000" />
-          </div>
-        </div>
-        <div class="filter-row range-row">
-          <label>Max distance <span class="range-values"><span id="dist-max-val">∞</span> nm</span></label>
-          <input id="dist-max" type="range" aria-label="Maximum distance (nautical miles)" min="10" max="500" step="10" value="500" />
-        </div>
-        <label class="checkbox-row">
-          <input id="show-ground" type="checkbox" checked /> Show ground traffic
         </label>
       </div>
 
+      <div class="list-empty" id="list-empty" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-plane"/></svg>
+        <p id="list-empty-text">No aircraft match these filters.</p>
+        <button id="list-empty-reset" class="secondary small" type="button">Reset filters</button>
+      </div>
       <ul class="aircraft-list" id="aircraft-list"></ul>
     </aside>
 
-    <!-- MAP -->
-    <section class="map-section">
-      <div id="map"></div>
-      <canvas id="radar-canvas" class="radar-canvas"></canvas>
-      <div class="map-legend" id="map-legend">
-        <div><span class="dot ground"></span>GND</div>
-        <div><span class="dot low"></span>&lt;10k</div>
-        <div><span class="dot mid"></span>&lt;25k</div>
-        <div><span class="dot high"></span>&lt;35k</div>
-        <div><span class="dot very-high"></span>35k+</div>
+    <!-- MAP CONTROLS — floating rail beside the list -->
+    <div class="map-controls" id="map-controls" role="toolbar" aria-label="Map controls" aria-orientation="vertical">
+      <div class="ctl-group glass">
+        <button id="zoom-in" class="ctl-btn" type="button" aria-label="Zoom in" data-tip="Zoom in">
+          <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+        </button>
+        <button id="zoom-out" class="ctl-btn" type="button" aria-label="Zoom out" data-tip="Zoom out">
+          <svg class="icon" aria-hidden="true"><use href="#i-minus"/></svg>
+        </button>
       </div>
-    </section>
-
-    <!-- REPLAY TIMELINE (hidden by default) -->
-    <div id="replay-bar" class="replay-bar" hidden>
-      <button id="replay-live" class="secondary">⏵ Live</button>
-      <input id="replay-slider" type="range" min="0" max="100" step="0.1" value="100" />
-      <span id="replay-clock" class="hint">—</span>
+      <div class="ctl-group glass">
+        <button id="fit-data" class="ctl-btn" type="button" aria-label="Fit map to traffic" data-tip="Fit to traffic · Z">
+          <svg class="icon" aria-hidden="true"><use href="#i-fit"/></svg>
+        </button>
+        <button id="recenter" class="ctl-btn" type="button" aria-label="Recenter on receiver" data-tip="Recenter on receiver · R">
+          <svg class="icon" aria-hidden="true"><use href="#i-locate"/></svg>
+        </button>
+        <button id="toggle-follow" class="ctl-btn" type="button" aria-label="Follow selected aircraft" aria-pressed="false" data-tip="Follow selected · F">
+          <svg class="icon" aria-hidden="true"><use href="#i-follow"/></svg>
+        </button>
+      </div>
+      <div class="ctl-group glass">
+        <button id="open-layers" class="ctl-btn" type="button" aria-label="Map layers" aria-haspopup="dialog" aria-expanded="false" data-tip="Map layers · L">
+          <svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg>
+          <span id="layers-badge" class="count-badge" hidden>0</span>
+        </button>
+      </div>
     </div>
 
-    <!-- DETAIL -->
-    <aside class="detail" id="detail">
+    <div class="map-legend glass" id="map-legend" aria-label="Altitude colours">
+      <span class="legend-title">Altitude</span>
+      <div><span class="dot ground"></span>GND</div>
+      <div><span class="dot low"></span>&lt;10k</div>
+      <div><span class="dot mid"></span>&lt;25k</div>
+      <div><span class="dot high"></span>&lt;35k</div>
+      <div><span class="dot very-high"></span>35k+</div>
+    </div>
+
+    <!-- REPLAY TIMELINE (hidden by default) -->
+    <div id="replay-bar" class="replay-bar glass" hidden>
+      <button id="replay-live" class="primary" type="button"><svg class="icon" aria-hidden="true"><use href="#i-live"/></svg><span>Back to live</span></button>
+      <input id="replay-slider" type="range" aria-label="Replay position" min="0" max="100" step="0.1" value="100" />
+      <span id="replay-clock" class="replay-clock">—</span>
+    </div>
+
+    <!-- DETAIL — slides in when an aircraft is selected -->
+    <aside class="detail glass" id="detail" aria-label="Aircraft details">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <button class="icon-button detail-close" id="detail-close" type="button" aria-label="Close aircraft details" data-tip="Close · Esc" data-tip-pos="left">
+        <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+      </button>
       <div class="detail-empty" id="detail-empty">
         <span>Select an aircraft from the list or map.</span>
       </div>
       <div class="detail-content" id="detail-content" hidden></div>
     </aside>
+
+    <div class="scrim" id="scrim" hidden></div>
   </main>
+
+  <!-- POPOVERS -->
+  <div class="popover glass" id="layers-popover" role="dialog" aria-label="Map layers" hidden>
+    <div class="popover-title">Map layers</div>
+    <button class="layer-row" id="toggle-airports" type="button" aria-pressed="false">
+      <svg class="icon" aria-hidden="true"><use href="#i-airport"/></svg>
+      <span class="layer-text"><span class="layer-name">Airports</span><span class="layer-desc">Large and medium fields</span></span>
+      <span class="switch" aria-hidden="true"></span>
+    </button>
+    <button class="layer-row" id="toggle-aero" type="button" aria-pressed="false">
+      <svg class="icon" aria-hidden="true"><use href="#i-airspace"/></svg>
+      <span class="layer-text"><span class="layer-name">Aviation chart</span><span class="layer-desc" id="aero-desc">Airspace and navaids · OpenAIP</span></span>
+      <span class="switch" aria-hidden="true"></span>
+    </button>
+    <button class="layer-row" id="toggle-weather" type="button" aria-pressed="false">
+      <svg class="icon" aria-hidden="true"><use href="#i-weather"/></svg>
+      <span class="layer-text"><span class="layer-name">Weather radar<kbd>W</kbd></span><span class="layer-desc">Precipitation · RainViewer</span></span>
+      <span class="switch" aria-hidden="true"></span>
+    </button>
+    <button class="layer-row" id="toggle-heatmap" type="button" aria-pressed="false">
+      <svg class="icon" aria-hidden="true"><use href="#i-heat"/></svg>
+      <span class="layer-text"><span class="layer-name">Traffic heatmap</span><span class="layer-desc">Where aircraft have been seen</span></span>
+      <span class="switch" aria-hidden="true"></span>
+    </button>
+    <button class="layer-row" id="toggle-day-night" type="button" aria-pressed="false">
+      <svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg>
+      <span class="layer-text"><span class="layer-name">Day / night<kbd>N</kbd></span><span class="layer-desc">Shade the night side</span></span>
+      <span class="switch" aria-hidden="true"></span>
+    </button>
+    <button class="layer-row" id="toggle-rings" type="button" aria-pressed="false">
+      <svg class="icon" aria-hidden="true"><use href="#i-rings"/></svg>
+      <span class="layer-text"><span class="layer-name">Range rings</span><span class="layer-desc" id="rings-desc">Distance from the receiver</span></span>
+      <span class="switch" aria-hidden="true"></span>
+    </button>
+    <div class="popover-sep"></div>
+    <div class="popover-label" id="label-mode-title">Aircraft labels</div>
+    <div class="segmented" id="label-mode" role="group" aria-labelledby="label-mode-title">
+      <button type="button" data-label-mode="off" aria-pressed="true">Off</button>
+      <button type="button" data-label-mode="callsign" aria-pressed="false">Callsign</button>
+      <button type="button" data-label-mode="full" aria-pressed="false">Full</button>
+    </div>
+  </div>
+
+  <div class="popover glass popover-themes" id="themes-popover" role="dialog" aria-label="Theme" hidden>
+    <div class="popover-title">Theme</div>
+    <div class="theme-grid" id="theme-grid"></div>
+    <!-- State holder for the active theme: the gallery above (and Settings → Appearance)
+         are built from these options and write back through it. -->
+    <select id="theme-select" aria-label="Theme" hidden>
+      <option value="midnight">Midnight</option>
+      <option value="radar">Radar (Classic)</option>
+      <option value="radarModern">Radar (Modern)</option>
+      <option value="terminal">Terminal</option>
+      <option value="dark">Dark</option>
+      <option value="light">Light</option>
+      <option value="tactical">Tactical</option>
+      <option value="sectional">Sectional</option>
+      <option value="solarizedDark">Solarized Dark</option>
+      <option value="solarizedLight">Solarized Light</option>
+      <option value="nord">Nord</option>
+      <option value="synthwave">Synthwave</option>
+      <option value="dracula">Dracula</option>
+      <option value="tokyoNight">Tokyo Night</option>
+      <option value="catppuccinMocha">Catppuccin Mocha</option>
+    </select>
+  </div>
+
+  <!-- Phone overflow menu: each item clicks the top-bar control named in data-proxy. -->
+  <div class="popover glass menu" id="more-menu" role="menu" aria-label="More" hidden>
+    <button class="menu-item" type="button" role="menuitem" data-proxy="open-stats"><svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg><span>Stats &amp; receiver health</span></button>
+    <button class="menu-item" type="button" role="menuitem" data-proxy="open-views"><svg class="icon" aria-hidden="true"><use href="#i-bookmark"/></svg><span>Saved views</span></button>
+    <button class="menu-item" type="button" role="menuitem" data-proxy="toggle-replay"><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg><span>Replay timeline</span></button>
+    <button class="menu-item" type="button" role="menuitem" data-proxy="toggle-audio"><svg class="icon" aria-hidden="true"><use href="#i-volume"/></svg><span>Audio alerts</span></button>
+    <button class="menu-item" type="button" role="menuitem" data-proxy="open-themes" data-proxy-keep><svg class="icon" aria-hidden="true"><use href="#i-theme"/></svg><span>Theme</span></button>
+    <button class="menu-item" type="button" role="menuitem" data-proxy="open-settings"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span>Settings</span></button>
+  </div>
 
   <!-- EVENTS MODAL -->
   <div class="modal" id="events-modal" hidden>
     <div class="modal-shade" data-close-events></div>
-    <div class="modal-panel">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="events-title">
       <header class="modal-header">
-        <h2>Events</h2>
-        <button class="icon-button" data-close-events>✕</button>
+        <h2 id="events-title"><svg class="icon" aria-hidden="true"><use href="#i-bell"/></svg>Events</h2>
+        <button class="icon-button" type="button" aria-label="Close" data-close-events><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
       </header>
       <nav class="tabs">
         <button class="tab active" data-events-tab="all">All</button>
@@ -254,7 +506,7 @@
       </nav>
       <div class="tab-body">
         <ul id="events-list" class="events-list"></ul>
-        <p id="events-empty" class="hint" hidden>No events recorded yet.</p>
+        <p id="events-empty" class="empty-state" hidden>No events recorded yet.</p>
       </div>
     </div>
   </div>
@@ -262,10 +514,10 @@
   <!-- STATS MODAL -->
   <div class="modal" id="stats-modal" hidden>
     <div class="modal-shade" data-close-stats></div>
-    <div class="modal-panel">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="stats-title">
       <header class="modal-header">
-        <h2>Statistics &amp; receiver health</h2>
-        <button class="icon-button" data-close-stats>✕</button>
+        <h2 id="stats-title"><svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg>Statistics &amp; receiver health</h2>
+        <button class="icon-button" type="button" aria-label="Close" data-close-stats><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
       </header>
       <nav class="tabs">
         <button class="tab active" data-stats-tab="health">Health</button>
@@ -279,10 +531,11 @@
       </nav>
       <div class="tab-body">
         <section class="stats-section active" data-stats-section="health">
-          <dl class="detail-grid" id="health-grid"></dl>
+          <div class="tile-grid" id="health-grid"></div>
+          <div id="health-feeds"></div>
         </section>
         <section class="stats-section" data-stats-section="today">
-          <div class="today-toolbar" style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div class="today-toolbar">
             <span class="hint" id="today-generated">Loading…</span>
             <button class="secondary" id="today-refresh">Generate now</button>
           </div>
@@ -298,29 +551,29 @@
             </div>
             <span class="hint" id="analytics-caption"></span>
             <span class="analytics-export">
-              <a class="export-link" id="analytics-export-daily" href="/piscope/api/analytics/export?kind=daily" download>⭳ Daily CSV</a>
-              <a class="export-link" id="analytics-export-sightings" href="/piscope/api/analytics/export?kind=sightings" download>⭳ Sightings CSV</a>
+              <a class="export-link" id="analytics-export-daily" href="/piscope/api/analytics/export?kind=daily" download><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Daily CSV</a>
+              <a class="export-link" id="analytics-export-sightings" href="/piscope/api/analytics/export?kind=sightings" download><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Sightings CSV</a>
             </span>
           </div>
           <div id="analytics-body"><p class="hint">Loading…</p></div>
         </section>
         <section class="stats-section" data-stats-section="daily">
-          <table class="stats-table"><thead><tr><th>Date</th><th>Polls</th><th>Unique</th><th>Max range (nm)</th><th>Emergencies</th><th>Military</th></tr></thead><tbody id="stats-rows"></tbody></table>
+          <div class="table-wrap"><table class="stats-table"><thead><tr><th>Date</th><th>Polls</th><th>Unique</th><th>Max range (nm)</th><th>Emergencies</th><th>Military</th></tr></thead><tbody id="stats-rows"></tbody></table></div>
         </section>
         <section class="stats-section" data-stats-section="coverage">
           <p class="hint">Maximum range observed for each compass bearing, all-time. Updated live as aircraft are tracked.</p>
-          <canvas id="polar-canvas" width="480" height="480" style="display:block; margin:0 auto;"></canvas>
+          <canvas id="polar-canvas" class="polar-canvas" width="480" height="480"></canvas>
         </section>
         <section class="stats-section" data-stats-section="leaderboard">
           <p class="hint">Most-frequently-seen aircraft types since the database was created.</p>
-          <table class="stats-table"><thead><tr><th>Type</th><th>Sightings</th><th>First seen</th><th>Last seen</th></tr></thead><tbody id="leaderboard-rows"></tbody></table>
+          <div class="table-wrap"><table class="stats-table"><thead><tr><th>Type</th><th>Sightings</th><th>First seen</th><th>Last seen</th></tr></thead><tbody id="leaderboard-rows"></tbody></table></div>
         </section>
         <section class="stats-section" data-stats-section="records">
           <p class="hint">All-time bests for this receiver. Beaten records are silently replaced.</p>
-          <table class="stats-table"><thead><tr><th>Category</th><th>Value</th><th>Aircraft</th><th>When</th></tr></thead><tbody id="records-rows"></tbody></table>
+          <div class="table-wrap"><table class="stats-table"><thead><tr><th>Category</th><th>Value</th><th>Aircraft</th><th>When</th></tr></thead><tbody id="records-rows"></tbody></table></div>
         </section>
         <section class="stats-section" data-stats-section="bookmarks">
-          <p class="hint">Aircraft you've starred. Click ★ in the detail panel to add one.</p>
+          <p class="hint">Aircraft you've starred. Use Bookmark in the detail panel to add one.</p>
           <ul id="bookmarks-list" class="views-list"></ul>
         </section>
       </div>
@@ -332,16 +585,16 @@
        welcome → set receiver location → contact URL → done. Skip dismisses + stores the flag. -->
   <div class="modal" id="wizard-modal" hidden>
     <div class="modal-shade"></div>
-    <div class="modal-panel" style="width:min(520px,96vw)">
+    <div class="modal-panel modal-narrow" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
       <header class="modal-header">
-        <h2 id="wizard-title">Welcome to PiScope Radar</h2>
-        <button class="icon-button" id="wizard-skip" title="Skip onboarding">✕</button>
+        <h2 id="wizard-title"><svg class="icon" aria-hidden="true"><use href="#i-logo"/></svg>Welcome to PiScope Radar</h2>
+        <button class="icon-button" type="button" id="wizard-skip" aria-label="Skip onboarding" data-tip="Skip" data-tip-pos="left"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
       </header>
       <div class="tab-body">
         <section class="wizard-step" data-step="1">
           <p>This dashboard pulls ADS-B traffic from your PiAware (or adsb.lol) and renders it as a live radar map, sidebar, and per-aircraft detail panel.</p>
           <p>A quick 30-second tour to point it at your location:</p>
-          <ul class="hint" style="margin-top:8px">
+          <ul class="hint wizard-list">
             <li><strong>Step 1:</strong> Tell PiScope where your receiver is. The distance ring, polar coverage, and the global-feed centre all depend on this.</li>
             <li><strong>Step 2:</strong> Pick a contact URL for outbound HTTP requests. Some upstream APIs reject anonymous traffic.</li>
             <li><strong>Step 3:</strong> Done — you can change anything later in Settings.</li>
@@ -349,16 +602,18 @@
         </section>
         <section class="wizard-step" data-step="2" hidden>
           <p>Where's your receiver? Either type the coordinates or click on the map.</p>
-          <div class="field">
-            <label for="wizard-lat">Latitude</label>
-            <input id="wizard-lat" type="number" step="0.0001" min="-90" max="90" placeholder="e.g. 51.5072" />
+          <div class="field-row field-row-2">
+            <div class="field">
+              <label for="wizard-lat">Latitude</label>
+              <input id="wizard-lat" type="number" step="0.0001" min="-90" max="90" placeholder="e.g. 51.5072" />
+            </div>
+            <div class="field">
+              <label for="wizard-lon">Longitude</label>
+              <input id="wizard-lon" type="number" step="0.0001" min="-180" max="180" placeholder="e.g. -0.1276" />
+            </div>
           </div>
-          <div class="field">
-            <label for="wizard-lon">Longitude</label>
-            <input id="wizard-lon" type="number" step="0.0001" min="-180" max="180" placeholder="e.g. -0.1276" />
-          </div>
-          <button id="wizard-pick-map" class="secondary">📍 Pick on map instead</button>
-          <p class="hint" id="wizard-loc-status" style="margin-top:8px"></p>
+          <button id="wizard-pick-map" class="secondary" type="button"><svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg><span>Pick on map instead</span></button>
+          <p class="hint" id="wizard-loc-status"></p>
         </section>
         <section class="wizard-step" data-step="3" hidden>
           <p>Some upstream APIs (notably <code>planespotters.net</code>) now require a contact URL or email in the User-Agent header. PiScope uses this one for every outbound request.</p>
@@ -369,19 +624,19 @@
           </div>
         </section>
         <section class="wizard-step" data-step="4" hidden>
-          <p>✅ You're set up.</p>
-          <ul class="hint" style="margin-top:8px">
+          <p><strong>You're set up.</strong></p>
+          <ul class="hint wizard-list">
             <li>Press <kbd>?</kbd> any time for the keyboard shortcut list.</li>
             <li>Right-click anywhere on the map to set receiver coords, copy lat/lon, or follow an aircraft.</li>
             <li>Share a URL like <code>/piscope#center=55,-3&amp;zoom=8&amp;select=HEX</code> — the recipient lands on the exact same view.</li>
           </ul>
         </section>
-        <div class="controls-row" style="display:flex; justify-content:space-between; align-items:center; margin-top:16px">
-          <button id="wizard-back" class="secondary" disabled>← Back</button>
-          <span class="hint" id="wizard-progress">1 / 4</span>
-          <button id="wizard-next" class="primary">Next →</button>
-        </div>
       </div>
+      <footer class="modal-footer modal-footer-split">
+        <button id="wizard-back" class="secondary" type="button" disabled>← Back</button>
+        <span class="hint" id="wizard-progress">1 / 4</span>
+        <button id="wizard-next" class="primary" type="button">Next →</button>
+      </footer>
     </div>
   </div>
 
@@ -390,10 +645,10 @@
        belonging to the same operator (matched by callsign ICAO prefix). -->
   <div class="modal" id="operator-modal" hidden>
     <div class="modal-shade" data-close-operator></div>
-    <div class="modal-panel" style="width:min(540px,96vw)">
+    <div class="modal-panel modal-narrow" role="dialog" aria-modal="true" aria-labelledby="operator-title">
       <header class="modal-header">
         <h2 id="operator-title">Operator</h2>
-        <button class="icon-button" data-close-operator>✕</button>
+        <button class="icon-button" type="button" aria-label="Close" data-close-operator><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
       </header>
       <div class="tab-body">
         <p class="hint" id="operator-summary"></p>
@@ -405,17 +660,19 @@
   <!-- SAVED VIEWS MODAL -->
   <div class="modal" id="views-modal" hidden>
     <div class="modal-shade" data-close-views></div>
-    <div class="modal-panel" style="width:min(520px,96vw)">
+    <div class="modal-panel modal-narrow" role="dialog" aria-modal="true" aria-labelledby="views-title">
       <header class="modal-header">
-        <h2>Saved views</h2>
-        <button class="icon-button" data-close-views>✕</button>
+        <h2 id="views-title"><svg class="icon" aria-hidden="true"><use href="#i-bookmark"/></svg>Saved views</h2>
+        <button class="icon-button" type="button" aria-label="Close" data-close-views><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
       </header>
       <div class="tab-body">
         <ul id="views-list" class="views-list"></ul>
         <div class="field">
-          <label>Save current view as…</label>
-          <input id="new-view-name" type="text" placeholder="Home airport / North sector / …" />
-          <button id="save-view" class="primary">Save current view</button>
+          <label for="new-view-name">Save the current map view as…</label>
+          <div class="field-inline">
+            <input id="new-view-name" type="text" placeholder="Home airport / North sector / …" />
+            <button id="save-view" class="primary" type="button">Save view</button>
+          </div>
         </div>
       </div>
     </div>
@@ -424,158 +681,198 @@
   <!-- SETTINGS MODAL -->
   <div class="modal" id="settings-modal" hidden>
     <div class="modal-shade" data-close></div>
-    <div class="modal-panel">
+    <div class="modal-panel modal-settings" role="dialog" aria-modal="true" aria-labelledby="settings-title">
       <header class="modal-header">
-        <h2>Settings</h2>
-        <button class="icon-button" data-close>✕</button>
+        <h2 id="settings-title"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>Settings</h2>
+        <button class="icon-button" type="button" aria-label="Close" data-close><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
       </header>
-      <nav class="tabs">
-        <button class="tab active" data-tab="connection">Connection</button>
-        <button class="tab" data-tab="appearance">Appearance</button>
-        <button class="tab" data-tab="map">Map</button>
-        <button class="tab" data-tab="flightaware">FlightAware</button>
-        <button class="tab" data-tab="ai">AI</button>
-        <button class="tab" data-tab="notifications">Notifications</button>
-        <button class="tab" data-tab="digest">Digest</button>
-        <button class="tab" data-tab="general">General</button>
+      <nav class="tabs" aria-label="Settings sections">
+        <button class="tab active" data-tab="connection"><svg class="icon" aria-hidden="true"><use href="#i-antenna"/></svg><span>Connection</span></button>
+        <button class="tab" data-tab="appearance"><svg class="icon" aria-hidden="true"><use href="#i-theme"/></svg><span>Appearance</span></button>
+        <button class="tab" data-tab="map"><svg class="icon" aria-hidden="true"><use href="#i-map"/></svg><span>Map</span></button>
+        <button class="tab" data-tab="flightaware"><svg class="icon" aria-hidden="true"><use href="#i-plane"/></svg><span>FlightAware</span></button>
+        <button class="tab" data-tab="ai"><svg class="icon" aria-hidden="true"><use href="#i-sparkles"/></svg><span>AI</span></button>
+        <button class="tab" data-tab="notifications"><svg class="icon" aria-hidden="true"><use href="#i-bell"/></svg><span>Notifications</span></button>
+        <button class="tab" data-tab="digest"><svg class="icon" aria-hidden="true"><use href="#i-mail"/></svg><span>Digest</span></button>
+        <button class="tab" data-tab="general"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg><span>General</span></button>
       </nav>
       <div class="tab-body">
         <section class="tab-section active" data-section="connection">
-          <h3>Feed mode</h3>
-          <label class="radio-row">
-            <input type="radio" name="feed_mode" value="local" />
-            Local tar1090 (on this Pi or another host)
-          </label>
-          <label class="radio-row">
-            <input type="radio" name="feed_mode" value="global" />
-            Global feed (adsb.lol around a chosen point)
-          </label>
-          <div class="field">
-            <label for="setting-tar-url">tar1090 base URL</label>
-            <input id="setting-tar-url" type="url" placeholder="http://localhost/tar1090" />
-            <button id="test-conn" class="secondary">Test connection</button>
-            <span id="test-result" class="hint"></span>
-          </div>
-          <div class="field">
-            <label for="setting-poll">Poll interval (s)</label>
-            <input id="setting-poll" type="number" min="1" max="60" />
-          </div>
-          <div class="field-row">
+          <div class="settings-group">
+            <h3>Feed mode</h3>
+            <label class="radio-row">
+              <input type="radio" name="feed_mode" value="local" />
+              <span>Local tar1090 (on this Pi or another host)</span>
+            </label>
+            <label class="radio-row">
+              <input type="radio" name="feed_mode" value="global" />
+              <span>Global feed (adsb.lol around a chosen point)</span>
+            </label>
             <div class="field">
-              <label>Global centre lat</label>
-              <input id="setting-global-lat" type="number" min="-90" max="90" step="0.0001" placeholder="e.g. 51.5072" />
+              <label for="setting-tar-url">tar1090 base URL</label>
+              <div class="field-inline">
+                <input id="setting-tar-url" type="url" placeholder="http://localhost/tar1090" />
+                <button id="test-conn" class="secondary" type="button">Test connection</button>
+              </div>
+              <span id="test-result" class="hint"></span>
+            </div>
+            <div class="field field-short">
+              <label for="setting-poll">Poll interval (s)</label>
+              <input id="setting-poll" type="number" min="1" max="60" />
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="setting-global-lat">Global centre lat</label>
+                <input id="setting-global-lat" type="number" min="-90" max="90" step="0.0001" placeholder="e.g. 51.5072" />
+              </div>
+              <div class="field">
+                <label for="setting-global-lon">Global centre lon</label>
+                <input id="setting-global-lon" type="number" min="-180" max="180" step="0.0001" placeholder="e.g. -0.1276" />
+              </div>
+              <div class="field"><label for="setting-global-rad">Radius (nm)</label><input id="setting-global-rad" type="number" min="50" max="2000" /></div>
             </div>
             <div class="field">
-              <label>Global centre lon</label>
-              <input id="setting-global-lon" type="number" min="-180" max="180" step="0.0001" placeholder="e.g. -0.1276" />
+              <div class="field-inline">
+                <button id="pick-on-map" class="secondary" type="button"><svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg><span>Pick location on map</span></button>
+              </div>
+              <span class="hint">Or right-click your spot on the map. Both update the receiver and the global-feed centre at once.</span>
             </div>
-            <div class="field"><label>Radius (nm)</label><input id="setting-global-rad" type="number" min="50" max="2000" /></div>
           </div>
-          <div class="field">
-            <button id="pick-on-map" class="secondary" type="button">📍 Pick location on map</button>
-            <span class="hint">Or right-click your spot on the map. Both update the receiver and the global-feed centre at once.</span>
+          <div class="settings-group">
+            <h3>Extra feeds (multi-receiver)</h3>
+            <p class="hint">Each additional tar1090 base URL will be polled in parallel and merged into the live view by aircraft hex. Format: <code>Name|http://host/tar1090</code>, one per line.</p>
+            <textarea id="setting-extra-feeds" class="mono-area" rows="4" aria-label="Extra feeds" placeholder="Garden Pi|http://garden.local/tar1090&#10;Office|http://office.local/tar1090"></textarea>
+            <div id="extra-feeds-status" class="hint"></div>
           </div>
-          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 8px 0;" />
-          <h3>Extra feeds (multi-receiver)</h3>
-          <p class="hint">Each additional tar1090 base URL will be polled in parallel and merged into the live view by aircraft hex. Format: <code>Name|http://host/tar1090</code>, one per line.</p>
-          <textarea id="setting-extra-feeds" rows="4" placeholder="Garden Pi|http://garden.local/tar1090&#10;Office|http://office.local/tar1090" style="width:100%; min-height:80px; resize: vertical; font-family: var(--font-mono);"></textarea>
-          <div id="extra-feeds-status" class="hint"></div>
         </section>
 
         <section class="tab-section" data-section="appearance">
-          <div class="field">
-            <label>Theme</label>
-            <select id="setting-theme"></select>
+          <div class="settings-group">
+            <h3>Theme</h3>
+            <div class="theme-grid theme-grid-lg" id="setting-theme-grid"></div>
+            <div class="field" hidden>
+              <label for="setting-theme">Theme</label>
+              <select id="setting-theme"></select>
+            </div>
+          </div>
+          <div class="settings-group">
+            <h3>This browser</h3>
+            <label class="checkbox-row"><input id="pref-glass" type="checkbox" checked /> <span>Translucent panels (background blur)</span></label>
+            <p class="hint">Stored in this browser only. Turn off on slower devices — a wall-mounted Pi kiosk, say — where blurring the live map behind the panels costs frames.</p>
           </div>
         </section>
 
         <section class="tab-section" data-section="map">
-          <div class="field">
-            <label>Map style</label>
-            <select id="setting-map-style">
-              <option value="automatic">Automatic (follow theme)</option>
-            </select>
-            <span class="hint">Most options are free with no key required. Tactical / radar themes look best on dark or satellite bases.</span>
+          <div class="settings-group">
+            <h3>Base map</h3>
+            <div class="field">
+              <label for="setting-map-style">Map style</label>
+              <select id="setting-map-style">
+                <option value="automatic">Automatic (follow theme)</option>
+              </select>
+              <span class="hint">Most options are free with no key required. Tactical / radar themes look best on dark or satellite bases.</span>
+            </div>
           </div>
-          <div class="field">
-            <label>Aircraft labels</label>
-            <select id="setting-label-mode">
-              <option value="off">Off — icon only (default)</option>
-              <option value="callsign">Callsign — just the flight ID beside each aircraft</option>
-              <option value="full">Full info — reg / type / speed / altitude / route (tar1090-style)</option>
-            </select>
-            <span class="hint">Full mode auto-hides labels below the zoom threshold so busy airspace stays readable.</span>
+          <div class="settings-group">
+            <h3>Aircraft</h3>
+            <div class="field">
+              <label for="setting-label-mode">Aircraft labels</label>
+              <select id="setting-label-mode">
+                <option value="off">Off — icon only (default)</option>
+                <option value="callsign">Callsign — just the flight ID beside each aircraft</option>
+                <option value="full">Full info — reg / type / speed / altitude / route (tar1090-style)</option>
+              </select>
+              <span class="hint">Full mode auto-hides labels below the zoom threshold so busy airspace stays readable.</span>
+            </div>
+            <div class="field-row field-row-2">
+              <div class="field">
+                <label for="setting-label-min-zoom">Full-label minimum zoom</label>
+                <input id="setting-label-min-zoom" type="number" min="3" max="14" />
+              </div>
+              <div class="field">
+                <label for="setting-trail">Trail length (samples)</label>
+                <input id="setting-trail" type="number" min="0" max="120" />
+              </div>
+            </div>
           </div>
-          <div class="field">
-            <label>Full-label minimum zoom</label>
-            <input id="setting-label-min-zoom" type="number" min="3" max="14" />
+          <div class="settings-group">
+            <h3>Range</h3>
+            <label class="checkbox-row">
+              <input id="setting-rings-enabled" type="checkbox" /> <span>Show range rings</span>
+            </label>
+            <div class="field-row field-row-2">
+              <div class="field">
+                <label for="setting-rings">Range rings (nm, comma-separated)</label>
+                <input id="setting-rings" type="text" placeholder="50,100,150,200" />
+              </div>
+              <div class="field">
+                <label for="setting-antenna-range">Antenna coverage range (nm)</label>
+                <input id="setting-antenna-range" type="number" min="10" max="500" />
+              </div>
+            </div>
           </div>
-          <div class="field">
-            <label>Range rings (nm, comma-separated)</label>
-            <input id="setting-rings" type="text" placeholder="50,100,150,200" />
+          <div class="settings-group">
+            <h3>Aviation overlay (OpenAIP)</h3>
+            <div class="field">
+              <label for="setting-openaip-key">OpenAIP API key</label>
+              <div class="field-inline">
+                <input id="setting-openaip-key" type="password" placeholder="paste key (write-only)" autocomplete="off" />
+                <button id="save-openaip-key" class="secondary" type="button">Save key</button>
+              </div>
+              <span id="openaip-key-status" class="hint"></span>
+            </div>
+            <p class="hint">
+              Free for personal use — sign up at <a href="https://www.openaip.net/users/sign-up" target="_blank" rel="noopener">openaip.net</a>,
+              create a "Client API key" in your account dashboard, paste it here. Tiles are proxied through the Pi so the key never leaves your server.
+            </p>
           </div>
-          <label class="checkbox-row">
-            <input id="setting-rings-enabled" type="checkbox" /> Show range rings
-          </label>
-          <div class="field">
-            <label>Antenna coverage range (nm)</label>
-            <input id="setting-antenna-range" type="number" min="10" max="500" />
-          </div>
-          <div class="field">
-            <label>Trail length (samples)</label>
-            <input id="setting-trail" type="number" min="0" max="120" />
-          </div>
-          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 8px 0;" />
-          <h3>Aviation overlay (OpenAIP)</h3>
-          <div class="field">
-            <label>OpenAIP API key</label>
-            <input id="setting-openaip-key" type="password" placeholder="paste key (write-only)" autocomplete="off" />
-            <span id="openaip-key-status" class="hint"></span>
-            <button id="save-openaip-key" class="secondary">Save key</button>
-          </div>
-          <p class="hint">
-            Free for personal use — sign up at <a href="https://www.openaip.net/users/sign-up" target="_blank" rel="noopener">openaip.net</a>,
-            create a "Client API key" in your account dashboard, paste it here. Tiles are proxied through the Pi so the key never leaves your server.
-          </p>
         </section>
 
         <section class="tab-section" data-section="flightaware">
-          <div class="field">
-            <label>AeroAPI key</label>
-            <input id="setting-fa-key" type="password" placeholder="paste key (write-only)" autocomplete="off" />
-            <span id="fa-key-status" class="hint"></span>
-            <button id="save-fa-key" class="secondary">Save key</button>
-          </div>
-          <div class="field">
-            <label>Monthly budget (USD)</label>
-            <input id="setting-fa-limit" type="number" min="0" step="0.01" />
-          </div>
-          <div class="fa-budget-box" id="fa-budget-box">
-            <span>This month: <strong id="fa-spent">$0.00</strong> / <strong id="fa-limit-display">$5.00</strong></span>
-            <div class="fa-budget-bar"><div id="fa-budget-bar-fill"></div></div>
+          <div class="settings-group">
+            <h3>FlightAware AeroAPI</h3>
+            <div class="field">
+              <label for="setting-fa-key">AeroAPI key</label>
+              <div class="field-inline">
+                <input id="setting-fa-key" type="password" placeholder="paste key (write-only)" autocomplete="off" />
+                <button id="save-fa-key" class="secondary" type="button">Save key</button>
+              </div>
+              <span id="fa-key-status" class="hint"></span>
+            </div>
+            <div class="field field-short">
+              <label for="setting-fa-limit">Monthly budget (USD)</label>
+              <input id="setting-fa-limit" type="number" min="0" step="0.01" />
+            </div>
+            <div class="fa-budget-box" id="fa-budget-box">
+              <span>This month: <strong id="fa-spent">$0.00</strong> / <strong id="fa-limit-display">$5.00</strong></span>
+              <div class="fa-budget-bar"><div id="fa-budget-bar-fill"></div></div>
+            </div>
           </div>
         </section>
 
         <section class="tab-section" data-section="ai">
-          <h3>AI explanations</h3>
-          <p class="hint">Pick a backend for the "Explain this aircraft" button and the daily digest commentary. Options: a local LLM via Ollama, a cloud API (your own Anthropic / OpenAI / Google key, or any OpenAI-compatible endpoint such as Ollama Cloud / LiteLLM / vLLM), or a Claude CLI shim that uses an existing Claude Code subscription. The Explain button hides itself when the selected provider isn't configured.</p>
-          <div class="field">
-            <label for="setting-ai-provider">Provider</label>
-            <select id="setting-ai-provider">
-              <option value="">None (AI disabled)</option>
-              <option value="ollama">Ollama — local LLM</option>
-              <option value="cloud_api">Cloud API — Anthropic / OpenAI / Google / OpenAI-compatible</option>
-              <option value="claude_cli">Claude CLI — shim over your Claude Code subscription</option>
-            </select>
-            <span class="hint">Each provider keeps its own config below — switching providers doesn't wipe the others' settings.</span>
-          </div>
-          <div class="field">
-            <label for="setting-ai-chat-max-turns">Follow-up chat history (turns)</label>
-            <input id="setting-ai-chat-max-turns" type="number" min="1" max="20" step="1" />
-            <span class="hint">Most-recent N exchanges are stitched into each follow-up prompt. Higher = more context; ~doubles per-message tokens. Free for Ollama, billed for Cloud API / Claude CLI.</span>
+          <div class="settings-group">
+            <h3>AI explanations</h3>
+            <p class="hint">Pick a backend for the "Explain this aircraft" button and the daily digest commentary. Options: a local LLM via Ollama, a cloud API (your own Anthropic / OpenAI / Google key, or any OpenAI-compatible endpoint such as Ollama Cloud / LiteLLM / vLLM), or a Claude CLI shim that uses an existing Claude Code subscription. The Explain button hides itself when the selected provider isn't configured.</p>
+            <div class="field">
+              <label for="setting-ai-provider">Provider</label>
+              <select id="setting-ai-provider">
+                <option value="">None (AI disabled)</option>
+                <option value="ollama">Ollama — local LLM</option>
+                <option value="cloud_api">Cloud API — Anthropic / OpenAI / Google / OpenAI-compatible</option>
+                <option value="claude_cli">Claude CLI — shim over your Claude Code subscription</option>
+              </select>
+              <span class="hint">Each provider keeps its own config below — switching providers doesn't wipe the others' settings.</span>
+            </div>
+            <div class="field field-short">
+              <label for="setting-ai-chat-max-turns">Follow-up chat history (turns)</label>
+              <input id="setting-ai-chat-max-turns" type="number" min="1" max="20" step="1" />
+              <span class="hint">Most-recent N exchanges are stitched into each follow-up prompt. Higher = more context; ~doubles per-message tokens. Free for Ollama, billed for Cloud API / Claude CLI.</span>
+            </div>
           </div>
 
-          <div class="ai-provider-panel" id="ai-panel-ollama" hidden>
+          <div class="settings-group ai-provider-panel" id="ai-panel-ollama" hidden>
+            <h3>Ollama</h3>
             <div class="field">
               <label for="setting-ollama-url">Ollama URL</label>
               <input id="setting-ollama-url" type="url" placeholder="http://10.0.0.x:11434" autocomplete="off" />
@@ -586,14 +883,15 @@
               <input id="setting-ollama-model" type="text" placeholder="gemma4:latest" autocomplete="off" />
               <span class="hint">Model tag as <code>ollama list</code> reports it.</span>
             </div>
-            <label class="checkbox-row"><input id="setting-ollama-enabled" type="checkbox" /> Enable Ollama</label>
-            <div class="fa-action-row" style="margin-top:8px">
-              <button id="test-ollama-btn" class="secondary">Test connection</button>
+            <label class="checkbox-row"><input id="setting-ollama-enabled" type="checkbox" /> <span>Enable Ollama</span></label>
+            <div class="fa-action-row">
+              <button id="test-ollama-btn" class="secondary" type="button">Test connection</button>
               <span class="hint" id="test-ollama-result"></span>
             </div>
           </div>
 
-          <div class="ai-provider-panel" id="ai-panel-cloud_api" hidden>
+          <div class="settings-group ai-provider-panel" id="ai-panel-cloud_api" hidden>
+            <h3>Cloud API</h3>
             <div class="field">
               <label for="setting-cloud-api-vendor">Vendor</label>
               <select id="setting-cloud-api-vendor">
@@ -618,14 +916,15 @@
               <input id="setting-cloud-api-model" type="text" placeholder="(vendor default)" autocomplete="off" />
               <span class="hint">Empty falls back to a cheap-and-capable default per vendor: <code>claude-haiku-4-5</code>, <code>gpt-4o-mini</code>, or <code>gemini-2.5-flash</code>. <strong>Required for OpenAI-compatible endpoints</strong> — set the model name your host exposes (e.g. <code>gpt-oss:120b</code> on Ollama Cloud).</span>
             </div>
-            <label class="checkbox-row"><input id="setting-cloud-api-enabled" type="checkbox" /> Enable cloud API</label>
-            <div class="fa-action-row" style="margin-top:8px">
-              <button id="test-cloud-api-btn" class="secondary">Test connection</button>
+            <label class="checkbox-row"><input id="setting-cloud-api-enabled" type="checkbox" /> <span>Enable cloud API</span></label>
+            <div class="fa-action-row">
+              <button id="test-cloud-api-btn" class="secondary" type="button">Test connection</button>
               <span class="hint" id="test-cloud-api-result"></span>
             </div>
           </div>
 
-          <div class="ai-provider-panel" id="ai-panel-claude_cli" hidden>
+          <div class="settings-group ai-provider-panel" id="ai-panel-claude_cli" hidden>
+            <h3>Claude CLI shim</h3>
             <div class="field">
               <label for="setting-claude-cli-url">Shim URL</label>
               <input id="setting-claude-cli-url" type="url" placeholder="http://10.0.0.x:8090" autocomplete="off" />
@@ -636,160 +935,190 @@
               <input id="setting-claude-cli-token" type="password" placeholder="(leave blank to keep stored token)" autocomplete="off" />
               <span class="hint" id="claude-cli-token-status"></span>
             </div>
-            <label class="checkbox-row"><input id="setting-claude-cli-enabled" type="checkbox" /> Enable Claude CLI</label>
-            <div class="fa-action-row" style="margin-top:8px">
-              <button id="test-claude-cli-btn" class="secondary">Test connection</button>
+            <label class="checkbox-row"><input id="setting-claude-cli-enabled" type="checkbox" /> <span>Enable Claude CLI</span></label>
+            <div class="fa-action-row">
+              <button id="test-claude-cli-btn" class="secondary" type="button">Test connection</button>
               <span class="hint" id="test-claude-cli-result"></span>
             </div>
           </div>
         </section>
 
         <section class="tab-section" data-section="notifications">
-          <label class="checkbox-row"><input id="setting-notify-military" type="checkbox" /> Military aircraft entering range</label>
-          <label class="checkbox-row"><input id="setting-notify-emergency" type="checkbox" /> Emergency squawks (7500/7600/7700)</label>
-          <label class="checkbox-row"><input id="setting-notify-watchlist" type="checkbox" /> Watchlist matches</label>
-          <label class="checkbox-row"><input id="setting-audio-enabled" type="checkbox" /> Audio chimes when an event fires</label>
-          <label class="checkbox-row"><input id="setting-audio-directional" type="checkbox" /> Stereo-pan the chime by aircraft bearing</label>
-          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 10px 0;" />
-          <h3>Webhooks</h3>
-          <p class="hint">Forward events to Discord, Slack, ntfy.sh, or any generic JSON endpoint. POSTs are fire-and-forget — a failed delivery never stalls the feed loop.</p>
-          <div id="webhook-list"></div>
-          <button id="add-webhook" class="secondary">+ Add webhook</button>
-          <div class="field" style="margin-top:14px">
-            <label for="setting-watchdog">Receiver watchdog — alert after feed has been down (minutes; 0 = off)</label>
-            <input id="setting-watchdog" type="number" min="0" max="120" step="1" />
-            <span class="hint">Fires a <code>feed_down</code> webhook to subscribed endpoints, then a <code>feed_recovered</code> webhook when polls succeed again. Add those event types to a webhook above to receive them.</span>
+          <div class="settings-group">
+            <h3>Alerts</h3>
+            <label class="checkbox-row"><input id="setting-notify-military" type="checkbox" /> <span>Military aircraft entering range</span></label>
+            <label class="checkbox-row"><input id="setting-notify-emergency" type="checkbox" /> <span>Emergency squawks (7500/7600/7700)</span></label>
+            <label class="checkbox-row"><input id="setting-notify-watchlist" type="checkbox" /> <span>Watchlist matches</span></label>
+            <label class="checkbox-row"><input id="setting-audio-enabled" type="checkbox" /> <span>Audio chimes when an event fires</span></label>
+            <label class="checkbox-row"><input id="setting-audio-directional" type="checkbox" /> <span>Stereo-pan the chime by aircraft bearing</span></label>
+            <div class="field">
+              <label for="setting-watchlist">Watchlist (callsigns / regs, comma-separated)</label>
+              <input id="setting-watchlist" type="text" placeholder="NATO01, RRR7011, G-EZTJ" />
+            </div>
+            <div class="fa-action-row">
+              <button id="enable-notifications" class="secondary" type="button">Enable browser notifications</button>
+              <span id="notif-status" class="hint"></span>
+            </div>
           </div>
-          <div class="field">
-            <label>Watchlist (callsigns / regs, comma-separated)</label>
-            <input id="setting-watchlist" type="text" placeholder="NATO01, RRR7011, G-EZTJ" />
+          <div class="settings-group">
+            <h3>Webhooks</h3>
+            <p class="hint">Forward events to Discord, Slack, ntfy.sh, or any generic JSON endpoint. POSTs are fire-and-forget — a failed delivery never stalls the feed loop.</p>
+            <div id="webhook-list"></div>
+            <div class="field-inline">
+              <button id="add-webhook" class="secondary" type="button"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>Add webhook</span></button>
+            </div>
+            <div class="field field-short">
+              <label for="setting-watchdog">Receiver watchdog — alert after feed has been down (minutes; 0 = off)</label>
+              <input id="setting-watchdog" type="number" min="0" max="120" step="1" />
+              <span class="hint">Fires a <code>feed_down</code> webhook to subscribed endpoints, then a <code>feed_recovered</code> webhook when polls succeed again. Add those event types to a webhook above to receive them.</span>
+            </div>
           </div>
-          <button id="enable-notifications" class="secondary">Enable browser notifications</button>
-          <span id="notif-status" class="hint"></span>
-          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 14px 0;" />
-          <h3>Embed / dashboard integration</h3>
-          <p class="hint">PiScope can be iframed inside another dashboard via <code>/piscope?embed=1</code>. Cross-origin iframes are blocked by default for safety (clickjacking, etc.). Add the dashboard's origin below to allow it. Format: <code>'self'</code> (keyword, with quotes) plus URLs like <code>https://home.example.com</code> or <code>http://10.0.0.x:8090</code> — comma-separated.</p>
-          <div class="field">
-            <label for="setting-frame-ancestors">Allowed iframe parents (CSP frame-ancestors)</label>
-            <input id="setting-frame-ancestors" type="text" placeholder="'self', http://10.0.0.x:8090, https://home.example.com" />
-            <span class="hint">Takes effect on next page load — affects both the main UI and the embedded map view.</span>
+          <div class="settings-group">
+            <h3>Embed / dashboard integration</h3>
+            <p class="hint">PiScope can be iframed inside another dashboard via <code>/piscope?embed=1</code>. Cross-origin iframes are blocked by default for safety (clickjacking, etc.). Add the dashboard's origin below to allow it. Format: <code>'self'</code> (keyword, with quotes) plus URLs like <code>https://home.example.com</code> or <code>http://10.0.0.x:8090</code> — comma-separated.</p>
+            <div class="field">
+              <label for="setting-frame-ancestors">Allowed iframe parents (CSP frame-ancestors)</label>
+              <input id="setting-frame-ancestors" type="text" placeholder="'self', http://10.0.0.x:8090, https://home.example.com" />
+              <span class="hint">Takes effect on next page load — affects both the main UI and the embedded map view.</span>
+            </div>
           </div>
-          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 14px 0;" />
-          <h3>Network access</h3>
-          <p class="hint">PiScope has no login, so a malicious website could use DNS rebinding to reach it through your browser. With this on, requests are only served for LAN-style host names — IP addresses, single-label names like <code>piaware</code>, and <code>.local</code>/<code>.lan</code>/<code>.home</code>/<code>.home.arpa</code>/<code>.internal</code> — plus any names listed below. The host name you are using right now is added automatically when you save.</p>
-          <label class="checkbox-row"><input id="setting-host-guard" type="checkbox" /> Only serve LAN host names (DNS-rebinding guard)</label>
-          <div class="field">
-            <label for="setting-allowed-hosts">Allowed host names</label>
-            <input id="setting-allowed-hosts" type="text" placeholder="piscope.example.com, pi.tailnet.ts.net" autocomplete="off" />
-            <span class="hint">Comma-separated, exact match, port ignored. Also settable on the Pi with <code>piscope allow-host &lt;name&gt;</code>.</span>
+          <div class="settings-group">
+            <h3>Network access</h3>
+            <p class="hint">PiScope has no login, so a malicious website could use DNS rebinding to reach it through your browser. With this on, requests are only served for LAN-style host names — IP addresses, single-label names like <code>piaware</code>, and <code>.local</code>/<code>.lan</code>/<code>.home</code>/<code>.home.arpa</code>/<code>.internal</code> — plus any names listed below. The host name you are using right now is added automatically when you save.</p>
+            <label class="checkbox-row"><input id="setting-host-guard" type="checkbox" /> <span>Only serve LAN host names (DNS-rebinding guard)</span></label>
+            <div class="field">
+              <label for="setting-allowed-hosts">Allowed host names</label>
+              <input id="setting-allowed-hosts" type="text" placeholder="piscope.example.com, pi.tailnet.ts.net" autocomplete="off" />
+              <span class="hint">Comma-separated, exact match, port ignored. Also settable on the Pi with <code>piscope allow-host &lt;name&gt;</code>.</span>
+            </div>
           </div>
         </section>
 
         <section class="tab-section" data-section="digest">
-          <h3>Daily digest</h3>
-          <p class="hint">Once a day at a configurable local time, PiScope rolls up the last 24 hours into a digest (event totals, top types, rare callouts) and delivers it via the channels you enable below. AI commentary is auto-added if the AI tab above is configured.</p>
-          <label class="checkbox-row"><input id="setting-digest-enabled" type="checkbox" /> Enable daily digest</label>
-          <div class="field">
-            <label for="setting-digest-time">Delivery time (HH:MM, 24h, local)</label>
-            <input id="setting-digest-time" type="text" placeholder="07:30" pattern="^[0-2][0-9]:[0-5][0-9]$" />
-          </div>
-          <h4>Deliver to</h4>
-          <label class="checkbox-row"><input id="setting-digest-inapp" type="checkbox" /> In-app card (under Stats → Today)</label>
-          <label class="checkbox-row"><input id="setting-digest-webhook" type="checkbox" /> Webhook (subscribe to <code>digest</code> on a webhook above)</label>
-          <label class="checkbox-row"><input id="setting-digest-email" type="checkbox" /> Email via SMTP</label>
-          <hr style="border:0;border-top:1px solid var(--separator);margin:10px 0;" />
-          <h4>SMTP (used only if email delivery is enabled)</h4>
-          <div class="field"><label for="setting-smtp-host">SMTP host</label><input id="setting-smtp-host" type="text" placeholder="smtp.example.com" autocomplete="off" /><span class="hint">Changing the host clears the stored password — re-enter it.</span></div>
-          <div class="field"><label for="setting-smtp-port">SMTP port</label><input id="setting-smtp-port" type="number" min="1" max="65535" placeholder="587" /></div>
-          <div class="field"><label for="setting-smtp-user">Username</label><input id="setting-smtp-user" type="text" autocomplete="off" /></div>
-          <div class="field"><label for="setting-smtp-pass">Password</label><input id="setting-smtp-pass" type="password" placeholder="paste password (write-only)" autocomplete="off" /><span class="hint" id="smtp-pass-status"></span></div>
-          <div class="field"><label for="setting-smtp-from">From</label><input id="setting-smtp-from" type="email" placeholder="piscope@yourdomain" /></div>
-          <div class="field"><label for="setting-smtp-to">To</label><input id="setting-smtp-to" type="email" placeholder="you@yourdomain" /></div>
-          <label class="checkbox-row"><input id="setting-smtp-starttls" type="checkbox" /> Use STARTTLS (recommended, usually port 587)</label>
-          <label class="checkbox-row"><input id="setting-smtp-ssl" type="checkbox" /> Use implicit TLS / SMTPS instead (usually port 465)</label>
-          <hr style="border:0;border-top:1px solid var(--separator);margin:14px 0;" />
-          <h3>Weekly summary</h3>
-          <p class="hint">Once a week, a 7-day rollup (traffic, busiest hour/day, top types and operators, notable + new returning aircraft, records broken) is posted to every webhook subscribed to <code>weekly_digest</code> under Notifications. For Mattermost, add a <em>Mattermost webhook</em> there pointing at your channel's incoming-webhook URL and tick <em>Weekly</em>.</p>
-          <label class="checkbox-row"><input id="setting-weekly-enabled" type="checkbox" /> Enable weekly summary</label>
-          <div class="field-row">
-            <div class="field">
-              <label for="setting-weekly-day">Day</label>
-              <select id="setting-weekly-day">
-                <option value="mon">Monday</option>
-                <option value="tue">Tuesday</option>
-                <option value="wed">Wednesday</option>
-                <option value="thu">Thursday</option>
-                <option value="fri">Friday</option>
-                <option value="sat">Saturday</option>
-                <option value="sun">Sunday</option>
-              </select>
+          <div class="settings-group">
+            <h3>Daily digest</h3>
+            <p class="hint">Once a day at a configurable local time, PiScope rolls up the last 24 hours into a digest (event totals, top types, rare callouts) and delivers it via the channels you enable below. AI commentary is auto-added if the AI tab above is configured.</p>
+            <label class="checkbox-row"><input id="setting-digest-enabled" type="checkbox" /> <span>Enable daily digest</span></label>
+            <div class="field field-short">
+              <label for="setting-digest-time">Delivery time (HH:MM, 24h, local)</label>
+              <input id="setting-digest-time" type="text" placeholder="07:30" pattern="^[0-2][0-9]:[0-5][0-9]$" />
             </div>
-            <div class="field">
-              <label for="setting-weekly-time">Time (HH:MM, 24h, local)</label>
-              <input id="setting-weekly-time" type="text" placeholder="19:00" pattern="^[0-2][0-9]:[0-5][0-9]$" />
-            </div>
+            <h4>Deliver to</h4>
+            <label class="checkbox-row"><input id="setting-digest-inapp" type="checkbox" /> <span>In-app card (under Stats → Today)</span></label>
+            <label class="checkbox-row"><input id="setting-digest-webhook" type="checkbox" /> <span>Webhook (subscribe to <code>digest</code> on a webhook above)</span></label>
+            <label class="checkbox-row"><input id="setting-digest-email" type="checkbox" /> <span>Email via SMTP</span></label>
           </div>
-          <div class="fa-action-row" style="margin-top:8px">
-            <button id="run-weekly-digest" class="secondary">Send weekly summary now</button>
-            <span class="hint" id="weekly-digest-status"></span>
+          <div class="settings-group">
+            <h3>SMTP</h3>
+            <p class="hint">Used only if email delivery is enabled.</p>
+            <div class="field-row field-row-2">
+              <div class="field"><label for="setting-smtp-host">SMTP host</label><input id="setting-smtp-host" type="text" placeholder="smtp.example.com" autocomplete="off" /><span class="hint">Changing the host clears the stored password — re-enter it.</span></div>
+              <div class="field"><label for="setting-smtp-port">SMTP port</label><input id="setting-smtp-port" type="number" min="1" max="65535" placeholder="587" /></div>
+            </div>
+            <div class="field-row field-row-2">
+              <div class="field"><label for="setting-smtp-user">Username</label><input id="setting-smtp-user" type="text" autocomplete="off" /></div>
+              <div class="field"><label for="setting-smtp-pass">Password</label><input id="setting-smtp-pass" type="password" placeholder="paste password (write-only)" autocomplete="off" /><span class="hint" id="smtp-pass-status"></span></div>
+            </div>
+            <div class="field-row field-row-2">
+              <div class="field"><label for="setting-smtp-from">From</label><input id="setting-smtp-from" type="email" placeholder="piscope@yourdomain" /></div>
+              <div class="field"><label for="setting-smtp-to">To</label><input id="setting-smtp-to" type="email" placeholder="you@yourdomain" /></div>
+            </div>
+            <label class="checkbox-row"><input id="setting-smtp-starttls" type="checkbox" /> <span>Use STARTTLS (recommended, usually port 587)</span></label>
+            <label class="checkbox-row"><input id="setting-smtp-ssl" type="checkbox" /> <span>Use implicit TLS / SMTPS instead (usually port 465)</span></label>
+          </div>
+          <div class="settings-group">
+            <h3>Weekly summary</h3>
+            <p class="hint">Once a week, a 7-day rollup (traffic, busiest hour/day, top types and operators, notable + new returning aircraft, records broken) is posted to every webhook subscribed to <code>weekly_digest</code> under Notifications. For Mattermost, add a <em>Mattermost webhook</em> there pointing at your channel's incoming-webhook URL and tick <em>Weekly</em>.</p>
+            <label class="checkbox-row"><input id="setting-weekly-enabled" type="checkbox" /> <span>Enable weekly summary</span></label>
+            <div class="field-row field-row-2">
+              <div class="field">
+                <label for="setting-weekly-day">Day</label>
+                <select id="setting-weekly-day">
+                  <option value="mon">Monday</option>
+                  <option value="tue">Tuesday</option>
+                  <option value="wed">Wednesday</option>
+                  <option value="thu">Thursday</option>
+                  <option value="fri">Friday</option>
+                  <option value="sat">Saturday</option>
+                  <option value="sun">Sunday</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="setting-weekly-time">Time (HH:MM, 24h, local)</label>
+                <input id="setting-weekly-time" type="text" placeholder="19:00" pattern="^[0-2][0-9]:[0-5][0-9]$" />
+              </div>
+            </div>
+            <div class="fa-action-row">
+              <button id="run-weekly-digest" class="secondary" type="button">Send weekly summary now</button>
+              <span class="hint" id="weekly-digest-status"></span>
+            </div>
           </div>
         </section>
 
         <section class="tab-section" data-section="general">
-          <h3>Trails</h3>
-          <div class="field">
-            <label>Trail colouring</label>
-            <select id="setting-trail-colour">
-              <option value="single">Single colour (theme accent)</option>
-              <option value="altitude">Gradient by altitude band</option>
-              <option value="speed">Gradient by ground speed</option>
-            </select>
+          <div class="settings-group">
+            <h3>Trails</h3>
+            <div class="field">
+              <label for="setting-trail-colour">Trail colouring</label>
+              <select id="setting-trail-colour">
+                <option value="single">Single colour (theme accent)</option>
+                <option value="altitude">Gradient by altitude band</option>
+                <option value="speed">Gradient by ground speed</option>
+              </select>
+            </div>
+            <label class="checkbox-row">
+              <input id="setting-trail-fade" type="checkbox" /> <span>Fade trail toward the tail</span>
+            </label>
           </div>
-          <label class="checkbox-row">
-            <input id="setting-trail-fade" type="checkbox" /> Fade trail toward the tail
-          </label>
-          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 8px 0;" />
-          <h3>Backup &amp; restore</h3>
-          <div class="field">
-            <label>Daily auto-backup directory (server-side path)</label>
-            <input id="setting-backup-dir" type="text" placeholder="e.g. /home/pi/piscope-backups" />
-            <span class="hint">Empty = disabled. Backups run once per day; the most recent 14 are kept.</span>
-          </div>
-          <div class="field">
-            <label>Manual backup &amp; restore</label>
-            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
-              <a class="secondary" href="/piscope/api/export" style="text-decoration:none; padding:6px 12px; border:1px solid var(--accent); border-radius:6px; color:var(--accent)" download>Download backup zip</a>
-              <label class="secondary" style="cursor:pointer; padding:6px 12px; border:1px solid var(--accent); border-radius:6px; color:var(--accent)">
-                Restore from zip…<input id="import-db" type="file" accept=".zip" hidden />
-              </label>
-              <span id="import-status" class="hint"></span>
+          <div class="settings-group">
+            <h3>Backup &amp; restore</h3>
+            <div class="field">
+              <label for="setting-backup-dir">Daily auto-backup directory (server-side path)</label>
+              <input id="setting-backup-dir" type="text" placeholder="e.g. /home/pi/piscope-backups" />
+              <span class="hint">Empty = disabled. Backups run once per day; the most recent 14 are kept.</span>
+            </div>
+            <div class="field">
+              <span class="field-label">Manual backup &amp; restore</span>
+              <div class="field-inline">
+                <a class="secondary" href="/piscope/api/export" download><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Download backup zip</span></a>
+                <label class="secondary file-button">
+                  <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg><span>Restore from zip…</span><input id="import-db" type="file" accept=".zip" hidden />
+                </label>
+                <span id="import-status" class="hint"></span>
+              </div>
             </div>
           </div>
-          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 8px 0;" />
-          <h3>Receiver position</h3>
-          <div class="field">
-            <label>Receiver latitude</label>
-            <input id="setting-receiver-lat" type="number" step="0.0001" />
+          <div class="settings-group">
+            <h3>Receiver position</h3>
+            <div class="field-row field-row-2">
+              <div class="field">
+                <label for="setting-receiver-lat">Receiver latitude</label>
+                <input id="setting-receiver-lat" type="number" step="0.0001" />
+              </div>
+              <div class="field">
+                <label for="setting-receiver-lon">Receiver longitude</label>
+                <input id="setting-receiver-lon" type="number" step="0.0001" />
+              </div>
+            </div>
+            <div class="field">
+              <label for="setting-contact-url">Outbound contact URL or email</label>
+              <input id="setting-contact-url" type="text" placeholder="https://your-site.example/contact" />
+              <span class="hint">
+                Some upstream APIs (e.g. Planespotters) reject server User-Agents that don't include a contact URL or email.
+                This value is embedded in the User-Agent header as <code>PiScope-Radar/1.0 (+&lt;your value&gt;)</code>.
+              </span>
+            </div>
           </div>
-          <div class="field">
-            <label>Receiver longitude</label>
-            <input id="setting-receiver-lon" type="number" step="0.0001" />
+          <div class="settings-group">
+            <h3>Install as an app (PWA)</h3>
+            <p id="pwa-status" class="hint" aria-live="polite"></p>
           </div>
-          <div class="field">
-            <label>Outbound contact URL or email</label>
-            <input id="setting-contact-url" type="text" placeholder="https://your-site.example/contact" />
-            <span class="hint">
-              Some upstream APIs (e.g. Planespotters) reject server User-Agents that don't include a contact URL or email.
-              This value is embedded in the User-Agent header as <code>PiScope-Radar/1.0 (+&lt;your value&gt;)</code>.
-            </span>
-          </div>
-          <hr style="border: 0; border-top: 1px solid var(--separator); margin: 8px 0;" />
-          <h3>Install as an app (PWA)</h3>
-          <p id="pwa-status" class="hint" aria-live="polite"></p>
         </section>
       </div>
       <footer class="modal-footer">
-        <button id="save-settings" class="primary">Save</button>
+        <span class="hint" id="app-version"></span>
+        <button class="secondary" type="button" data-close>Cancel</button>
+        <button id="save-settings" class="primary" type="button">Save changes</button>
       </footer>
     </div>
   </div>

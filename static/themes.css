@@ -1,15 +1,64 @@
-/* Theme palettes — ported 1:1 from ADS-B macOS App/source/Models/Theme.swift.
-   Each block sets the variables consumed by app.css and the JS map/radar code. */
+/* Theme palettes. Each block sets the base tokens consumed by app.css (which derives
+   the glass / hairline / hover tokens from them) and by the JS map + radar code.
+   Base colours must stay plain rgb()/rgba()/#hex — radar.js parses them. The original
+   eleven were ported 1:1 from the macOS app's Theme.swift. */
 
 :root {
-  --font-mono: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
-  --font-system: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  /* System stacks only — nothing is fetched. `ui-*` keywords pick the platform UI face
+     (SF Pro / Segoe UI Variable / Roboto) and the named fallbacks cover older engines. */
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Code', 'Roboto Mono', Menlo, Consolas, 'Noto Sans Mono', monospace;
+  --font-system: ui-sans-serif, system-ui, -apple-system, 'Segoe UI Variable Text', 'Segoe UI', Roboto, 'Inter', 'Helvetica Neue', 'Nimbus Sans', Arial, sans-serif;
   --font-serif: 'Georgia', 'Times New Roman', serif;
 
   --band-emergency: #ff3030;
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+
+  /* Dark is the norm; the three light themes flip these below. `color-scheme` makes
+     native widgets (select pop-ups, scrollbars, date/number spinners) match. */
+  color-scheme: dark;
+  --shadow-rgb: 0 0 0;
+  --shadow-strength: 1;
+  --marker-outline: rgba(0, 0, 0, 0.62);
+
+  /* Text-on-panel legibility. Status and accent colours are tuned as FILLS; used as
+     small text some of them miss WCAG AA against the panel (orange on white, Nord's
+     muted red on slate). app.css derives --accent-text / --alert-text / … by mixing
+     each colour toward --contrast-ink by these amounts; 0% leaves a theme untouched. */
+  --contrast-ink: #fff;
+  --accent-lift: 0%;
+  --status-lift: 0%;
+}
+
+/* -------- MIDNIGHT (default since 1.8.0) --------
+ * Graphite-navy chrome with a phosphor-mint accent — the radar green, modernised.
+ * Altitude ramp keeps the familiar green → yellow → orange → pink ordering. */
+[data-theme="midnight"] {
+  --bg: #0a0e16;
+  --panel-bg: #101622;
+  --surface-bg: #182132;
+  --primary-text: #e8edf6;
+  --secondary-text: #9aa6bb;
+  --tertiary-text: #5b667a;
+  --accent: #3ddcb0;
+  --accent-muted: #1f8f74;
+  --alert: #ff5d6c;
+  --success: #3ddc97;
+  --warning: #ffc24b;
+  --separator: #232d40;
+  --map-trail: rgba(61, 220, 176, 0.6);
+  --map-range-ring: rgba(148, 163, 184, 0.3);
+  --map-receiver: #ffffff;
+  --aircraft-selected: #ffffff;
+  --band-ground: #7c8799;
+  --band-low: #34d399;
+  --band-mid: #fbd34d;
+  --band-high: #fb923c;
+  --band-very-high: #f472b6;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
 }
 
 /* -------- RADAR CLASSIC -------- */
@@ -18,7 +67,7 @@
   --panel-bg: rgb(10, 15, 10);
   --surface-bg: rgb(15, 25, 15);
   --primary-text: rgb(0, 255, 64);
-  --secondary-text: rgb(0, 140, 46);
+  --secondary-text: rgb(0, 156, 51);      /* was 0,140,46 — 4.4:1 on the panel; now 5.3:1 */
   --tertiary-text: rgb(0, 51, 20);
   --accent: rgb(0, 255, 64);
   --accent-muted: rgb(0, 140, 46);
@@ -72,7 +121,7 @@
   --panel-bg: #000000;
   --surface-bg: rgb(13, 13, 13);
   --primary-text: rgb(255, 176, 0);
-  --secondary-text: rgb(153, 107, 0);
+  --secondary-text: rgb(168, 118, 0);     /* was 153,107,0 — 4.5:1 on black; now 5.3:1 */
   --tertiary-text: rgb(77, 54, 0);
   --accent: rgb(255, 176, 0);
   --accent-muted: rgb(153, 107, 0);
@@ -234,7 +283,7 @@
   --panel-bg: #f7f0db;
   --surface-bg: #eee8d5;
   --primary-text: #073642;
-  --secondary-text: #657b83;
+  --secondary-text: #586e75;              /* base01 — base00 (#657b83) was 3.9:1 on the panel */
   --tertiary-text: #93a1a1;
   --accent: #268bd2;
   --accent-muted: #2aa198;
@@ -307,6 +356,36 @@
   --band-very-high: rgb(255, 51, 199);
   --font-body: var(--font-system);
   --font-title: var(--font-mono);
+}
+
+/* -------- Light-scheme adjustments --------
+ * Shadows on a light page want far less ink, and native widgets should render light. */
+[data-theme="light"],
+[data-theme="sectional"],
+[data-theme="solarizedLight"] {
+  color-scheme: light;
+  --shadow-rgb: 30 41 59;
+  --shadow-strength: 0.42;
+  --marker-outline: rgba(0, 0, 0, 0.5);
+  --contrast-ink: #000;
+  --accent-lift: 22%;
+  --status-lift: 38%;
+}
+/* Dark themes whose red is too muted to read as small text on their panel colour. */
+[data-theme="nord"] { --status-lift: 42%; }
+[data-theme="solarizedDark"] { --status-lift: 35%; --accent-lift: 25%; }
+/* Solarized's blue takes dark ink (cream/navy on it sits near 3.5:1). */
+[data-theme="solarizedDark"],
+[data-theme="solarizedLight"] { --on-accent: #001419; }
+[data-theme="light"] { --on-accent: #fff; }
+
+/* -------- Theme character --------
+ * The CRT themes keep hard corners; everything else uses the default radii. */
+[data-theme="terminal"] {
+  --radius-sm: 1px;
+  --radius-md: 2px;
+  --radius-lg: 3px;
+  --radius-xl: 4px;
 }
 
 /* -------- Terminal CRT scanline overlay -------- */

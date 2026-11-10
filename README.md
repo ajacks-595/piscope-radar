@@ -1,7 +1,7 @@
 # PiScope Radar
 
 > A self-hosted ADS-B flight-tracker for your Raspberry Pi. Sits alongside `tar1090` /
-> PiAware and gives you a polished web UI with **11 themes**, an **animated radar sweep**,
+> PiAware and gives you a modern map-first web UI with **15 themes**, an **animated radar sweep**,
 > **AI aircraft briefings you can chat with**, **all-time records**, **polar coverage
 > diagrams**, **webhook alerts**, a **PWA installer** for your phone, and a clean **API for
 > embedding into other dashboards**.
@@ -9,15 +9,16 @@
 > Designed for LAN use — no auth, no HTTPS dance, no cloud accounts. Open
 > `http://<pi-ip>/piscope` and you're tracking aircraft.
 
-![PiScope Radar — radar classic theme over the UK](docs/screenshots/01-overview.jpg)
+![PiScope Radar — the default Midnight theme: live map with floating list, map controls and top bar](docs/screenshots/01-overview.jpg)
 
 ## Highlights
 
-- **Live map** with custom rotated aircraft silhouettes, altitude-banded colouring, trails (single / by altitude / by speed gradient), range rings, and a receiver pulse marker
+- **Map-first interface** — the map fills the window; the aircraft list, map controls and detail panel are translucent panels floating over it, so opening or collapsing one never resizes the map. On a phone the list becomes a drawer and the detail panel a bottom sheet
+- **Live map** with rotated aircraft silhouettes per airframe class (airliner / heavy / light / fast jet / helicopter), altitude-banded colouring, trails (single / by altitude / by speed gradient), range rings, and a receiver pulse marker
 - **Animated radar sweep overlay** — two variants (classic phosphor 5s rotation, modern ATC 3s) with snapshot mode where aircraft positions only update as the sweep passes
-- **11 themes** — radar (classic / modern), terminal CRT, light, dark, tactical, sectional (paper aviation chart), solarized (dark / light), nord, synthwave
-- **Three map-label modes** — off, callsign only, or tar1090-style full info (reg · type / speed-altitude / callsign / origin-destination)
-- **Detail panel** with a compass rose, signal-strength bar, squawk chip, performance section (IAS / TAS / Mach / roll / turn rate), autopilot section, photos, route, FlightAware integration, and an AI-written brief
+- **15 themes** with a visual picker — midnight (default), radar (classic / modern), terminal CRT, light, dark, tactical, sectional (paper aviation chart), solarized (dark / light), nord, synthwave, dracula, tokyo night, catppuccin mocha
+- **Three map-label modes** — off, callsign only, or tar1090-style full info (reg · type / speed-altitude / callsign / origin-destination), switchable from the map's Layers menu
+- **Detail panel** with a photo header, a route strip showing progress from origin to destination, live stat tiles (altitude + vertical rate, speed, track, distance, signal, squawk), the full transponder data (IAS / TAS / Mach / roll / turn rate / selected altitude / wind …), FlightAware integration, and an AI-written brief
 - **AI aircraft briefings + chat** — generate a short natural-language brief for any aircraft and ask follow-up questions. Pick your backend: a local **Ollama** model, a **cloud API** (Anthropic / OpenAI / Google, bring your own key), or your own **Claude Code subscription** via a tiny LAN shim — see [`tools/claude-shim/`](tools/claude-shim/)
 - **Daily digest** — a once-a-day rollup (event totals, top types, rare callouts, optional AI commentary) delivered in-app, by webhook, or email
 - **Event log** for military / emergency / watchlist / rare-type sightings
@@ -31,7 +32,7 @@
 - **All-time records** — closest pass, lowest altitude, fastest, longest range, highest
 - **Polar coverage diagram** — see your antenna's weakest direction at a glance
 - **Type leaderboard** — what flies past most often
-- **Traffic heatmap** layer, **day/night terminator**, **weather radar overlay** (RainViewer)
+- **Layers menu** — airports, OpenAIP aviation chart, **weather radar** (RainViewer), **traffic heatmap**, **day/night terminator**, range rings
 - **Replay** — scrub back through the last hour of feed
 - **Multi-receiver merge** — point at extra tar1090s and dedupe by hex
 - **Dashboard integration** — drop PiScope into a home dashboard: a chrome-less embeddable map view, a JSON summary API, and a real-time event stream (see [Dashboard integration](#dashboard-integration))
@@ -42,13 +43,20 @@
 
 ## A few looks
 
-### Detail panel with compass rose, signal bars, photo, and route
+<sub>Screenshots show synthetic traffic around a placeholder receiver in London.</sub>
+
+### Detail panel — photo, route progress, live tiles
 
 ![Aircraft detail panel](docs/screenshots/02-detail-panel.jpg)
 
-### Theme gallery (11 included — a few favourites)
+### Theme gallery (15 included — a few favourites)
 
-| Radar Modern (cyan ATC scope) | Terminal (CRT amber) |
+Pick one from the theme button in the top bar (or Settings → Appearance); each card previews
+that theme's real palette.
+
+![Theme picker](docs/screenshots/10-theme-gallery.jpg)
+
+| Radar Modern (cyan ATC scope, with the sweep) | Terminal (CRT amber) |
 |---|---|
 | ![Radar Modern](docs/screenshots/03-radar-modern.jpg) | ![Terminal](docs/screenshots/04-terminal.jpg) |
 
@@ -65,17 +73,24 @@ range per integer-degree bearing, updated live.
 
 ### tar1090-style full info labels
 
-Toggle Settings → Map → "Aircraft labels" to switch between **off**, **callsign only**,
-and **full info**. Full mode auto-hides below a configurable zoom so cluttered airspace
+Use the Layers menu on the map (or Settings → Map → "Aircraft labels") to switch between
+**off**, **callsign only**, and **full info**. Full mode auto-hides below a configurable zoom so cluttered airspace
 stays readable.
 
 ![Full info labels](docs/screenshots/08-labels-full.jpg)
 
+### Map layers
+
+Overlays and label mode live in one menu on the map's control rail (`L`).
+
+![Layers menu](docs/screenshots/11-layers.jpg)
+
 ### Mobile / PWA
 
-The topbar wraps onto a second row below 900 px. Install to your phone homescreen via
-the browser's "Add to Home Screen" — it gets a manifest + service worker and behaves
-like a real app.
+On a phone the aircraft list is a slide-in drawer, the detail panel a bottom sheet, and the
+less-used actions fold into an overflow menu. Install to your phone homescreen via the
+browser's "Add to Home Screen" — it gets a manifest + service worker and behaves like a
+real app.
 
 > **The offline shell needs HTTPS.** Browsers only run service workers in a *secure
 > context*: an `https://` origin, or `http://localhost`. On the plain

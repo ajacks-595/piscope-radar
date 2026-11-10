@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 
 # Version stamp. Bump whenever you ship a notable user-facing change — the frontend reads
 # this via /piscope/api/version and pops a "✨ What's new" toast on first load after a bump.
-VERSION = "1.7.6"
+VERSION = "1.8.0"
 
 app = FastAPI(title="PiScope Radar", version=VERSION, lifespan=lifespan)
 
@@ -235,7 +235,7 @@ def _csp_header(script_nonce: Optional[str] = None, *, script_self_only: bool = 
 # a short TTL so we don't re-hash the static dir on every poll.
 
 _SHELL_FILES = ("index.html", "app.js", "app.css", "themes.css", "radar.js",
-                "manifest.webmanifest", "sw.js")
+                "manifest.webmanifest", "sw.js", "icons/aircraft.svg", "icons/piscope.svg")
 _SW_CACHE_TAG_CACHE: dict[str, tuple[float, str]] = {}
 _SW_CACHE_TAG_TTL_S = 60.0
 
@@ -279,6 +279,11 @@ async def index() -> HTMLResponse:
     # "<script>" in index.html (the others are "<script src=...>").
     nonce = secrets.token_urlsafe(16)
     html = html.replace("<script>", f'<script nonce="{nonce}">', 1)
+    # Tell the page which shell cache it was built for (the same tag /piscope/sw.js
+    # carries) so its bootstrap can detect a service worker left over from another
+    # build and reload clean instead of running new HTML against old cached JS/CSS.
+    html = html.replace('<meta name="piscope-shell" content="" />',
+                        f'<meta name="piscope-shell" content="{_shell_cache_tag()}" />', 1)
     # `no-store` is stronger than `no-cache` — the browser won't keep the HTML at all, so an
     # upgrade always delivers the freshly-versioned asset URLs on the very next navigation.
     return HTMLResponse(html, headers={
