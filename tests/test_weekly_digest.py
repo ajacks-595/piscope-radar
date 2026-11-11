@@ -50,13 +50,17 @@ def _seed_week(now: float) -> None:
         Aircraft(hex="bbb002", callsign="BAW123", type_code="A320",
                  altitude_baro=35000, ground_speed=440.0, distance_nm=90.0),
     ], now - 3600)
+    # The day before the poll above — NOT "now - 86400": in the first hour after UTC
+    # midnight `now - 3600` is already yesterday, so the two rows landed on the same
+    # (hex, date) and the fixture died on the UNIQUE constraint (suite failed 00:00–01:00 UTC).
+    earlier = now - 3600 - 86400
     with _connect() as conn:
         buf.flush(conn, force=True)
         # Second day for the returning aircraft, first seen inside the window.
         conn.execute(
             "INSERT INTO aircraft_sightings(hex, date, first_ts, last_ts, polls, callsign) "
             "VALUES('bbb002', ?, ?, ?, 40, 'BAW456')",
-            (_utc_date(now - 86400), now - 86400, now - 86000))
+            (_utc_date(earlier), earlier, earlier + 400))
         conn.execute(
             "INSERT INTO daily_stats(date, total_polls, unique_aircraft, max_range_nm, "
             "emergencies, military_seen) VALUES(?, 500, 3, 90.0, 0, 1)",

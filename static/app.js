@@ -1805,9 +1805,12 @@ function liveSectionHtml(ac) {
   const distTile = tileHtml('Distance',
     ac.distance_nm != null ? ac.distance_nm.toFixed(1) : '—', ac.distance_nm != null ? 'nm' : '',
     bearing != null ? `bearing ${Math.round(bearing)}° ${compassDirection(bearing)}` : '');
+  // Name the position source only when the feed says what it is. dump1090-fa style
+  // feeds (a local PiAware) carry no per-aircraft source, which arrives here as "other".
+  const sourceKnown = sourceClass(ac.data_source) !== 'other';
   const signalTile = tileHtml('Signal',
     ac.rssi != null ? ac.rssi.toFixed(1) : '—', ac.rssi != null ? 'dBFS' : '',
-    `${signalBarSvg(ac.rssi)} ${escapeHtml(sourceLabel(ac.data_source))}`);
+    `${signalBarSvg(ac.rssi)}${sourceKnown ? ' ' + escapeHtml(sourceLabel(ac.data_source)) : ''}`);
   const squawkNote = SQUAWK_NOTES[ac.squawk]
     || (ac.emergency && ac.emergency !== 'none' ? ac.emergency : '');
   const squawkTile = tileHtml('Squawk', ac.squawk ? escapeHtml(ac.squawk) : '—', '',

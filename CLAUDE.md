@@ -66,8 +66,9 @@ serves a polished LAN web UI on `http://<pi>/piscope`: live map with Leaflet, th
 sweep, detail panel with route + photo + AI brief, events log, polar coverage diagram,
 heatmap, historical analytics (traffic patterns, operators, notable/returning aircraft,
 weekly Mattermost-ready summary), webhooks, replay, PWA install. No auth — LAN-only by
-design. Currently `VERSION = "1.8.0"` on `dev` (see `app/main.py`) — the UI redesign;
-`main` and the latest tag are `v1.7.5` — they converge at the next `main` promotion.
+design. Currently `VERSION = "1.8.1"` on `dev` (see `app/main.py`); the Pi runs `1.8.0`
+(the UI redesign, deployed 2026-11-10). `main` and the latest tag are `v1.7.5` — they
+converge at the next `main` promotion.
 
 ## Architecture & tech stack
 
@@ -349,9 +350,11 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
 
 ## Open items / future work
 
-- **1.8.0 (UI redesign) is on `dev` only** — not deployed to the Pi, not pushed. The README
-  screenshots were regenerated from a synthetic feed (placeholder London receiver, drawn
-  sample photo); re-shoot from real traffic if preferred.
+- **1.8.0 (UI redesign) is deployed to the Pi (2026-11-10) but not pushed**; 1.8.1 on `dev`
+  (drops the meaningless "other" source label from the Signal tile) is not deployed yet.
+  Rollback for 1.8.0: `/opt/piscope/{app,static}.bak-pre-1.8.0`, `piscope.db.bak-pre-1.8.0`.
+  The README screenshots were regenerated from a synthetic feed (placeholder London
+  receiver, drawn sample photo); re-shoot from real traffic if preferred.
 
 - **claude-shim is NOT installed right now** (found 2026-09-30: no `/opt/claude-shim`, no
   unit; only `/etc/claude-shim.env` remains), but the Pi's `claude_cli_url` still points at
@@ -464,6 +467,11 @@ time (now covered by `tests/test_ui_shell.py` and e2e modules `12-pwa`, `15-shel
   AA as small text in five themes. Re-run a contrast audit over **derived** pairs too
   (accent text on the accent wash, secondary text on tiles), compositing the alpha
   washes over the panel colour; raw token pairs miss them.
+- **2026-11-11 — Fixtures must not straddle UTC midnight.** `test_weekly_digest._seed_week`
+  wrote "an hour ago" and "a day ago" rows that are the same UTC date between 00:00 and
+  01:00 UTC, so three tests failed for one hour a day. When a fixture needs two distinct
+  days, derive the second from the first (`earlier = first - 86400`), never both from
+  `now`. Worth an occasional suite run with the clock just past midnight UTC.
 - **2026-11-10 — Pans must respect the floating panels.** With a full-bleed map, a bare
   `map.panTo()` puts the target under the list or the detail panel. E2E `15-shell` asserts
   the selected aircraft's container point lies between `mapInsets()`.
