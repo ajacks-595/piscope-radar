@@ -66,8 +66,8 @@ serves a polished LAN web UI on `http://<pi>/piscope`: live map with Leaflet, th
 sweep, detail panel with route + photo + AI brief, events log, polar coverage diagram,
 heatmap, historical analytics (traffic patterns, operators, notable/returning aircraft,
 weekly Mattermost-ready summary), webhooks, replay, PWA install. No auth — LAN-only by
-design. Currently `VERSION = "1.9.0"` on `dev` (see `app/main.py`) — the theme refresh;
-the Pi runs `1.8.0` (the UI redesign, deployed 2026-11-10). `main` and the latest tag are
+design. Currently `VERSION = "1.9.0"` on `dev` (see `app/main.py`) — the theme refresh —
+and the Pi runs the same `1.9.0` (deployed 2026-11-11). `main` and the latest tag are
 `v1.7.5` — they converge at the next `main` promotion.
 
 ## Architecture & tech stack
@@ -364,9 +364,10 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
 
 ## Open items / future work
 
-- **1.8.0 (UI redesign) is deployed to the Pi (2026-11-10) but not pushed**; `dev` is
-  ahead with 1.8.1 (drops the meaningless "other" source label from the Signal tile) and
-  1.9.0 (theme refresh: per-theme map tint, 3 new themes, 5 reworked) — neither deployed.
+- **1.9.0 is deployed to the Pi (2026-11-11) but not pushed.** It carries the 1.8.0 UI
+  redesign, 1.8.1 (drops the meaningless "other" source label from the Signal tile) and
+  the 1.9.0 theme refresh (per-theme map tint, 3 new themes, 5 reworked). `origin/dev`
+  and `main` are still at 1.7.x; squash the `checkpoint:` commits before pushing.
   Rollback for 1.8.0: `/opt/piscope/{app,static}.bak-pre-1.8.0`, `piscope.db.bak-pre-1.8.0`.
   The README screenshots were regenerated from a synthetic feed (placeholder London
   receiver, drawn sample photo); re-shoot from real traffic if preferred.
