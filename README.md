@@ -1,7 +1,7 @@
 # PiScope Radar
 
 > A self-hosted ADS-B flight-tracker for your Raspberry Pi. Sits alongside `tar1090` /
-> PiAware and gives you a modern map-first web UI with **15 themes**, an **animated radar sweep**,
+> PiAware and gives you a modern map-first web UI with **18 themes**, an **animated radar sweep**,
 > **AI aircraft briefings you can chat with**, **all-time records**, **polar coverage
 > diagrams**, **webhook alerts**, a **PWA installer** for your phone, and a clean **API for
 > embedding into other dashboards**.
@@ -16,7 +16,7 @@
 - **Map-first interface** — the map fills the window; the aircraft list, map controls and detail panel are translucent panels floating over it, so opening or collapsing one never resizes the map. On a phone the list becomes a drawer and the detail panel a bottom sheet
 - **Live map** with rotated aircraft silhouettes per airframe class (airliner / heavy / light / fast jet / helicopter), altitude-banded colouring, trails (single / by altitude / by speed gradient), range rings, and a receiver pulse marker
 - **Animated radar sweep overlay** — two variants (classic phosphor 5s rotation, modern ATC 3s) with snapshot mode where aircraft positions only update as the sweep passes
-- **15 themes** with a visual picker — midnight (default), radar (classic / modern), terminal CRT, light, dark, tactical, sectional (paper aviation chart), solarized (dark / light), nord, synthwave, dracula, tokyo night, catppuccin mocha
+- **18 themes** with a visual picker, each with its own map treatment and altitude colours — ten PiScope originals (Midnight, Light, Graphite, Radar Classic / Modern, Terminal CRT, Tactical, Sectional, **Night Vision** red-light mode, **High Contrast**) and eight community palettes (Nord, Gruvbox, Dracula, Tokyo Night, Catppuccin Mocha, Solarized Dark / Light, Synthwave)
 - **Three map-label modes** — off, callsign only, or tar1090-style full info (reg · type / speed-altitude / callsign / origin-destination), switchable from the map's Layers menu
 - **Detail panel** with a photo header, a route strip showing progress from origin to destination, live stat tiles (altitude + vertical rate, speed, track, distance, signal, squawk), the full transponder data (IAS / TAS / Mach / roll / turn rate / selected altitude / wind …), FlightAware integration, and an AI-written brief
 - **AI aircraft briefings + chat** — generate a short natural-language brief for any aircraft and ask follow-up questions. Pick your backend: a local **Ollama** model, a **cloud API** (Anthropic / OpenAI / Google, bring your own key), or your own **Claude Code subscription** via a tiny LAN shim — see [`tools/claude-shim/`](tools/claude-shim/)
@@ -49,20 +49,36 @@
 
 ![Aircraft detail panel](docs/screenshots/02-detail-panel.jpg)
 
-### Theme gallery (15 included — a few favourites)
+### Theme gallery (18 included — a few favourites)
 
-Pick one from the theme button in the top bar (or Settings → Appearance); each card previews
-that theme's real palette.
+Pick one from the theme button in the top bar (or Settings → Appearance); each card is a
+thumbnail of that theme's real palette, map tone and altitude colours. With the map style
+on *Automatic*, the basemap is tinted to match the theme — phosphor green under Radar
+Classic, sepia under Gruvbox, deep red under Night Vision.
 
 ![Theme picker](docs/screenshots/10-theme-gallery.jpg)
 
-| Radar Modern (cyan ATC scope, with the sweep) | Terminal (CRT amber) |
+| Radar Classic (phosphor green, with the sweep) | Radar Modern (cyan ATC scope) |
 |---|---|
-| ![Radar Modern](docs/screenshots/03-radar-modern.jpg) | ![Terminal](docs/screenshots/04-terminal.jpg) |
+| ![Radar Classic](docs/screenshots/14-radar-classic.jpg) | ![Radar Modern](docs/screenshots/03-radar-modern.jpg) |
+
+| Tactical (olive and khaki over satellite imagery) | Terminal (CRT amber, no basemap) |
+|---|---|
+| ![Tactical](docs/screenshots/15-tactical.jpg) | ![Terminal](docs/screenshots/04-terminal.jpg) |
+
+| Night Vision (red-light mode for dark-adapted eyes) | Gruvbox (warm, sepia map) |
+|---|---|
+| ![Night Vision](docs/screenshots/12-night-vision.jpg) | ![Gruvbox](docs/screenshots/13-gruvbox.jpg) |
 
 | Synthwave (80s neon) | Nord (frost on polar night) |
 |---|---|
 | ![Synthwave](docs/screenshots/05-synthwave.jpg) | ![Nord](docs/screenshots/06-nord.jpg) |
+
+**Night Vision** keeps everything — chrome, map, photos, traffic — in dim red so a glance
+at the screen doesn't cost you your night vision when you're outside watching the sky;
+altitude reads as brightness, and only an emergency squawk breaks through, in yellow.
+**High Contrast** is black / white / yellow with opaque panels and solid borders; every
+text pair clears WCAG AAA.
 
 ### Polar coverage diagram
 

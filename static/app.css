@@ -73,14 +73,27 @@
     --warning-text: color-mix(in srgb, var(--warning) calc(100% - var(--status-lift)), var(--contrast-ink));
   }
 }
-[data-theme="sectional"] { --on-alert: #fff; }
 /* Opaque panels: the user's "translucent panels" preference, the OS reduce-transparency
-   setting, and the Terminal theme (a CRT has no frosted glass). */
+   setting, and the themes that are opaque by design (a CRT has no frosted glass; High
+   Contrast must not let the map bleed through its text). */
 html[data-glass="off"],
-[data-theme="terminal"] {
+[data-theme="terminal"],
+[data-theme="highContrast"] {
   --glass-bg: var(--panel-bg);
   --glass-strong: var(--panel-bg);
   --glass-filter: none;
+}
+/* High Contrast: the alpha washes everything else derives would be too faint to see,
+   so every boundary and state is a solid colour. */
+[data-theme="highContrast"] {
+  --hairline: #8c8c8c;
+  --hairline-strong: #ffffff;
+  --hover: #2b2b2b;
+  --pressed: #3d3d3d;
+  --accent-soft: #3a3400;
+  --accent-line: var(--accent);
+  --field-bg: #000000;
+  --tile-bg: #141414;
 }
 @media (prefers-reduced-transparency: reduce) {
   :root { --glass-bg: var(--panel-bg); --glass-strong: var(--panel-bg); --glass-filter: none; }
@@ -880,7 +893,7 @@ html[data-sidebar="collapsed"] .sidebar {
 .replay-clock { font-family: var(--font-data); font-variant-numeric: tabular-nums; font-size: 12px; white-space: nowrap; color: var(--primary-text); }
 
 /* ------------- leaflet overrides ------------- */
-.leaflet-container { background: var(--bg); font-family: inherit; font-size: inherit; }
+.leaflet-container { background: var(--map-tone, var(--bg)); font-family: inherit; font-size: inherit; }
 .leaflet-bottom.leaflet-right {
   right: calc(var(--inset-right) - var(--gap));
   transition: right 0.32s var(--ease);
@@ -1095,7 +1108,10 @@ html[data-sidebar="collapsed"] .sidebar {
 #map[data-tile-filter="dark"] .leaflet-tile-pane {
   filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9);
 }
-/* `tint: 'midnight'` presets: cool Esri's neutral dark-grey canvas to a deep navy. */
+/* `tint: 'theme'` presets (the "Automatic" basemap for most themes): the neutral Esri
+   canvas takes on the active theme's hue via its --map-tint filter (themes.css).
+   `tint: 'midnight'` is the fixed navy version, selectable under any theme. */
+#map[data-tile-filter="theme"] .leaflet-tile-pane { filter: var(--map-tint, none); }
 #map[data-tile-filter="midnight"] .leaflet-tile-pane {
   filter: sepia(1) hue-rotate(178deg) saturate(1.5) brightness(0.72) contrast(1.12);
 }
@@ -1571,9 +1587,19 @@ html[data-detail="open"] { --inset-right: calc(var(--gap) * 2 + var(--detail-w))
 
 /* Theme gallery. Each swatch carries its own data-theme, so the palette variables
    inside it resolve to THAT theme — the previews are the real tokens, not copies. */
-.popover-themes { width: 348px; }
+.popover-themes { width: 356px; }
 .theme-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 8px; padding: 0 4px 4px; }
 .theme-grid-lg { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 14px 12px; padding: 0; }
+.theme-group {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--secondary-text);
+}
+.theme-group:first-child { margin-top: 0; }
 .theme-card {
   display: flex;
   flex-direction: column;
@@ -1585,13 +1611,15 @@ html[data-detail="open"] { --inset-right: calc(var(--gap) * 2 + var(--detail-w))
   color: var(--secondary-text);
   text-align: left;
 }
+/* The swatch is a thumbnail of the theme: its map tone, a mini panel with accent and
+   text lines, and its altitude ramp as "traffic" over the map. */
 .theme-swatch {
   position: relative;
   display: block;
   height: 56px;
   border-radius: 10px;
-  background: var(--bg);
-  border: 1px solid color-mix(in srgb, var(--primary-text) 22%, transparent);
+  background: var(--map-tone, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--primary-text) 24%, transparent);
   overflow: hidden;
   transition: transform 0.15s var(--ease);
 }
@@ -1602,20 +1630,20 @@ html[data-detail="open"] { --inset-right: calc(var(--gap) * 2 + var(--detail-w))
   left: 6px;
   top: 6px;
   bottom: 6px;
-  width: 36%;
+  width: 38%;
   border-radius: 6px;
   background: var(--panel-bg);
   border: 1px solid var(--separator);
 }
 .theme-swatch i { position: absolute; display: block; border-radius: 99px; }
-.theme-swatch .sw-accent { left: 11px; top: 12px; width: 20%; height: 4px; background: var(--accent); }
-.theme-swatch .sw-text { left: 11px; top: 21px; width: 24%; height: 3px; background: var(--primary-text); opacity: 0.8; }
-.theme-swatch .sw-text2 { left: 11px; top: 28px; width: 16%; height: 3px; background: var(--secondary-text); opacity: 0.8; }
-.theme-swatch .sw-band { right: 8px; bottom: 8px; width: 7px; height: 7px; }
-.theme-swatch .sw-b1 { right: 44px; background: var(--band-low); }
-.theme-swatch .sw-b2 { right: 32px; background: var(--band-mid); }
-.theme-swatch .sw-b3 { right: 20px; background: var(--band-high); }
-.theme-swatch .sw-b4 { right: 8px; background: var(--band-very-high); }
+.theme-swatch .sw-accent { left: 11px; top: 12px; width: 22%; height: 4px; background: var(--accent); }
+.theme-swatch .sw-text { left: 11px; top: 21px; width: 26%; height: 3px; background: var(--primary-text); opacity: 0.85; }
+.theme-swatch .sw-text2 { left: 11px; top: 28px; width: 17%; height: 3px; background: var(--secondary-text); opacity: 0.85; }
+.theme-swatch .sw-band { width: 8px; height: 8px; box-shadow: 0 0 0 1px var(--marker-outline); }
+.theme-swatch .sw-b1 { right: 34%; top: 58%; background: var(--band-low); }
+.theme-swatch .sw-b2 { right: 12%; top: 22%; background: var(--band-mid); }
+.theme-swatch .sw-b3 { right: 22%; top: 40%; background: var(--band-high); }
+.theme-swatch .sw-b4 { right: 9%; top: 66%; background: var(--band-very-high); }
 .theme-card:hover .theme-swatch { transform: translateY(-1px); }
 .theme-card[aria-pressed="true"] .theme-swatch { outline: 2px solid var(--accent); outline-offset: 2px; }
 .theme-name { font-size: 11.5px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2212,7 +2240,7 @@ html[data-embed][data-embed-expand="1"] .embed-expand-link { display: inline-blo
   .events-list .ev-info { grid-column: 2; }
   .events-list .ev-time { grid-row: 1 / span 2; }
   .events-list .ev-distance { grid-row: 1 / span 2; }
-  .popover-themes { width: min(348px, calc(100vw - 16px)); }
+  .popover-themes { width: min(356px, calc(100vw - 16px)); }
   .toast { bottom: calc(18px + env(safe-area-inset-bottom)); border-radius: var(--radius-lg); }
 }
 @keyframes sheet-in { from { transform: translateY(24px); opacity: 0; } }
@@ -2230,6 +2258,27 @@ html[data-embed][data-embed-expand="1"] .embed-expand-link { display: inline-blo
 [data-theme="terminal"] .tile-sub { font-size: 10.5px; letter-spacing: -0.02em; }
 [data-theme="terminal"] .glass,
 [data-theme="terminal"] .modal-panel { border-color: var(--accent-muted); box-shadow: none; }
+/* Night Vision: nothing on screen may leave the red channel — photos and the small
+   flag in the map attribution included. */
+[data-theme="nightVision"] .detail-photo img,
+[data-theme="nightVision"] .leaflet-attribution-flag {
+  filter: grayscale(1) sepia(1) hue-rotate(-42deg) saturate(3.2) brightness(0.48) contrast(1.1);
+}
+[data-theme="nightVision"] .detail-close,
+[data-theme="nightVision"] .detail-photo .credit,
+[data-theme="nightVision"] .detail-photos .photo-nav,
+[data-theme="nightVision"] .detail-photos .photo-counter,
+[data-theme="nightVision"] .aircraft-marker .ac-label { color: var(--primary-text); }
+[data-theme="nightVision"] .aircraft-marker.selected .ac-label { color: var(--on-accent); }
+[data-theme="nightVision"] .sheet-handle { background: var(--secondary-text); }
+/* High Contrast: thicker focus ring and outlines, no soft shadows. */
+[data-theme="highContrast"] :focus-visible { outline-width: 3px; }
+[data-theme="highContrast"] .glass,
+[data-theme="highContrast"] .modal-panel,
+[data-theme="highContrast"] .popover,
+[data-theme="highContrast"] .context-menu { border-color: #ffffff; box-shadow: none; }
+[data-theme="highContrast"] .aircraft-marker svg { stroke-width: 2.2px; }
+[data-theme="highContrast"] .aircraft-row.selected { box-shadow: inset 0 0 0 2px var(--accent); }
 
 /* ------------- motion preferences ------------- */
 @media (prefers-reduced-motion: reduce) {

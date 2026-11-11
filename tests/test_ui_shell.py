@@ -72,7 +72,7 @@ def test_every_theme_option_has_a_palette_and_default_tiles():
     html, js, themes = _read("index.html"), _read("app.js"), _read("themes.css")
     select = re.search(r'<select id="theme-select".*?</select>', html, re.DOTALL).group(0)
     options = re.findall(r'<option value="(\w+)"', select)
-    assert len(options) == len(set(options)) >= 15
+    assert len(options) == len(set(options)) >= 18
     tiles = re.search(r"const THEME_DEFAULT_TILES = \{(.*?)\};", js, re.DOTALL).group(1)
     presets = set(re.findall(r"^\s{2}(\w+):\s*\{ url:", js, re.MULTILINE))
     for theme in options:
@@ -80,11 +80,34 @@ def test_every_theme_option_has_a_palette_and_default_tiles():
         assert block, f"theme {theme} has no palette block in themes.css"
         for token in ("--bg", "--panel-bg", "--surface-bg", "--primary-text", "--secondary-text",
                       "--accent", "--alert", "--success", "--warning", "--separator",
-                      "--band-low", "--band-very-high", "--font-body"):
+                      "--band-low", "--band-very-high", "--font-body",
+                      "--map-tint", "--map-tone"):      # every theme styles the map too
             assert f"{token}:" in block.group(1), f"{theme} is missing {token}"
         m = re.search(rf"\b{theme}: '(\w+)'", tiles)
         assert m, f"theme {theme} has no default basemap"
         assert m.group(1) in presets, f"{theme} defaults to unknown tile preset {m.group(1)}"
+
+
+def test_themes_are_told_apart_by_more_than_their_name():
+    # The 1.9.0 pass exists because five dark themes were near-twins. Guard the cheapest
+    # proxy for "looks the same": no two themes may share BOTH their accent colour and
+    # their map treatment (tint + tone), and the picker groups them under headings.
+    themes = _read("themes.css")
+    seen: dict[tuple[str, ...], str] = {}
+    for name, body in re.findall(r'\[data-theme="(\w+)"\]\s*\{([^}]*--map-tone[^}]*)\}', themes):
+        key = tuple(re.search(rf"--{token}:\s*([^;]+);", body).group(1).strip()
+                    for token in ("accent", "map-tint", "map-tone"))
+        assert key not in seen, f"{name} and {seen[key]} share accent + map treatment"
+        seen[key] = name
+    assert len(seen) >= 18
+    html = _read("index.html")
+    select = re.search(r'<select id="theme-select".*?</select>', html, re.DOTALL).group(0)
+    assert select.count("<optgroup ") == 2
+    # "Automatic" basemaps that take the theme's tint must exist as presets.
+    js = _read("app.js")
+    for preset in ("themed", "themedLight"):
+        assert re.search(rf"^\s{{2}}{preset}:\s*\{{ url:.*tint: 'theme'", js, re.MULTILINE), preset
+    assert '#map[data-tile-filter="theme"] .leaflet-tile-pane { filter: var(--map-tint, none); }' in _read("app.css")
 
 
 def test_theme_base_colours_stay_machine_parseable():
@@ -92,7 +115,8 @@ def test_theme_base_colours_stay_machine_parseable():
     # plain rgb()/rgba()/#hex (no color-mix, hsl, named colours).
     themes = _read("themes.css")
     for name, body in re.findall(r'\[data-theme="(\w+)"\]\s*\{([^}]*)\}', themes):
-        for token in ("accent", "accent-muted", "primary-text", "band-low", "band-mid", "band-high", "band-very-high"):
+        for token in ("accent", "accent-muted", "primary-text", "band-low", "band-mid", "band-high",
+                      "band-very-high", "map-tone"):
             m = re.search(rf"--{token}:\s*([^;]+);", body)
             if m:
                 assert re.match(r"^(#[0-9a-fA-F]{3,8}|rgba?\([\d\s.,]+\))$", m.group(1).strip()), (name, token, m.group(1))

@@ -66,9 +66,9 @@ serves a polished LAN web UI on `http://<pi>/piscope`: live map with Leaflet, th
 sweep, detail panel with route + photo + AI brief, events log, polar coverage diagram,
 heatmap, historical analytics (traffic patterns, operators, notable/returning aircraft,
 weekly Mattermost-ready summary), webhooks, replay, PWA install. No auth — LAN-only by
-design. Currently `VERSION = "1.8.1"` on `dev` (see `app/main.py`); the Pi runs `1.8.0`
-(the UI redesign, deployed 2026-11-10). `main` and the latest tag are `v1.7.5` — they
-converge at the next `main` promotion.
+design. Currently `VERSION = "1.9.0"` on `dev` (see `app/main.py`) — the theme refresh;
+the Pi runs `1.8.0` (the UI redesign, deployed 2026-11-10). `main` and the latest tag are
+`v1.7.5` — they converge at the next `main` promotion.
 
 ## Architecture & tech stack
 
@@ -166,7 +166,7 @@ static/
   app.js / app.css         # All client logic + styles (app.css derives glass/hairline/text tokens)
   radar.js                 # Canvas radar-sweep overlay
   sw.js                    # Service worker — CACHE auto-derived on the wire (iter 9.4)
-  themes.css               # 15 theme palettes (+ `external` for embeds); `midnight` is the default
+  themes.css               # 18 theme palettes (+ `external` for embeds); `midnight` is the default
   icons/piscope.svg        # App icon (favicon / manifest)
   icons/aircraft.svg       # Jet silhouette — list-row glyph mask + notification icon
   data/airports.json       # Bundled airport overlay
@@ -177,6 +177,8 @@ tools/
   dev/                     # Local harness: mock_tar1090.py (synthetic feed, placeholder London
                            # receiver) + run_dev.py (PiScope on 127.0.0.1 with a throwaway DB).
                            # http://localhost is a secure context, so the service worker runs here.
+                           # screenshots.js regenerates docs/screenshots (`… docs/screenshots readme`)
+                           # and captures every theme (`… <dir> themes`) for design review.
   claude-shim/             # Stdlib-only HTTP daemon that wraps `claude --print`.
                            # Runs on the dev host. shim.py + install.sh + systemd unit + README.
 install.sh                 # Pi installer (run as `sudo bash install.sh` ON the Pi)
@@ -253,6 +255,18 @@ service; existing `piscope.db` is backed up to `piscope.db.bak` first.
     `--accent-text` / `--alert-text` / `--success-text` / `--warning-text`, not the raw
     fill tokens (per-theme `--accent-lift` / `--status-lift` keep them AA-legible).
     `--on-accent` / `--on-alert` / `--on-warning` are the ink colours for fills.
+  - *Themes (1.9.0):* a theme is its palette **plus its map treatment**. Every
+    `[data-theme]` block defines `--map-tint` (a CSS filter the `themed` / `themedLight`
+    tile presets apply to the neutral Esri base — what "Automatic" map style means for
+    most themes) and `--map-tone` (map backdrop + the swatch in the picker), and should
+    have its own altitude ramp where the palette offers one. **Adding a theme:** the block
+    in `themes.css` (in the right family), an `<option>` in the right `<optgroup>` of
+    `#theme-select` (the picker is built from it), an entry in `THEME_DEFAULT_TILES`,
+    and the id in e2e `07-themes.js`. `tests/test_theme_contrast.py` then audits it
+    (derived pairs, all themes) and `tests/test_ui_shell.py` rejects a theme that shares
+    its accent + map treatment with another. Capture it with
+    `node tools/dev/screenshots.js <dir> themes`. Theme ids are stored in users' settings
+    — rework a palette in place (as `dark` → Graphite, `tactical`) rather than renaming.
   - *Controls:* icon buttons need `aria-label`; hover hints are `data-tip` (CSS tooltips,
     `data-tip-pos="start|end|left|right"` at screen edges), not `title`.
   - *One inline script.* `index.html` has exactly one bare `<script>` (the pre-paint
@@ -350,8 +364,9 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
 
 ## Open items / future work
 
-- **1.8.0 (UI redesign) is deployed to the Pi (2026-11-10) but not pushed**; 1.8.1 on `dev`
-  (drops the meaningless "other" source label from the Signal tile) is not deployed yet.
+- **1.8.0 (UI redesign) is deployed to the Pi (2026-11-10) but not pushed**; `dev` is
+  ahead with 1.8.1 (drops the meaningless "other" source label from the Signal tile) and
+  1.9.0 (theme refresh: per-theme map tint, 3 new themes, 5 reworked) — neither deployed.
   Rollback for 1.8.0: `/opt/piscope/{app,static}.bak-pre-1.8.0`, `piscope.db.bak-pre-1.8.0`.
   The README screenshots were regenerated from a synthetic feed (placeholder London
   receiver, drawn sample photo); re-shoot from real traffic if preferred.
@@ -467,6 +482,11 @@ time (now covered by `tests/test_ui_shell.py` and e2e modules `12-pwa`, `15-shel
   AA as small text in five themes. Re-run a contrast audit over **derived** pairs too
   (accent text on the accent wash, secondary text on tiles), compositing the alpha
   washes over the panel colour; raw token pairs miss them.
+- **2026-11-11 — Diff-skip caches must include the theme.** Marker and trail render
+  caches keyed on position only, so after a theme switch a parked aircraft or a
+  not-yet-moved trail kept the old theme's colours, and the selected aircraft's route
+  line was never redrawn. `themeEpoch` is now part of both keys. Check: switch theme
+  with an aircraft selected and ground traffic visible; nothing may keep the old colours.
 - **2026-11-11 — Fixtures must not straddle UTC midnight.** `test_weekly_digest._seed_week`
   wrote "an hour ago" and "a day ago" rows that are the same UTC date between 00:00 and
   01:00 UTC, so three tests failed for one hour a day. When a fixture needs two distinct

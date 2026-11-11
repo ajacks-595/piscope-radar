@@ -28,7 +28,7 @@ is byte-identical before/after every run.
 
 ## 0. Automated coverage at a glance
 
-Run `node tests/e2e/run.js` (see `README.md`). 15 modules / 270 checks, all non-destructive:
+Run `node tests/e2e/run.js` (see `README.md`). 15 modules / 283 checks, all non-destructive:
 
 | Module | Area | Checks |
 |---|---|---|
@@ -38,7 +38,7 @@ Run `node tests/e2e/run.js` (see `README.md`). 15 modules / 270 checks, all non-
 | 04 | Detail panel | select, ✕ close, Esc, modal-layering, phone bottom sheet slides on/off-screen |
 | 05 | Modals | open/✕/Esc for events·stats·views·settings; events+stats tabs; analytics ranges; `?` help |
 | 06 | Keyboard | `/ e s v z r ?` and Esc (ephemeral shortcuts only) |
-| 07 | Themes | all 15 themes via `applyTheme(persist:false)`, each resolving its palette tokens; picker options match; radar canvas; terminal grid |
+| 07 | Themes | all 18 themes via `applyTheme(persist:false)`, each resolving its palette + map tokens; tinted basemap under Automatic; every theme's accent + map treatment distinct; picker options match; radar canvas; terminal grid |
 | 08 | Overlay controls | top-bar / map-rail controls; opens the Layers popover and checks the 6 overlay switches, label-mode control and badge (no clicks — they persist) |
 | 09 | Replay | enter via `p`, slider range, scrub, exit to live |
 | 10 | URL share-state | `#center/#zoom/#theme` applied on load; pan writes the hash |
@@ -118,7 +118,9 @@ Run `node tests/e2e/run.js` (see `README.md`). 15 modules / 270 checks, all non-
 
 | ID | Pri | Mode | Case |
 |---|---|---|---|
-| PS-THEME-01 | P1 | 🤖 `[07]` | All 15 themes apply to `<html data-theme>` and resolve their palette tokens (driven via `persist:false` so no write). |
+| PS-THEME-01 | P1 | 🤖 `[07]` | All 18 themes apply to `<html data-theme>` and resolve their palette + map tokens (driven via `persist:false` so no write); no two share accent + map treatment. |
+| PS-THEME-07 | P2 | 👁 MANUAL | Night Vision: nothing on screen is green or blue (map, photos, trails, route line, attribution flag); an emergency squawk shows yellow. Switch to it with an aircraft selected — the route line and parked aircraft recolour at once. |
+| PS-THEME-08 | P3 | 👁 MANUAL | With an explicit map style (Settings → Map), the theme tint is NOT applied — only the *Automatic* style follows the theme. |
 | PS-THEME-02 | P2 | 🤖 `[07]` | Radar themes render `#radar-canvas`; terminal theme draws the coordinate grid. |
 | PS-THEME-03 | P2 | ⚠️ DESTRUCTIVE | Pick a theme card in the top-bar theme popover (`#open-themes`) or Settings → Appearance (persists `theme`). **Restore:** re-select the original theme. |
 | PS-THEME-05 | P2 | 🤖 `[15]` | Theme popover shows one card per theme with exactly the active one marked; swatches render their own palettes. |

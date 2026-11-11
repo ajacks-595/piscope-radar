@@ -19,6 +19,11 @@ pytest tests/ -v
   has a palette + default basemap, the service worker can't serve a previous release.
   Browser behaviour is covered by the E2E suite (`tests/e2e/`).
 
+- **test_theme_contrast.py** — WCAG contrast audit of every theme in the picker, on the
+  colour pairs the UI really renders (alpha washes composited over the panel, the
+  per-theme text lifts applied). Canonical palettes that cannot comply are listed in
+  `KNOWN_EXCEPTIONS`, and the test fails when an exception is no longer needed.
+
 `conftest.py` points the settings store at a throwaway temp DB and builds the
 TestClient without the lifespan context manager, so the feed poll loop / digest
 scheduler never start and no external services are hit.
