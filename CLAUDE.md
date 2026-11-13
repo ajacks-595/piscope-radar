@@ -431,7 +431,7 @@ every review; full report in `.repo-review/2026-09-30T185602Z/REPORT.md`.
   CSRF-guarded; FlightAware's `confirm_over_budget` query param can spend money.
 - **2026-09-30 — claude-shim must stay text-only.** Its prompt carries
   unauthenticated LAN input, so `shim.py` runs `claude --print --restricted --tools ""
-  --strict-mcp-config` (fixed 2026-10-01, `a59c9c3`). Check on every review: pipe a
+  --strict-mcp-config` (fixed 2026-10-01, `9e15d62`). Check on every review: pipe a
   prompt through the same flags with `--output-format stream-json --verbose` and
   confirm the init event lists 0 tools and 0 MCP servers. Without the flags it
   inherited 24 tools and 10 MCP servers (Gmail, Drive, …). Never add `--bare`
