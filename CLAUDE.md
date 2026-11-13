@@ -67,8 +67,8 @@ sweep, detail panel with route + photo + AI brief, events log, polar coverage di
 heatmap, historical analytics (traffic patterns, operators, notable/returning aircraft,
 weekly Mattermost-ready summary), webhooks, replay, PWA install. No auth — LAN-only by
 design. Currently `VERSION = "1.9.0"` on `dev` (see `app/main.py`) — the theme refresh —
-and the Pi runs the same `1.9.0` (deployed 2026-11-11). `main` and the latest tag are
-`v1.7.5` — they converge at the next `main` promotion.
+and the Pi runs the same `1.9.0` (deployed 2026-11-11). `main` was promoted and tagged
+`v1.9.0` on 2026-11-13.
 
 ## Architecture & tech stack
 
@@ -267,6 +267,12 @@ service; existing `piscope.db` is backed up to `piscope.db.bak` first.
     its accent + map treatment with another. Capture it with
     `node tools/dev/screenshots.js <dir> themes`. Theme ids are stored in users' settings
     — rework a palette in place (as `dark` → Graphite, `tactical`) rather than renaming.
+  - *Public repo — no station location, anywhere.* Screenshots, docs, examples, test
+    fixtures and input placeholders use the placeholder London receiver from
+    `tools/dev/mock_tar1090.py` (51.50, -0.10). Regenerate screenshots with
+    `tools/dev/screenshots.js` against the mock feed, **never from the live Pi** — the
+    top bar, map centre, range rings and polar chart all reveal the receiver position.
+    Don't commit prompts, logs or notes that name the station's own hosts or feeds.
   - *Controls:* icon buttons need `aria-label`; hover hints are `data-tip` (CSS tooltips,
     `data-tip-pos="start|end|left|right"` at screen edges), not `title`.
   - *One inline script.* `index.html` has exactly one bare `<script>` (the pre-paint
@@ -364,13 +370,11 @@ These have all bitten us at least once. Apply fixes without re-diagnosing.
 
 ## Open items / future work
 
-- **1.9.0 is deployed to the Pi (2026-11-11) but not pushed.** It carries the 1.8.0 UI
-  redesign, 1.8.1 (drops the meaningless "other" source label from the Signal tile) and
-  the 1.9.0 theme refresh (per-theme map tint, 3 new themes, 5 reworked). `origin/dev`
-  and `main` are still at 1.7.x; squash the `checkpoint:` commits before pushing.
-  Rollback for 1.8.0: `/opt/piscope/{app,static}.bak-pre-1.8.0`, `piscope.db.bak-pre-1.8.0`.
-  The README screenshots were regenerated from a synthetic feed (placeholder London
-  receiver, drawn sample photo); re-shoot from real traffic if preferred.
+- **1.9.0 is on the Pi (2026-11-11) and released (`main` + tag `v1.9.0`, 2026-11-13).**
+  It carries the 1.8.0 UI redesign, 1.8.1 (drops the meaningless "other" source label
+  from the Signal tile) and the 1.9.0 theme refresh (per-theme map tint, 3 new themes,
+  5 reworked). Rollback: `/opt/piscope/{app,static}.bak-pre-1.9.0`,
+  `piscope.db.bak-pre-1.9.0`.
 
 - **claude-shim is NOT installed right now** (found 2026-09-30: no `/opt/claude-shim`, no
   unit; only `/etc/claude-shim.env` remains), but the Pi's `claude_cli_url` still points at

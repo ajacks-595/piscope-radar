@@ -191,3 +191,17 @@ def test_category_filter_select_is_still_the_source_of_truth():
     options = set(re.findall(r'<option value="(\w+)"', select))
     chips = set(re.findall(r'data-category="(\w+)"', html))
     assert chips and chips == options
+
+
+def test_location_examples_use_the_public_placeholder():
+    # The repo is public: every example coordinate shown to users (input placeholders,
+    # validation messages) is the placeholder London receiver used by the mock feed and
+    # the screenshots — never a real station position.
+    html, js = _read("index.html"), _read("app.js")
+    hints = re.findall(r'<input id="(?:wizard|setting-global)-(lat|lon)"[^>]*placeholder="e\.g\. ([-\d.]+)"', html)
+    assert sorted(axis for axis, _ in hints) == ["lat", "lat", "lon", "lon"]
+    for axis, value in hints:
+        v = float(value)
+        assert (51.0 <= v <= 52.0) if axis == "lat" else (-1.0 <= v <= 1.0), (axis, value)
+    for example in re.findall(r"Decimal degrees, e\.g\. ([-\d.]+)\.", js):
+        assert 51.0 <= float(example) <= 52.0, example
