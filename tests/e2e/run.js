@@ -26,8 +26,12 @@ const headed = argv.includes('--headed');
 const only = (argv.find((a) => a.startsWith('--only=')) || '').split('=')[1];
 
 const VIEWPORTS = { desktop: { width: 1280, height: 900, mobile: false }, mobile: { width: 390, height: 844, mobile: true, dsf: 2 } };
-// "Booted" = the app has rendered rows OR (empty skies) the Leaflet map object exists.
-const BOOT = `(()=>{try{return (document.querySelectorAll('#aircraft-list .aircraft-row').length>0)||(typeof map!=='undefined'&&!!map);}catch(e){return false;}})()`;
+// "Booted" = app.js finished init() (window.__piscopeReady, set as its last step). The
+// fallback — a real Leaflet map object on window.__map — keeps the gate working against
+// builds that predate the flag. NOT `typeof map`: the <div id="map"> named DOM global
+// satisfies that before app.js has even loaded, which made modules 01/02/03/07/11 flake
+// on a slow link (2026-11-08 review).
+const BOOT = `(()=>{try{return window.__piscopeReady===true||(!!window.__map&&typeof window.__map.getZoom==='function');}catch(e){return false;}})()`;
 
 async function boot(page, suffix = '') {
   // about:blank first → guarantees a full cross-document load even when the only change is a

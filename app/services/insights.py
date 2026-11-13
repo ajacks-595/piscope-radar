@@ -74,15 +74,6 @@ def all_notes() -> dict[str, str]:
 # --- Type ledger / leaderboard / rare alerts --------------------------------
 
 
-def is_known_type(type_code: str) -> bool:
-    type_code = (type_code or "").upper().strip()
-    if not type_code:
-        return True   # don't fire "rare" when we have no classification at all
-    with _connect() as conn:
-        row = conn.execute("SELECT 1 FROM seen_types WHERE type_code = ?", (type_code,)).fetchone()
-    return row is not None
-
-
 # In-memory cache of known type_codes. Populated lazily on first lookup; updated by
 # `flush_type_sightings`. Lets the feed loop ask "is this type new?" without a DB
 # round-trip per aircraft. Pre-iter-10.3 each aircraft per poll did SELECT+UPDATE

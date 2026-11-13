@@ -9,8 +9,9 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+import time
 from collections import OrderedDict
-from typing import Any, Optional
+from typing import Any, Optional, Union
 from urllib.parse import urlparse
 
 import httpx
@@ -26,6 +27,8 @@ _CLIENT: Optional[httpx.AsyncClient] = None
 # --- SSRF guard -------------------------------------------------------------
 # Lives here (a neutral outbound-HTTP module) rather than in feed.py so both
 # feed.py and webhooks.py can use it without an import cycle.
+
+_IP = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
 
 # Block link-local + the cloud instance-metadata addresses. Other private
 # ranges (10.x / 192.168.x / 172.16.x) are deliberately ALLOWED — the user
@@ -44,8 +47,50 @@ _BLOCKED_METADATA_IPS = frozenset({
 })
 
 
-def _ip_block_reason(ip: "ipaddress._BaseAddress") -> Optional[str]:
-    """Why this literal IP is refused, or None if it's allowed."""
+# IPv6 forms that carry an IPv4 address the kernel (or a NAT64/6to4 gateway) will
+# actually route to. Each embedded address is checked like a plain IPv4 literal.
+_NAT64_PREFIXES = (
+    ipaddress.ip_network("64:ff9b::/96"),     # RFC 6052 well-known NAT64 prefix
+    ipaddress.ip_network("64:ff9b:1::/48"),   # RFC 8215 local-use NAT64
+)
+
+
+def _embedded_ipv4(ip: _IP) -> Optional[ipaddress.IPv4Address]:
+    """The IPv4 address hidden inside an IPv6 literal, if any."""
+    if not isinstance(ip, ipaddress.IPv6Address):
+        return None
+    if ip.ipv4_mapped is not None:            # ::ffff:a.b.c.d — connects to a.b.c.d
+        return ip.ipv4_mapped
+    if ip.sixtofour is not None:              # 2002:aabb:ccdd::/48
+        return ip.sixtofour
+    for net in _NAT64_PREFIXES:
+        if ip in net:
+            return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    n = int(ip)
+    if 1 < n <= 0xFFFFFFFF:                   # deprecated IPv4-compatible ::a.b.c.d
+        return ipaddress.IPv4Address(n)
+    return None
+
+
+def _ip_block_reason(ip: _IP) -> Optional[str]:
+    """Why this literal IP is refused, or None if it's allowed.
+
+    IPv4 addresses embedded in IPv6 (``::ffff:169.254.169.254`` and friends) are
+    unwrapped and checked recursively. Python < 3.13 does not classify a mapped
+    link-local address as link-local, and the mapped Alibaba metadata address is
+    in no stdlib category on any version, so both reached httpx before
+    (2026-11-08 P1-2). Unspecified (0.0.0.0, ::) and multicast are refused too:
+    neither is a legitimate fetch target. Loopback and private ranges stay
+    allowed on purpose (local tar1090, LAN webhook receivers)."""
+    inner = _embedded_ipv4(ip)
+    if inner is not None:
+        reason = _ip_block_reason(inner)
+        if reason:
+            return f"{reason} (via {ip})"
+    if ip.is_unspecified:
+        return "unspecified"
+    if ip.is_multicast:
+        return "multicast"
     if ip.is_link_local:
         return "link-local"
     if ip in _BLOCKED_METADATA_IPS:
@@ -53,7 +98,7 @@ def _ip_block_reason(ip: "ipaddress._BaseAddress") -> Optional[str]:
     return None
 
 
-def _parse_ip_literal(host: str) -> "Optional[ipaddress._BaseAddress]":
+def _parse_ip_literal(host: str) -> Optional[_IP]:
     """Parse `host` as an IP literal if it is one — INCLUDING the non-dotted
     IPv4 encodings (decimal `2852039166`, hex `0xA9FEA9FE`, octal) that the libc
     resolver still honours but `ipaddress.ip_address(str)` rejects. Without this,
@@ -103,7 +148,14 @@ def validate_external_url(raw: str, *, resolve: bool = False) -> str:
     parsed = urlparse(raw)
     if parsed.scheme not in ("http", "https"):
         raise ValueError(f"Unsupported scheme: {parsed.scheme!r}; only http/https are allowed")
-    host = (parsed.hostname or "").strip()
+    try:
+        parsed.port   # raises ValueError on a non-numeric / out-of-range port
+    except ValueError:
+        raise ValueError("URL has an invalid port") from None
+    # A trailing dot is a valid absolute-FQDN spelling the resolver honours
+    # ("metadata.google.internal." / "169.254.169.254."), so strip it before
+    # comparing — otherwise it slips past both the name and literal checks.
+    host = (parsed.hostname or "").strip().rstrip(".")
     if not host:
         raise ValueError("URL has no host component")
     if host.lower() in _BLOCKED_METADATA_HOSTS:
@@ -210,3 +262,24 @@ class LRUCache:
 
     def __len__(self) -> int:
         return len(self._data)
+
+
+class FailureBackoff:
+    """Remember recent *transient* upstream failures (429 / 5xx / network errors) so a
+    flapping enrichment API isn't re-hit on every request: callers skip the upstream
+    for `ttl_s` after a failure. Unlike the old behaviour (cache `{}` forever), the key
+    is retried once the backoff lapses. Bounded like the caches it sits beside."""
+
+    def __init__(self, ttl_s: float = 120.0, max_size: int = 4096) -> None:
+        self.ttl_s = ttl_s
+        self._until = LRUCache(max_size=max_size)
+
+    def blocked(self, key: Any) -> bool:
+        until = self._until.get(key)
+        return until is not None and until > time.monotonic()
+
+    def record(self, key: Any) -> None:
+        self._until.set(key, time.monotonic() + self.ttl_s)
+
+    def clear(self) -> None:
+        self._until.clear()

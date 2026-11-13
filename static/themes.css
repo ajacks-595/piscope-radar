@@ -1,24 +1,160 @@
-/* Theme palettes — ported 1:1 from ADS-B macOS App/source/Models/Theme.swift.
-   Each block sets the variables consumed by app.css and the JS map/radar code. */
+/* Theme palettes. Each block sets the base tokens consumed by app.css (which derives
+   the glass / hairline / hover tokens from them) and by the JS map + radar code.
+   Base colours must stay plain rgb()/rgba()/#hex — radar.js parses them.
+
+   A theme is more than its chrome colours — the map is most of the screen — so every
+   theme also carries:
+     --map-tint   a CSS filter applied to the neutral Esri base tiles when the map style
+                  is "Automatic" (the `themed` / `themedLight` presets in app.js), so the
+                  basemap takes on the theme's hue;
+     --map-tone   roughly the land colour that produces: the map's backdrop while tiles
+                  load, and the "map" area of the theme's swatch in the picker;
+     band-*       its own altitude ramp where the palette has one.
+   The 1.9.0 pass gave each theme a distinct identity on those three axes; before it,
+   five of the dark themes were near-indistinguishable on the map.
+
+   Two families (the picker groups them):
+     PiScope originals   midnight · light · dark (Graphite) · radar · radarModern ·
+                         terminal · tactical · sectional · nightVision · highContrast
+     Community palettes  nord · gruvbox · dracula · tokyoNight · catppuccinMocha ·
+                         solarizedDark · solarizedLight · synthwave */
 
 :root {
-  --font-mono: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
-  --font-system: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  /* System stacks only — nothing is fetched. `ui-*` keywords pick the platform UI face
+     (SF Pro / Segoe UI Variable / Roboto) and the named fallbacks cover older engines. */
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Code', 'Roboto Mono', Menlo, Consolas, 'Noto Sans Mono', monospace;
+  --font-system: ui-sans-serif, system-ui, -apple-system, 'Segoe UI Variable Text', 'Segoe UI', Roboto, 'Inter', 'Helvetica Neue', 'Nimbus Sans', Arial, sans-serif;
   --font-serif: 'Georgia', 'Times New Roman', serif;
 
   --band-emergency: #ff3030;
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+
+  /* Dark is the norm; the light themes flip these below. `color-scheme` makes
+     native widgets (select pop-ups, scrollbars, date/number spinners) match. */
+  color-scheme: dark;
+  --shadow-rgb: 0 0 0;
+  --shadow-strength: 1;
+  --marker-outline: rgba(0, 0, 0, 0.62);
+  --map-tint: none;
+
+  /* Text-on-panel legibility. Status and accent colours are tuned as FILLS; used as
+     small text some of them miss WCAG AA against the panel (orange on white, Nord's
+     muted red on slate). app.css derives --accent-text / --alert-text / … by mixing
+     each colour toward --contrast-ink by these amounts; 0% leaves a theme untouched.
+     tests/test_theme_contrast.py audits every theme with these applied. */
+  --contrast-ink: #fff;
+  --accent-lift: 0%;
+  --status-lift: 0%;
 }
 
-/* -------- RADAR CLASSIC -------- */
+/* ======================= PiScope originals ======================= */
+
+/* -------- MIDNIGHT (default since 1.8.0) --------
+ * Graphite-navy chrome with a phosphor-mint accent — the radar green, modernised.
+ * Altitude ramp keeps the familiar green → yellow → orange → pink ordering. */
+[data-theme="midnight"] {
+  --bg: #0a0e16;
+  --panel-bg: #101622;
+  --surface-bg: #182132;
+  --primary-text: #e8edf6;
+  --secondary-text: #9aa6bb;
+  --tertiary-text: #5b667a;
+  --accent: #3ddcb0;
+  --accent-muted: #1f8f74;
+  --alert: #ff5d6c;
+  --success: #3ddc97;
+  --warning: #ffc24b;
+  --separator: #232d40;
+  --map-trail: rgba(61, 220, 176, 0.6);
+  --map-range-ring: rgba(148, 163, 184, 0.3);
+  --map-receiver: #ffffff;
+  --aircraft-selected: #ffffff;
+  --band-ground: #7c8799;
+  --band-low: #34d399;
+  --band-mid: #fbd34d;
+  --band-high: #fb923c;
+  --band-very-high: #f472b6;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+  --map-tint: sepia(1) hue-rotate(178deg) saturate(1.5) brightness(0.72) contrast(1.12);
+  --map-tone: #1b2942;
+}
+
+/* -------- LIGHT --------
+ * Cool paper-white panels, slate ink, one confident blue. (Refreshed in 1.9.0: the
+ * old pure-grey/iOS-blue palette put a pale yellow altitude band on a pale map.) */
+[data-theme="light"] {
+  --bg: #e9edf2;
+  --panel-bg: #ffffff;
+  --surface-bg: #f0f3f7;
+  --primary-text: #0f172a;
+  --secondary-text: #55617a;
+  --tertiary-text: #9aa5b8;
+  --accent: #2563eb;
+  --accent-muted: #93b4f8;
+  --alert: rgb(230, 51, 51);
+  --success: rgb(34, 160, 84);
+  --warning: rgb(240, 150, 26);
+  --separator: #dde3ec;
+  --map-trail: rgba(15, 23, 42, 0.42);
+  --map-range-ring: rgba(15, 23, 42, 0.2);
+  --map-receiver: #2563eb;
+  --aircraft-selected: #0f172a;
+  --band-ground: #7b8494;
+  --band-low: #17a34a;
+  --band-mid: #d99c00;
+  --band-high: #ea6a0c;
+  --band-very-high: #d92d5b;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+  --map-tint: saturate(0.9) contrast(1.04);
+  --map-tone: #dde1e6;
+}
+
+/* -------- GRAPHITE (id `dark`) --------
+ * Monochrome chrome — true neutral greys with a white accent — so the only colour on
+ * screen is the traffic. (Was a grey theme with the same cyan accent as Radar Modern
+ * and Tactical; the id stays `dark` so stored settings keep working.) */
+[data-theme="dark"] {
+  --bg: #0e0e0f;
+  --panel-bg: #171718;
+  --surface-bg: #232325;
+  --primary-text: #f4f4f5;
+  --secondary-text: #a1a1aa;
+  --tertiary-text: #63636b;
+  --accent: #f4f4f5;
+  --accent-muted: #8a8a93;
+  --alert: #ff5c5c;
+  --success: #5fd38d;
+  --warning: #ffc04d;
+  --separator: #2c2c30;
+  --map-trail: rgba(255, 255, 255, 0.45);
+  --map-range-ring: rgba(255, 255, 255, 0.2);
+  --map-receiver: #ffffff;
+  --aircraft-selected: #ffffff;
+  --band-ground: #8a8a93;
+  --band-low: #5fd38d;
+  --band-mid: #ffd84d;
+  --band-high: #ff9a4d;
+  --band-very-high: #ff6b8b;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+  --map-tint: grayscale(1) brightness(0.92) contrast(1.08);
+  --map-tone: #2a2a2c;
+}
+
+/* -------- RADAR CLASSIC --------
+ * Phosphor green on black, monospaced, with the sweep. The basemap is tinted green
+ * so the whole scope glows, not just the chrome. */
 [data-theme="radar"] {
   --bg: rgb(5, 10, 5);
   --panel-bg: rgb(10, 15, 10);
   --surface-bg: rgb(15, 25, 15);
   --primary-text: rgb(0, 255, 64);
-  --secondary-text: rgb(0, 140, 46);
+  --secondary-text: rgb(0, 156, 51);      /* was 0,140,46 — 4.4:1 on the panel; now 5.3:1 */
   --tertiary-text: rgb(0, 51, 20);
   --accent: rgb(0, 255, 64);
   --accent-muted: rgb(0, 140, 46);
@@ -37,9 +173,12 @@
   --band-very-high: rgb(255, 77, 77);
   --font-body: var(--font-mono);
   --font-title: var(--font-mono);
+  --map-tint: sepia(1) hue-rotate(72deg) saturate(1.7) brightness(0.52) contrast(1.2);
+  --map-tone: #0d2411;
 }
 
-/* -------- RADAR MODERN -------- */
+/* -------- RADAR MODERN --------
+ * Cyan ATC scope, sans-serif, faster sweep; teal-tinted map. */
 [data-theme="radarModern"] {
   --bg: rgb(3, 8, 13);
   --panel-bg: rgb(5, 13, 20);
@@ -64,15 +203,18 @@
   --band-very-high: rgb(255, 77, 115);
   --font-body: var(--font-system);
   --font-title: var(--font-system);
+  --map-tint: sepia(1) hue-rotate(148deg) saturate(1.5) brightness(0.56) contrast(1.18);
+  --map-tone: #0c2a33;
 }
 
-/* -------- TERMINAL (CRT amber) -------- */
+/* -------- TERMINAL (CRT amber) --------
+ * No basemap at all — a coordinate grid, scanlines and hard corners. */
 [data-theme="terminal"] {
   --bg: #000000;
   --panel-bg: #000000;
   --surface-bg: rgb(13, 13, 13);
   --primary-text: rgb(255, 176, 0);
-  --secondary-text: rgb(153, 107, 0);
+  --secondary-text: rgb(168, 118, 0);     /* was 153,107,0 — 4.5:1 on black; now 5.3:1 */
   --tertiary-text: rgb(77, 54, 0);
   --accent: rgb(255, 176, 0);
   --accent-muted: rgb(153, 107, 0);
@@ -91,90 +233,43 @@
   --band-very-high: rgb(255, 176, 0);
   --font-body: var(--font-mono);
   --font-title: var(--font-mono);
+  --map-tint: none;
+  --map-tone: #000000;
 }
 
-/* -------- LIGHT -------- */
-[data-theme="light"] {
-  --bg: #fafafa;
-  --panel-bg: #ffffff;
-  --surface-bg: #f2f2f2;
-  --primary-text: #000000;
-  --secondary-text: #595959;
-  --tertiary-text: #999999;
-  --accent: rgb(0, 122, 255);
-  --accent-muted: rgba(0, 122, 255, 0.6);
-  --alert: rgb(230, 51, 51);
-  --success: rgb(51, 179, 77);
-  --warning: rgb(242, 153, 26);
-  --separator: #d9d9d9;
-  --map-trail: rgba(0, 0, 0, 0.4);
-  --map-range-ring: rgba(0, 0, 0, 0.18);
-  --map-receiver: rgb(0, 122, 255);
-  --aircraft-selected: rgb(0, 122, 255);
-  --band-ground: #808080;
-  --band-low: rgb(51, 179, 77);
-  --band-mid: rgb(242, 191, 26);
-  --band-high: rgb(242, 128, 26);
-  --band-very-high: rgb(217, 51, 51);
-  --font-body: var(--font-system);
-  --font-title: var(--font-system);
-}
-
-/* -------- DARK -------- */
-[data-theme="dark"] {
-  --bg: rgb(20, 20, 20);
-  --panel-bg: rgb(31, 31, 31);
-  --surface-bg: rgb(41, 41, 41);
-  --primary-text: rgb(242, 242, 242);
-  --secondary-text: rgb(179, 179, 179);
-  --tertiary-text: rgb(128, 128, 128);
-  --accent: rgb(0, 181, 217);
-  --accent-muted: rgba(0, 181, 217, 0.6);
-  --alert: rgb(255, 89, 89);
-  --success: rgb(77, 217, 102);
-  --warning: rgb(255, 179, 51);
-  --separator: rgb(64, 64, 64);
-  --map-trail: rgba(255, 255, 255, 0.4);
-  --map-range-ring: rgba(255, 255, 255, 0.18);
-  --map-receiver: rgb(0, 217, 255);
-  --aircraft-selected: rgb(0, 217, 255);
-  --band-ground: rgb(140, 140, 140);
-  --band-low: rgb(102, 217, 128);
-  --band-mid: rgb(255, 217, 77);
-  --band-high: rgb(255, 153, 51);
-  --band-very-high: rgb(255, 102, 102);
-  --font-body: var(--font-system);
-  --font-title: var(--font-system);
-}
-
-/* -------- TACTICAL -------- */
+/* -------- TACTICAL --------
+ * Olive drab and khaki over satellite imagery. (Was navy + cyan — a near twin of
+ * Radar Modern. The ramp is tuned to stay visible on imagery.) */
 [data-theme="tactical"] {
-  --bg: rgb(8, 15, 20);
-  --panel-bg: rgb(13, 23, 31);
-  --surface-bg: rgb(20, 33, 43);
-  --primary-text: rgb(242, 242, 242);
-  --secondary-text: rgb(179, 179, 179);
-  --tertiary-text: rgb(128, 128, 128);
-  --accent: rgb(51, 217, 255);
-  --accent-muted: rgb(26, 128, 166);
-  --alert: rgb(255, 77, 115);
-  --success: rgb(51, 242, 217);
-  --warning: rgb(255, 204, 77);
-  --separator: rgb(51, 51, 51);
-  --map-trail: rgba(51, 217, 255, 0.6);
-  --map-range-ring: rgba(51, 217, 255, 0.4);
-  --map-receiver: rgb(51, 242, 217);
-  --aircraft-selected: rgb(242, 255, 255);
-  --band-ground: rgb(140, 140, 140);
-  --band-low: rgb(51, 242, 217);
-  --band-mid: rgb(51, 217, 255);
-  --band-high: rgb(128, 217, 255);
-  --band-very-high: rgb(255, 128, 217);
+  --bg: #0c0e0a;
+  --panel-bg: #14170f;
+  --surface-bg: #1f2418;
+  --primary-text: #ecebdc;
+  --secondary-text: #aab09a;
+  --tertiary-text: #646a57;
+  --accent: #d8c66a;
+  --accent-muted: #8c7f3d;
+  --alert: #ff5a4f;
+  --success: #9bd45f;
+  --warning: #ffb84d;
+  --separator: #2b3122;
+  --map-trail: rgba(255, 255, 255, 0.7);
+  --map-range-ring: rgba(216, 198, 106, 0.5);
+  --map-receiver: #d8c66a;
+  --aircraft-selected: #ffffff;
+  --band-ground: #cfd3c4;
+  --band-low: #9dff6a;
+  --band-mid: #ffe45c;
+  --band-high: #ff9d3c;
+  --band-very-high: #ff6ad5;
   --font-body: var(--font-system);
   --font-title: var(--font-mono);
+  --map-tint: none;
+  --map-tone: #2c3823;
 }
 
-/* -------- SECTIONAL (paper aviation chart) -------- */
+/* -------- SECTIONAL (paper aviation chart) --------
+ * Cream paper, serif titles, a National Geographic-style base. */
 [data-theme="sectional"] {
   --bg: rgb(247, 237, 209);
   --panel-bg: rgb(252, 242, 217);
@@ -199,61 +294,78 @@
   --band-very-high: rgb(191, 51, 51);
   --font-body: var(--font-system);
   --font-title: var(--font-serif);
+  --map-tint: none;
+  --map-tone: #d8cfae;
 }
 
-/* -------- SOLARIZED DARK -------- */
-[data-theme="solarizedDark"] {
-  --bg: #002b36;
-  --panel-bg: #073642;
-  --surface-bg: #0a4051;
-  --primary-text: #839496;
-  --secondary-text: #93a1a1;
-  --tertiary-text: #586e75;
-  --accent: #268bd2;
-  --accent-muted: #2aa198;
-  --alert: #dc322f;
-  --success: #859900;
-  --warning: #b58900;
-  --separator: #1a4e5c;
-  --map-trail: rgba(42, 161, 152, 0.7);
-  --map-range-ring: rgba(42, 161, 152, 0.35);
-  --map-receiver: #d33682;
-  --aircraft-selected: #b58900;
-  --band-ground: #586e75;
-  --band-low: #859900;
-  --band-mid: #b58900;
-  --band-high: #cb4b16;
-  --band-very-high: #dc322f;
+/* -------- NIGHT VISION (1.9.0) --------
+ * Red-light mode for dark-adapted eyes: watching the sky from the garden at night, a
+ * bright screen costs you the stars. Everything — chrome, basemap, photos, traffic —
+ * stays in dim red; altitude reads as brightness rather than hue. The one exception
+ * is an emergency, which is yellow precisely so it cannot be missed. */
+[data-theme="nightVision"] {
+  --bg: #050000;
+  --panel-bg: #0c0202;
+  --surface-bg: #190605;
+  --primary-text: #ff6b5c;
+  --secondary-text: #cc5347;
+  --tertiary-text: #6e241d;
+  --accent: #ff3b30;
+  --accent-muted: #8f1d16;
+  --alert: #ffd60a;
+  --success: #ff9d8c;
+  --warning: #ff7a45;
+  --separator: #2a0a08;
+  --map-trail: rgba(255, 59, 48, 0.55);
+  --map-range-ring: rgba(255, 59, 48, 0.3);
+  --map-receiver: #ff3b30;
+  --aircraft-selected: #ffd0c8;
+  --band-ground: #6b1d17;
+  --band-low: #a3271f;
+  --band-mid: #d93a2f;
+  --band-high: #ff5a4a;
+  --band-very-high: #ffa093;
   --font-body: var(--font-system);
   --font-title: var(--font-system);
+  --marker-outline: rgba(0, 0, 0, 0.85);
+  --map-tint: grayscale(1) sepia(1) hue-rotate(-42deg) saturate(3.4) brightness(0.42) contrast(1.25);
+  --map-tone: #1c0403;
 }
 
-/* -------- SOLARIZED LIGHT -------- */
-[data-theme="solarizedLight"] {
-  --bg: #fdf6e3;
-  --panel-bg: #f7f0db;
-  --surface-bg: #eee8d5;
-  --primary-text: #073642;
-  --secondary-text: #657b83;
-  --tertiary-text: #93a1a1;
-  --accent: #268bd2;
-  --accent-muted: #2aa198;
-  --alert: #dc322f;
-  --success: #859900;
-  --warning: #cb4b16;
-  --separator: #eee8d5;
-  --map-trail: rgba(88, 110, 117, 0.5);
-  --map-range-ring: rgba(88, 110, 117, 0.3);
-  --map-receiver: #d33682;
-  --aircraft-selected: #d33682;
-  --band-ground: #586e75;
-  --band-low: #859900;
-  --band-mid: #b58900;
-  --band-high: #cb4b16;
-  --band-very-high: #dc322f;
+/* -------- HIGH CONTRAST (1.9.0) --------
+ * Black, white and yellow; opaque panels, solid borders, a greyscale map. For bright
+ * rooms, tired eyes and low vision — every text pair clears WCAG AAA (7:1). app.css
+ * swaps the translucent washes for solid ones under this theme. */
+[data-theme="highContrast"] {
+  --bg: #000000;
+  --panel-bg: #000000;
+  --surface-bg: #141414;
+  --primary-text: #ffffff;
+  --secondary-text: #e0e0e0;
+  --tertiary-text: #9a9a9a;
+  --accent: #ffe600;
+  --accent-muted: #b3a100;
+  --alert: #ff6b6b;
+  --success: #4dff88;
+  --warning: #ffb000;
+  --separator: #8c8c8c;
+  --map-trail: rgba(255, 255, 255, 0.85);
+  --map-range-ring: rgba(255, 255, 255, 0.5);
+  --map-receiver: #ffe600;
+  --aircraft-selected: #ffffff;
+  --band-ground: #b0b0b0;
+  --band-low: #4dff88;
+  --band-mid: #ffe600;
+  --band-high: #ff9d00;
+  --band-very-high: #ff5fd2;
   --font-body: var(--font-system);
   --font-title: var(--font-system);
+  --marker-outline: #000000;
+  --map-tint: grayscale(1) contrast(1.35) brightness(0.72);
+  --map-tone: #1c1c1c;
 }
+
+/* ======================= Community palettes ======================= */
 
 /* -------- NORD -------- */
 [data-theme="nord"] {
@@ -273,13 +385,200 @@
   --map-range-ring: rgba(94, 129, 172, 0.4);
   --map-receiver: #b48ead;
   --aircraft-selected: #e5e9f0;
-  --band-ground: #4c566a;
+  --band-ground: #7b88a1;
   --band-low: #a3be8c;
   --band-mid: #ebcb8b;
   --band-high: #d08770;
   --band-very-high: #bf616a;
   --font-body: var(--font-system);
   --font-title: var(--font-system);
+  --map-tint: sepia(0.75) hue-rotate(172deg) saturate(0.85) brightness(0.98) contrast(0.92);
+  --map-tone: #3a4456;
+}
+
+/* -------- GRUVBOX (1.9.0) --------
+ * The warm one: retro browns and creams with an orange accent, over a sepia map —
+ * a chart read by lamplight. Gruvbox dark, medium contrast. */
+[data-theme="gruvbox"] {
+  --bg: #1d2021;
+  --panel-bg: #282828;
+  --surface-bg: #3c3836;
+  --primary-text: #ebdbb2;
+  --secondary-text: #bdae93;
+  --tertiary-text: #7c6f64;
+  --accent: #fe8019;
+  --accent-muted: #af3a03;
+  --alert: #fb4934;
+  --success: #b8bb26;
+  --warning: #fabd2f;
+  --separator: #45403d;
+  --map-trail: rgba(235, 219, 178, 0.55);
+  --map-range-ring: rgba(168, 153, 132, 0.4);
+  --map-receiver: #ebdbb2;
+  --aircraft-selected: #fbf1c7;
+  --band-ground: #928374;
+  --band-low: #b8bb26;
+  --band-mid: #fabd2f;
+  --band-high: #fe8019;
+  --band-very-high: #d3869b;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+  --map-tint: sepia(0.95) hue-rotate(-12deg) saturate(0.95) brightness(0.8) contrast(1.02);
+  --map-tone: #353029;
+}
+
+/* -------- DRACULA --------
+ * Purple accent; the ramp runs through Dracula's own cyan → green → yellow → pink
+ * rather than the generic traffic-light colours. */
+[data-theme="dracula"] {
+  --bg: #282a36;
+  --panel-bg: #1e1f29;
+  --surface-bg: #343746;
+  --primary-text: #f8f8f2;
+  --secondary-text: #bdc1d4;
+  --tertiary-text: #6272a4;
+  --accent: #bd93f9;
+  --accent-muted: #6272a4;
+  --alert: #ff5555;
+  --success: #50fa7b;
+  --warning: #f1fa8c;
+  --separator: #44475a;
+  --map-trail: rgba(189, 147, 249, 0.7);
+  --map-range-ring: rgba(98, 114, 164, 0.45);
+  --map-receiver: #ffb86c;
+  --aircraft-selected: #f8f8f2;
+  --band-ground: #6272a4;
+  --band-low: #8be9fd;
+  --band-mid: #50fa7b;
+  --band-high: #f1fa8c;
+  --band-very-high: #ff79c6;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+  --map-tint: sepia(0.7) hue-rotate(205deg) saturate(1.05) brightness(0.86) contrast(1);
+  --map-tone: #303244;
+}
+
+/* -------- TOKYO NIGHT --------
+ * Back to the palette's own storm-blue accent on deep indigo (it had been pushed to
+ * purple, which made it Dracula's twin); ramp green → cyan → violet → rose. */
+[data-theme="tokyoNight"] {
+  --bg: #16161e;
+  --panel-bg: #1a1b26;
+  --surface-bg: #24283b;
+  --primary-text: #c0caf5;
+  --secondary-text: #9aa5ce;
+  --tertiary-text: #565f89;
+  --accent: #7aa2f7;
+  --accent-muted: #3d59a1;
+  --alert: #f7768e;
+  --success: #9ece6a;
+  --warning: #e0af68;
+  --separator: #292e42;
+  --map-trail: rgba(122, 162, 247, 0.7);
+  --map-range-ring: rgba(122, 162, 247, 0.35);
+  --map-receiver: #e0af68;
+  --aircraft-selected: #ffffff;
+  --band-ground: #565f89;
+  --band-low: #9ece6a;
+  --band-mid: #7dcfff;
+  --band-high: #bb9af7;
+  --band-very-high: #f7768e;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+  --map-tint: sepia(1) hue-rotate(196deg) saturate(1.6) brightness(0.6) contrast(1.15);
+  --map-tone: #1c2140;
+}
+
+/* -------- CATPPUCCIN MOCHA --------
+ * The soft one: pastel pink accent, peach receiver, warm green → yellow → peach →
+ * red ramp on a muted mauve-grey map. */
+[data-theme="catppuccinMocha"] {
+  --bg: #1e1e2e;
+  --panel-bg: #181825;
+  --surface-bg: #313244;
+  --primary-text: #cdd6f4;
+  --secondary-text: #bac2de;
+  --tertiary-text: #6c7086;
+  --accent: #f5c2e7;
+  --accent-muted: #cba6f7;
+  --alert: #f38ba8;
+  --success: #a6e3a1;
+  --warning: #f9e2af;
+  --separator: #45475a;
+  --map-trail: rgba(245, 194, 231, 0.75);
+  --map-range-ring: rgba(203, 166, 247, 0.4);
+  --map-receiver: #fab387;
+  --aircraft-selected: #ffffff;
+  --band-ground: #7f849c;
+  --band-low: #a6e3a1;
+  --band-mid: #f9e2af;
+  --band-high: #fab387;
+  --band-very-high: #f38ba8;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+  --map-tint: sepia(0.5) hue-rotate(215deg) saturate(1.1) brightness(0.82) contrast(0.98);
+  --map-tone: #2b2a3d;
+}
+
+/* -------- SOLARIZED DARK --------
+ * Now on the palette's real background: panels are base03 with base1/base0 text
+ * (they sat on base02 before, where body text was only 4.1:1). Teal-tinted map. */
+[data-theme="solarizedDark"] {
+  --bg: #001f27;
+  --panel-bg: #002b36;
+  --surface-bg: #073642;
+  --primary-text: #93a1a1;
+  --secondary-text: #839496;
+  --tertiary-text: #586e75;
+  --accent: #268bd2;
+  --accent-muted: #2aa198;
+  --alert: #dc322f;
+  --success: #859900;
+  --warning: #b58900;
+  --separator: #0f4352;
+  --map-trail: rgba(42, 161, 152, 0.7);
+  --map-range-ring: rgba(42, 161, 152, 0.35);
+  --map-receiver: #d33682;
+  --aircraft-selected: #fdf6e3;
+  --band-ground: #657b83;
+  --band-low: #859900;
+  --band-mid: #b58900;
+  --band-high: #cb4b16;
+  --band-very-high: #d33682;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+  --map-tint: sepia(1) hue-rotate(152deg) saturate(1.8) brightness(0.5) contrast(1.15);
+  --map-tone: #06323d;
+}
+
+/* -------- SOLARIZED LIGHT --------
+ * Panels on base3, a cream-tinted light map. */
+[data-theme="solarizedLight"] {
+  --bg: #eee8d5;
+  --panel-bg: #fdf6e3;
+  --surface-bg: #eee8d5;
+  --primary-text: #073642;
+  --secondary-text: #586e75;              /* base01 — base00 (#657b83) was 3.9:1 on the panel */
+  --tertiary-text: #93a1a1;
+  --accent: #268bd2;
+  --accent-muted: #2aa198;
+  --alert: #dc322f;
+  --success: #859900;
+  --warning: #cb4b16;
+  --separator: #e3dcc6;
+  --map-trail: rgba(88, 110, 117, 0.5);
+  --map-range-ring: rgba(88, 110, 117, 0.3);
+  --map-receiver: #d33682;
+  --aircraft-selected: #073642;
+  --band-ground: #657b83;
+  --band-low: #859900;
+  --band-mid: #b58900;
+  --band-high: #cb4b16;
+  --band-very-high: #d33682;
+  --font-body: var(--font-system);
+  --font-title: var(--font-system);
+  --map-tint: sepia(0.45) saturate(0.85) brightness(1.01);
+  --map-tone: #e6dfc8;
 }
 
 /* -------- SYNTHWAVE -------- */
@@ -307,6 +606,51 @@
   --band-very-high: rgb(255, 51, 199);
   --font-body: var(--font-system);
   --font-title: var(--font-mono);
+  --map-tint: sepia(1) hue-rotate(228deg) saturate(2.1) brightness(0.52) contrast(1.2);
+  --map-tone: #24104d;
+}
+
+/* ======================= Shared adjustments ======================= */
+
+/* -------- Light-scheme adjustments --------
+ * Shadows on a light page want far less ink, native widgets should render light, and
+ * accent/status colours need darkening to work as text. */
+[data-theme="light"],
+[data-theme="sectional"],
+[data-theme="solarizedLight"] {
+  color-scheme: light;
+  --shadow-rgb: 30 41 59;
+  --shadow-strength: 0.42;
+  --marker-outline: rgba(0, 0, 0, 0.5);
+  --contrast-ink: #000;
+  --accent-lift: 22%;
+  --status-lift: 38%;
+}
+/* Dark themes whose red is too muted to read as small text on their panel colour. */
+[data-theme="nord"] { --status-lift: 42%; }
+[data-theme="gruvbox"] { --status-lift: 14%; }
+[data-theme="solarizedDark"] { --status-lift: 35%; --accent-lift: 25%; }
+
+/* Ink colours for text drawn ON a fill (app.css defaults: --on-accent is the page
+   colour, --on-alert / --on-warning are black). */
+[data-theme="solarizedDark"],
+[data-theme="solarizedLight"] { --on-accent: #001419; }   /* cream/navy on the blue sat near 3.5:1 */
+[data-theme="light"] { --on-accent: #fff; }
+[data-theme="sectional"] { --on-alert: #fff; }            /* its darker red keeps white (5.1:1) */
+
+/* -------- Theme character --------
+ * The CRT themes keep hard corners; High Contrast keeps them modest and square-ish. */
+[data-theme="terminal"] {
+  --radius-sm: 1px;
+  --radius-md: 2px;
+  --radius-lg: 3px;
+  --radius-xl: 4px;
+}
+[data-theme="highContrast"] {
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 7px;
+  --radius-xl: 9px;
 }
 
 /* -------- Terminal CRT scanline overlay -------- */
@@ -332,92 +676,6 @@
 }
 [data-theme="terminal"] .leaflet-container {
   background: #000000;
-}
-
-/* -------- DRACULA (iteration 5) -------- */
-[data-theme="dracula"] {
-  --bg: #282a36;
-  --panel-bg: #1e1f29;
-  --surface-bg: #343746;
-  --primary-text: #f8f8f2;
-  --secondary-text: #bdc1d4;
-  --tertiary-text: #6272a4;
-  --accent: #bd93f9;
-  --accent-muted: #6272a4;
-  --alert: #ff5555;
-  --success: #50fa7b;
-  --warning: #f1fa8c;
-  --separator: #44475a;
-  --map-trail: rgba(189, 147, 249, 0.7);
-  --map-range-ring: rgba(98, 114, 164, 0.4);
-  --map-receiver: #ff79c6;
-  --aircraft-selected: #ff79c6;
-  --band-ground: #6272a4;
-  --band-low: #50fa7b;
-  --band-mid: #f1fa8c;
-  --band-high: #ffb86c;
-  --band-very-high: #ff5555;
-  --font-body: var(--font-system);
-  --font-title: var(--font-system);
-}
-
-/* -------- TOKYO NIGHT (iteration 5, retuned iter6) --------
- * Cool palette — purple + cyan accent, blue-tinted panels. Differentiated from Catppuccin
- * Mocha (which leans pink/peach) by leading with #bb9af7 as the accent instead of #7aa2f7. */
-[data-theme="tokyoNight"] {
-  --bg: #16161e;
-  --panel-bg: #1a1b26;
-  --surface-bg: #1f2335;
-  --primary-text: #c0caf5;
-  --secondary-text: #9aa5ce;
-  --tertiary-text: #565f89;
-  --accent: #bb9af7;
-  --accent-muted: #7aa2f7;
-  --alert: #f7768e;
-  --success: #9ece6a;
-  --warning: #e0af68;
-  --separator: #292e42;
-  --map-trail: rgba(187, 154, 247, 0.7);
-  --map-range-ring: rgba(122, 162, 247, 0.35);
-  --map-receiver: #7dcfff;
-  --aircraft-selected: #7dcfff;
-  --band-ground: #565f89;
-  --band-low: #9ece6a;
-  --band-mid: #e0af68;
-  --band-high: #ff9e64;
-  --band-very-high: #f7768e;
-  --font-body: var(--font-system);
-  --font-title: var(--font-system);
-}
-
-/* -------- CATPPUCCIN MOCHA (iteration 5, retuned iter6) --------
- * Warm palette — pink/mauve accent, peach receiver, more colourful overall. The accent
- * is now the signature Catppuccin pink #f5c2e7 rather than blue, which previously made
- * it indistinguishable from Tokyo Night. */
-[data-theme="catppuccinMocha"] {
-  --bg: #1e1e2e;
-  --panel-bg: #181825;
-  --surface-bg: #313244;
-  --primary-text: #cdd6f4;
-  --secondary-text: #bac2de;
-  --tertiary-text: #6c7086;
-  --accent: #f5c2e7;
-  --accent-muted: #cba6f7;
-  --alert: #f38ba8;
-  --success: #a6e3a1;
-  --warning: #f9e2af;
-  --separator: #45475a;
-  --map-trail: rgba(245, 194, 231, 0.75);
-  --map-range-ring: rgba(203, 166, 247, 0.4);
-  --map-receiver: #fab387;
-  --aircraft-selected: #fab387;
-  --band-ground: #6c7086;
-  --band-low: #a6e3a1;
-  --band-mid: #f9e2af;
-  --band-high: #fab387;
-  --band-very-high: #f38ba8;
-  --font-body: var(--font-system);
-  --font-title: var(--font-system);
 }
 
 /* -------- EXTERNAL (iter 9.5) ---------------------------------------------

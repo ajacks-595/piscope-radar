@@ -30,7 +30,9 @@ DEFAULTS: dict[str, Any] = {
     "poll_interval": 2,
     "trail_length": 30,
     "show_ground": True,
-    "theme": "radar",                      # AppTheme rawValue from Swift app
+    # Theme id (a [data-theme] block in static/themes.css). "midnight" since 1.8.0;
+    # installs that never chose a theme pick it up, anyone who picked one keeps theirs.
+    "theme": "midnight",
     "map_style": "automatic",
     "range_rings_enabled": True,
     "range_rings_nm": "50,100,150,200",
@@ -167,6 +169,9 @@ DEFAULTS: dict[str, Any] = {
     "smtp_from": "",
     "smtp_to": "",
     "smtp_use_starttls": True,
+    # Implicit TLS (SMTPS, usually port 465) for providers that don't offer STARTTLS.
+    # When on, STARTTLS is not attempted (the session is already encrypted).
+    "smtp_use_ssl": False,
     # ---- Airport overlay (iteration 5) ----
     # Bundled large+medium airports rendered as a Leaflet layer. Zoom-aware: large always,
     # medium at zoom ≥ 8, IATA labels at ≥ 9. Default off so we don't add visual noise unsolicited.
@@ -213,6 +218,30 @@ SECRET_KEYS = {"fa_api_key", "openaip_api_key", "smtp_pass", "cloud_api_key", "c
 CLIENT_READONLY_KEYS = {"digest_latest_json", "saved_views_json", "webhooks_json"}
 
 
+def clean_saved_views(views: Any) -> list[dict[str, Any]]:
+    """Normalise a saved-views list (name + finite lat/lon + zoom). Shared by
+    POST /api/views and /api/import so a restored backup gets the same cleaning."""
+    if not isinstance(views, list):
+        return []
+    clean: list[dict[str, Any]] = []
+    for v in views[:50]:
+        if not isinstance(v, dict):
+            continue
+        name = v.get("name")
+        name = name.strip()[:60] if isinstance(name, str) else ""
+        try:
+            lat = float(v["lat"])
+            lon = float(v["lon"])
+            zoom = max(1, min(int(v.get("zoom") or 6), 18))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        # NaN fails both comparisons, so the range check also rejects it.
+        if not name or not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+            continue
+        clean.append({"name": name, "lat": lat, "lon": lon, "zoom": zoom})
+    return clean
+
+
 # --- Value validation (iteration 13) ------------------------------------------
 # DEFAULTS whitelists *keys*; this layer validates *values*. Without it a buggy
 # (or hostile — this box has no auth) LAN client could store poll_interval="abc",
@@ -230,7 +259,16 @@ def _v_int(lo: int, hi: int) -> Callable[[Any], Any]:
     def check(v: Any) -> Any:
         if isinstance(v, bool):
             raise ValueError("boolean is not a number")
-        n = int(float(v))
+        if isinstance(v, int):
+            n = v   # arbitrarily large JSON ints are fine: clamped below, never float()ed
+        else:
+            # float() maps "1e999" / 1e400 / "Infinity" / "nan" to inf/nan rather than
+            # raising, and int(inf) then raises OverflowError — which no caller
+            # caught, so one such value 500'd every settings read (2026-11-08 P1-1).
+            f = float(v)
+            if not math.isfinite(f):
+                raise ValueError("not a finite number")
+            n = int(f)
         return max(lo, min(n, hi))
     return check
 
@@ -300,12 +338,29 @@ def _v_keep_alive(v: Any) -> Any:
     """Ollama keep_alive: integer seconds or a duration string like '30s'/'5m'/'1h'."""
     if isinstance(v, bool):
         raise ValueError("not a duration")
-    if isinstance(v, (int, float)) and math.isfinite(float(v)):
-        return max(-1, min(int(v), 86400))   # -1 = Ollama's "keep forever"
+    if isinstance(v, int):
+        return max(-1, min(v, 86400))         # -1 = Ollama's "keep forever"
+    if isinstance(v, float):
+        if not math.isfinite(v):
+            raise ValueError("not a finite duration")
+        return max(-1, min(int(v), 86400))
     s = str(v or "").strip().lower()
     if re.fullmatch(r"-?\d{1,5}[smh]?", s):
         return s
     raise ValueError("must be seconds or '30s'/'5m'/'1h'")
+
+
+def _v_digest_blob(v: Any) -> Any:
+    """digest_latest_json: the digest service's internal slot — a dict (or None). It
+    is never client-writable (CLIENT_READONLY_KEYS), but a restored backup can carry
+    anything, and /api/digest returns it verbatim through a JSONResponse that 500s
+    on NaN/Infinity, so insist on a strict-JSON object."""
+    if v is None:
+        return None
+    if not isinstance(v, dict):
+        raise ValueError("must be a JSON object")
+    json.dumps(v, allow_nan=False)   # raises ValueError on non-finite numbers
+    return v
 
 
 def _v_json_list_str(v: Any) -> str:
@@ -325,7 +380,7 @@ _BOOL_KEYS = (
     "weather_overlay_enabled", "day_night_enabled", "airport_overlay_enabled",
     "notify_military", "notify_emergency", "notify_watchlist",
     "digest_enabled", "digest_deliver_in_app", "digest_deliver_webhook", "digest_deliver_email",
-    "smtp_use_starttls", "ollama_enabled", "cloud_api_enabled", "claude_cli_enabled",
+    "smtp_use_starttls", "smtp_use_ssl", "ollama_enabled", "cloud_api_enabled", "claude_cli_enabled",
     "weekly_digest_enabled", "host_guard_enabled",
 )
 
@@ -391,16 +446,29 @@ _VALIDATORS: dict[str, Callable[[Any], Any]] = {
     "extra_feeds_json": _v_json_list_str,
     # Special.
     "ollama_keep_alive": _v_keep_alive,
-    # digest_latest_json deliberately has no validator: it's an internal slot the
-    # digest service writes; the size cap in set_many still bounds it.
+    # Internal slot the digest service writes; the size cap in set_many bounds it.
+    "digest_latest_json": _v_digest_blob,
 }
 _VALIDATORS.update({k: _v_bool for k in _BOOL_KEYS})
 
 
+# Everything a validator (or the JSON round-trip around it) can raise on a hostile
+# value: OverflowError from int()/float() of huge numbers, RecursionError from
+# pathologically nested JSON. Callers catch this tuple, never a bare Exception.
+_REJECT_ERRORS = (ValueError, TypeError, OverflowError, RecursionError)
+
+
 def _validated(key: str, value: Any) -> Any:
-    """Canonical value for `key`, or raise ValueError/TypeError to reject the write."""
+    """Canonical value for `key`, or raise ValueError/TypeError to reject the write.
+    OverflowError / RecursionError are folded into ValueError so no validator can
+    leak an exception type callers don't expect."""
     fn = _VALIDATORS.get(key)
-    return fn(value) if fn else value
+    if fn is None:
+        return value
+    try:
+        return fn(value)
+    except (OverflowError, RecursionError) as exc:
+        raise ValueError(f"unrepresentable value ({type(exc).__name__})") from exc
 
 
 def _connect() -> sqlite3.Connection:
@@ -419,7 +487,9 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-SCHEMA_VERSION = 4  # bump and add an `if v < N: …` block below whenever the schema changes
+# The user_version a fully-migrated DB carries. Bump it AND add an `if v < N: …` block
+# below whenever the schema changes; tests assert a fresh DB lands on exactly this.
+SCHEMA_VERSION = 4
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -497,6 +567,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
                             "default for new installs) — enable it under Settings → "
                             "Notifications → Network access to block DNS rebinding")
         conn.execute("PRAGMA user_version = 4")
+    if v < SCHEMA_VERSION:
+        log.info("database schema migrated v%d -> v%d", v, SCHEMA_VERSION)
     conn.commit()
 
 
@@ -526,70 +598,78 @@ def init_db() -> None:
                 conn.execute("VACUUM")
         except sqlite3.Error:
             pass
-        conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS fa_budget ("
-            "month TEXT PRIMARY KEY, spent_cents INTEGER DEFAULT 0)"
-        )
-        # Event log: watchlist matches, military entries, emergency squawks. Searchable by time.
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS events ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "ts REAL NOT NULL, "
-            "kind TEXT NOT NULL, "
-            "hex TEXT, callsign TEXT, registration TEXT, "
-            "distance_nm REAL, payload TEXT)"
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, ts DESC)")
-        # Per-day aggregates. Updated incrementally by the feed loop.
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS daily_stats ("
-            "date TEXT PRIMARY KEY, "
-            "total_polls INTEGER DEFAULT 0, "
-            "unique_aircraft INTEGER DEFAULT 0, "
-            "max_range_nm REAL DEFAULT 0, "
-            "emergencies INTEGER DEFAULT 0, "
-            "military_seen INTEGER DEFAULT 0)"
-        )
-        # Snapshot ring buffer used by replay. The payload is a JSON dump of the WS snapshot.
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS feed_snapshots ("
-            "ts REAL PRIMARY KEY, payload TEXT NOT NULL)"
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON feed_snapshots(ts DESC)")
-        # Per-aircraft personal notes — small free-form text the user can attach to a hex.
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS aircraft_notes ("
-            "hex TEXT PRIMARY KEY, note TEXT NOT NULL, updated_at REAL NOT NULL)"
-        )
-        # Type ledger — every unique ICAO type_code we've seen, plus first/last and count.
-        # Powers the "rare type" alert and the type leaderboard.
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS seen_types ("
-            "type_code TEXT PRIMARY KEY, "
-            "first_seen REAL, last_seen REAL, sightings INTEGER DEFAULT 0)"
-        )
-        # 360-bin polar coverage diagram: best (max) range observed per integer-degree bearing.
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS polar_coverage ("
-            "bearing INTEGER PRIMARY KEY, max_nm REAL NOT NULL DEFAULT 0, "
-            "last_hex TEXT, last_seen REAL)"
-        )
-        # Coarse position heatmap for the activity layer. Lat/lon are bucketed to 0.05° (~3 nm)
-        # and we just keep a hit counter — perfect for Leaflet.heat.
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS position_heatmap ("
-            "lat_bucket INTEGER NOT NULL, lon_bucket INTEGER NOT NULL, "
-            "hits INTEGER NOT NULL DEFAULT 0, "
-            "PRIMARY KEY(lat_bucket, lon_bucket))"
-        )
-        # Run migrations after the base CREATE TABLEs so we don't fight CREATE TABLE IF NOT EXISTS.
-        _migrate(conn)
-        conn.commit()
+        ensure_schema(conn)
     # Settings-level migrations live outside the open connection because they go through
     # `set_one` (which manages its own connection + cache invalidation).
     _migrate_ai_provider()
+
+
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    """Create every table/index (idempotent) and run the user_version migrations on
+    `conn`. Split out of init_db so /api/import can build a restore target with
+    exactly the canonical schema (services/restore.py) instead of trusting the
+    schema a backup file declares."""
+    conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS fa_budget ("
+        "month TEXT PRIMARY KEY, spent_cents INTEGER DEFAULT 0)"
+    )
+    # Event log: watchlist matches, military entries, emergency squawks. Searchable by time.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS events ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "ts REAL NOT NULL, "
+        "kind TEXT NOT NULL, "
+        "hex TEXT, callsign TEXT, registration TEXT, "
+        "distance_nm REAL, payload TEXT)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, ts DESC)")
+    # Per-day aggregates. Updated incrementally by the feed loop.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS daily_stats ("
+        "date TEXT PRIMARY KEY, "
+        "total_polls INTEGER DEFAULT 0, "
+        "unique_aircraft INTEGER DEFAULT 0, "
+        "max_range_nm REAL DEFAULT 0, "
+        "emergencies INTEGER DEFAULT 0, "
+        "military_seen INTEGER DEFAULT 0)"
+    )
+    # Snapshot ring buffer used by replay. The payload is a JSON dump of the WS snapshot.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS feed_snapshots ("
+        "ts REAL PRIMARY KEY, payload TEXT NOT NULL)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON feed_snapshots(ts DESC)")
+    # Per-aircraft personal notes — small free-form text the user can attach to a hex.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS aircraft_notes ("
+        "hex TEXT PRIMARY KEY, note TEXT NOT NULL, updated_at REAL NOT NULL)"
+    )
+    # Type ledger — every unique ICAO type_code we've seen, plus first/last and count.
+    # Powers the "rare type" alert and the type leaderboard.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS seen_types ("
+        "type_code TEXT PRIMARY KEY, "
+        "first_seen REAL, last_seen REAL, sightings INTEGER DEFAULT 0)"
+    )
+    # 360-bin polar coverage diagram: best (max) range observed per integer-degree bearing.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS polar_coverage ("
+        "bearing INTEGER PRIMARY KEY, max_nm REAL NOT NULL DEFAULT 0, "
+        "last_hex TEXT, last_seen REAL)"
+    )
+    # Coarse position heatmap for the activity layer. Lat/lon are bucketed to 0.05° (~3 nm)
+    # and we just keep a hit counter — perfect for Leaflet.heat.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS position_heatmap ("
+        "lat_bucket INTEGER NOT NULL, lon_bucket INTEGER NOT NULL, "
+        "hits INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY(lat_bucket, lon_bucket))"
+    )
+    # Run migrations after the base CREATE TABLEs so we don't fight CREATE TABLE IF NOT EXISTS.
+    _migrate(conn)
+    conn.commit()
 
 
 def _coerce(key: str, raw: Optional[str]) -> Any:
@@ -597,7 +677,9 @@ def _coerce(key: str, raw: Optional[str]) -> Any:
         return DEFAULTS.get(key)
     try:
         return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
+    except (ValueError, TypeError, RecursionError):
+        # ValueError covers JSONDecodeError and the int-digit-limit error; a deeply
+        # nested value (e.g. from a crafted restore) raises RecursionError.
         return raw
 
 
@@ -635,8 +717,8 @@ def _populate_cache() -> dict[str, Any]:
         # crashing whatever reads it (the feed loop, header builders, int() calls).
         if k in _VALIDATORS:
             try:
-                v = _VALIDATORS[k](v)
-            except (ValueError, TypeError):
+                v = _validated(k, v)
+            except _REJECT_ERRORS:
                 log.warning("stored setting %r has invalid value; using default", k)
                 v = DEFAULTS.get(k)
         stored[k] = v
@@ -660,24 +742,25 @@ def reload_cache() -> None:
     _populate_cache()
 
 
+def _cache() -> dict[str, Any]:
+    return _CACHE if _CACHE is not None else _populate_cache()
+
+
 def get(key: str) -> Any:
-    if _CACHE is None:
-        _populate_cache()
-    return _CACHE.get(key, DEFAULTS.get(key))
+    return _cache().get(key, DEFAULTS.get(key))
 
 
 def get_all(redact: bool = True) -> dict[str, Any]:
-    if _CACHE is None:
-        _populate_cache()
-    merged = dict(_CACHE)
+    cache = _cache()
+    merged = dict(cache)
     if redact:
         for k in SECRET_KEYS:
             merged[k] = "***" if merged.get(k) else ""
-        # Derived flags the UI uses to know whether secret keys are stored without revealing them.
-        merged["fa_api_key_set"] = bool(_CACHE.get("fa_api_key"))
-        merged["openaip_api_key_set"] = bool(_CACHE.get("openaip_api_key"))
-        merged["cloud_api_key_set"] = bool(_CACHE.get("cloud_api_key"))
-        merged["claude_cli_token_set"] = bool(_CACHE.get("claude_cli_token"))
+        # Derived `<key>_set` flags let the UI show "stored" without revealing the value.
+        # Generated for EVERY secret so a new one can't be added without its flag
+        # (smtp_pass had none, so the UI couldn't tell whether a password was stored).
+        for k in SECRET_KEYS:
+            merged[f"{k}_set"] = bool(cache.get(k))
         # The digest blob is large (~10 KB) and the frontend pulls it from /api/digest
         # when it actually needs it — strip it from the generic settings response to keep
         # the payload lean.
@@ -718,7 +801,7 @@ _SECRET_DESTINATIONS: dict[str, Callable[[dict[str, Any]], str]] = {
 def _unbind_redirected_secrets(pending: dict[str, Any]) -> None:
     """Add `<secret>: ""` to `pending` for each stored secret whose destination this
     write changes without supplying a replacement."""
-    current = _CACHE if _CACHE is not None else _populate_cache()
+    current = _cache()
     merged = {**current, **pending}
     for secret, destination in _SECRET_DESTINATIONS.items():
         if secret in pending or not current.get(secret):
@@ -743,10 +826,11 @@ def set_many(values: dict[str, Any]) -> None:
             continue
         try:
             v = _validated(k, v)
-        except (ValueError, TypeError) as exc:
+            encoded = json.dumps(v, allow_nan=False)
+        except _REJECT_ERRORS as exc:
             log.info("rejecting invalid value for setting %r: %s", k, exc)
             continue
-        if len(json.dumps(v)) > _MAX_VALUE_BYTES:
+        if len(encoded) > _MAX_VALUE_BYTES:
             log.info("rejecting oversized value for setting %r", k)
             continue
         pending[k] = v
@@ -769,24 +853,11 @@ def set_one(key: str, value: Any) -> None:
 
 
 def redacted_sql_dump(db_path: Path) -> str:
-    """Return a full SQL dump of the DB with every SECRET_KEYS value blanked.
-
-    Shared by the manual /api/export AND the automated daily backup so neither writes
-    plaintext API keys / SMTP password / provider tokens into a zip that may be emailed
-    or cloud-stored — and so the two paths can never drift. Runs against a throwaway
-    in-memory copy via SQLite's online backup, so the live DB is never modified."""
-    with sqlite3.connect(db_path) as src, sqlite3.connect(":memory:") as mem:
-        src.backup(mem)
-        secret_keys = sorted(SECRET_KEYS)
-        if secret_keys:
-            # Values are JSON-encoded in the settings table; '""' is an empty JSON string.
-            placeholders = ",".join("?" * len(secret_keys))
-            mem.execute(
-                f"UPDATE settings SET value = '\"\"' WHERE key IN ({placeholders})",
-                tuple(secret_keys),
-            )
-            mem.commit()
-        return "\n".join(mem.iterdump())
+    """Full SQL dump of the DB with every SECRET_KEYS value blanked, as one string.
+    Thin wrapper over restore.iter_redacted_dump (which /api/export and the daily
+    backup stream from directly, so the whole dump never sits in memory)."""
+    from .restore import iter_redacted_dump   # local: restore imports this module
+    return "\n".join(iter_redacted_dump(db_path))
 
 
 # --- FlightAware monthly budget bucket ---------------------------------------

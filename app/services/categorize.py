@@ -41,10 +41,18 @@ def _load_table() -> dict[str, str]:
     everything, which is safe."""
     try:
         raw = json.loads(_DATA_PATH.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:   # missing/unreadable file, bad JSON or UTF-8
         log.warning("type_categories.json unavailable (%s); categories will be 'unknown'", exc)
         return {}
+    if not isinstance(raw, dict):
+        # A hand-edit that leaves a list/scalar at the top level used to raise
+        # AttributeError at import time and stop the whole app from starting.
+        log.warning("type_categories.json: top level must be a JSON object; ignoring the file")
+        return {}
     cats = raw.get("categories") or {}
+    if not isinstance(cats, dict):
+        log.warning("type_categories.json: 'categories' must be a JSON object; categories will be 'unknown'")
+        return {}
     # Validate values are in our known set; drop bad entries with a warning.
     cleaned: dict[str, str] = {}
     for k, v in cats.items():

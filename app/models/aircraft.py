@@ -286,7 +286,3 @@ def haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dl = math.radians(lon2 - lon1)
     a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     return 2 * r_nm * math.asin(math.sqrt(a))
-
-
-def data_source_short(raw: str) -> str:
-    return _data_source_label(raw)

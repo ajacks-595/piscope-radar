@@ -4,12 +4,13 @@ import logging
 import re
 from typing import Any, Optional
 
-from ._http import LRUCache, get_client
+from ._http import FailureBackoff, LRUCache, get_client
 
 
 log = logging.getLogger("piscope.planespotters")
 
 _CACHE = LRUCache(max_size=2048)
+_BACKOFF = FailureBackoff()
 _HEX_RE = re.compile(r"^[0-9a-f]{6}$")
 URL = "https://api.planespotters.net/pub/photos/hex/{hex}"
 
@@ -32,15 +33,22 @@ async def lookup(hex_id: str) -> Optional[dict[str, Any]]:
     cached = _CACHE.get(hex_id)
     if cached is not None:
         return cached
+    if _BACKOFF.blocked(hex_id):
+        return None
     try:
         client = await get_client()
         r = await client.get(URL.format(hex=hex_id), headers={"Accept": "application/json"}, timeout=6.0)
-        if r.status_code != 200:
+        if r.status_code == 404:          # no such airframe — cache the miss
             _CACHE.set(hex_id, {})
             return {}
+        if r.status_code != 200:          # 403 (User-Agent policy) / 429 / 5xx — back off
+            log.info("planespotters lookup for %s: HTTP %s", hex_id, r.status_code)
+            _BACKOFF.record(hex_id)
+            return None
         data = r.json()
     except Exception as exc:
         log.info("planespotters lookup failed for %s: %s", hex_id, exc)
+        _BACKOFF.record(hex_id)
         return None
 
     # Parsing runs outside the try; guard every shape assumption so a

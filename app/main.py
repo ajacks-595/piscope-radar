@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import re
 import secrets
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -50,9 +53,35 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 
 # Version stamp. Bump whenever you ship a notable user-facing change — the frontend reads
 # this via /piscope/api/version and pops a "✨ What's new" toast on first load after a bump.
-VERSION = "1.7.5"
+VERSION = "1.9.0"
 
 app = FastAPI(title="PiScope Radar", version=VERSION, lifespan=lifespan)
+
+
+def _json_safe(o: Any) -> Any:
+    """Non-finite floats → their string form, recursively (strict JSON has no NaN/Inf)."""
+    if isinstance(o, float) and not math.isfinite(o):
+        return str(o)
+    if isinstance(o, dict):
+        return {k: _json_safe(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_json_safe(v) for v in o]
+    return o
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's default 422 echoes each offending `input`. Python's JSON parser
+    accepts NaN/Infinity (and turns 1e400 into inf), so a body like
+    {"altitude_baro": Infinity} produced a 422 whose own rendering raised
+    ValueError in starlette's strict encoder — a 500 on every pydantic-validated
+    endpoint. Stringify non-finite inputs; if an input is too deeply nested to
+    walk, drop the echoed inputs entirely."""
+    try:
+        detail = _json_safe(jsonable_encoder(exc.errors()))
+    except (RecursionError, ValueError, TypeError):
+        detail = [{k: e.get(k) for k in ("type", "loc", "msg")} for e in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": detail})
 
 
 @app.get("/piscope/api/version")
@@ -206,7 +235,7 @@ def _csp_header(script_nonce: Optional[str] = None, *, script_self_only: bool = 
 # a short TTL so we don't re-hash the static dir on every poll.
 
 _SHELL_FILES = ("index.html", "app.js", "app.css", "themes.css", "radar.js",
-                "manifest.webmanifest", "sw.js")
+                "manifest.webmanifest", "sw.js", "icons/aircraft.svg", "icons/piscope.svg")
 _SW_CACHE_TAG_CACHE: dict[str, tuple[float, str]] = {}
 _SW_CACHE_TAG_TTL_S = 60.0
 
@@ -250,6 +279,11 @@ async def index() -> HTMLResponse:
     # "<script>" in index.html (the others are "<script src=...>").
     nonce = secrets.token_urlsafe(16)
     html = html.replace("<script>", f'<script nonce="{nonce}">', 1)
+    # Tell the page which shell cache it was built for (the same tag /piscope/sw.js
+    # carries) so its bootstrap can detect a service worker left over from another
+    # build and reload clean instead of running new HTML against old cached JS/CSS.
+    html = html.replace('<meta name="piscope-shell" content="" />',
+                        f'<meta name="piscope-shell" content="{_shell_cache_tag()}" />', 1)
     # `no-store` is stronger than `no-cache` — the browser won't keep the HTML at all, so an
     # upgrade always delivers the freshly-versioned asset URLs on the very next navigation.
     return HTMLResponse(html, headers={

@@ -27,7 +27,9 @@ directly over a hand-rolled RFC6455 WebSocket client (node ≤21 has no global `
 # default target: http://10.0.0.231/piscope
 node tests/e2e/run.js
 
-# different target / a local instance
+# a local instance on synthetic traffic — no Pi needed (see tools/dev/)
+python tools/dev/mock_tar1090.py &     # fake tar1090 on :8771, placeholder London receiver
+python tools/dev/run_dev.py &          # PiScope on :8765 with a throwaway database
 PISCOPE_URL=http://127.0.0.1:8765/piscope node tests/e2e/run.js
 
 # one module (substring match on filename or name)
@@ -49,7 +51,8 @@ Routine runs are **safe against the live Pi**:
 
 - Only **read-only** endpoints and **ephemeral** UI interactions (selection, modals, filters,
   themes via `applyTheme(persist:false)`, URL hash, replay) are exercised.
-- The persisting toggles (theme-select, weather, day/night, audio, follow, airports, aero) and
+- The persisting controls (theme cards, weather, day/night, audio, follow, airports, aero,
+  range rings, label mode) and
   every write/AI/FlightAware/webhook/import endpoint are **never** clicked/called.
 - A **settings-snapshot guard** captures `GET /api/settings` before the run and asserts it's
   byte-identical after — so an accidental write fails the run loudly.
@@ -63,7 +66,7 @@ tests/e2e/
     cdp.js          # Browser + Page over a minimal CDP/WebSocket client (no deps)
     harness.js      # Checks (assertions) + console/exception capture + report formatting
   tests/
-    01-load.js … 13-sse.js   # one module per feature area
+    01-load.js … 15-shell.js # one module per feature area
   TEST_PLAN.md      # full test catalogue (auto + manual + destructive)
   README.md
 ```
@@ -102,3 +105,11 @@ module.exports = {
   wrap to return a primitive (`(()=>{map.panTo(...);return true})()`).
 - The chromium `--user-data-dir` must live under `$HOME` (snap confinement); `run.js` uses
   `~/.cache/piscope-e2e/`.
+- **The HTTP cache is disabled** (`Network.setCacheDisabled` in `lib/cdp.js`). Static assets
+  are served `immutable` per `?v=VERSION` and the profile persists between runs, so a build
+  whose JS/CSS changed under the same VERSION would otherwise be tested against last run's
+  cached files.
+- **Headless Chrome reports `(hover: none)`**, so the CSS tooltips (`[data-tip]`) are not
+  rendered; assert on the `data-tip` / `aria-label` attributes instead.
+- The per-browser UI preferences (`localStorage` `piscope_*`) persist in the profile. Module
+  15 restores the ones it flips; delete `~/.cache/piscope-e2e/profile` for a clean slate.

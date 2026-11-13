@@ -1,12 +1,12 @@
-# Tests on Python 3.11 (the production Pi).
-# Runs on pull requests (Dependabot's included) and on pushes to main, so a
-# broken main shows up straight away.
-# Actions are pinned to commit SHAs (tags can be moved).
+# Tests + lint/type/security checks on Python 3.11 (the production Pi).
+# Runs on pull requests (Dependabot's included) and on pushes to main AND dev —
+# dev is the working branch, so breakage should show up before promotion.
+# Actions are pinned to commit SHAs (tags can be moved); tools to exact versions.
 name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
   workflow_dispatch:
 
@@ -35,3 +35,32 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Tests
         run: python -m pytest tests/ -v
+
+  lint:
+    name: lint, types, security (py3.11)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install ruff==0.16.9 bandit==1.9.4 pip-audit==2.10.1 pyright==1.1.414
+      - name: ruff (syntax errors + pyflakes)
+        run: ruff check app tests tools --select E9,F
+      - name: bandit (medium+ severity)
+        # Verified false positives carry a per-line `# nosec B608` with the reason on
+        # the line above; anything new fails the build.
+        run: bandit -q -r app -ll
+      - name: pyright (pyrightconfig.json)
+        run: pyright
+      - name: pip-audit (OSV)
+        run: pip-audit -r requirements.txt -r requirements-dev.txt -s osv --progress-spinner off
+      - name: JS syntax
+        run: for f in static/*.js tests/e2e/*.js tests/e2e/lib/*.js tests/e2e/tests/*.js; do node --check "$f"; done

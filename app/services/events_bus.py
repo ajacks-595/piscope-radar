@@ -41,6 +41,17 @@ class BusEvent:
     data: dict[str, Any] = field(default_factory=dict)
 
 
+# Cap on concurrent SSE subscriptions (2026-11-08 P2-4). Each is an open HTTP
+# stream + a queue; without a cap an unauthenticated LAN client could open them
+# until the Pi ran out of memory / file descriptors. Real use is a handful of
+# dashboards.
+MAX_SUBSCRIBERS = 100
+
+
+class SubscriberLimitError(RuntimeError):
+    """Raised by subscribe() when MAX_SUBSCRIBERS subscriptions are already live."""
+
+
 _next_id = 1
 _ring: deque[BusEvent] = deque(maxlen=_RING_SIZE)
 _subscribers: list[asyncio.Queue[BusEvent]] = []
@@ -88,6 +99,8 @@ class Subscription:
     __slots__ = ("_q", "_replay", "_replayed_through", "_closed")
 
     def __init__(self, start_after_id: int = 0) -> None:
+        if len(_subscribers) >= MAX_SUBSCRIBERS:
+            raise SubscriberLimitError(f"{MAX_SUBSCRIBERS} event-stream subscribers already connected")
         self._q: asyncio.Queue[BusEvent] = asyncio.Queue(maxsize=128)
         _subscribers.append(self._q)
         self._replay = [ev for ev in list(_ring) if ev.id > start_after_id]
@@ -117,8 +130,13 @@ class Subscription:
 
 
 def subscribe(start_after_id: int = 0) -> Subscription:
-    """Attach a live subscription replaying everything after `start_after_id`."""
+    """Attach a live subscription replaying everything after `start_after_id`.
+    Raises SubscriberLimitError when MAX_SUBSCRIBERS are already attached."""
     return Subscription(start_after_id)
+
+
+def at_capacity() -> bool:
+    return len(_subscribers) >= MAX_SUBSCRIBERS
 
 
 def subscriber_count() -> int:

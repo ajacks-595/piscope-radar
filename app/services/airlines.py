@@ -40,8 +40,13 @@ def _load_table() -> dict[str, dict[str, Any]]:
     resolve nothing, which is safe (operators just show as unresolved)."""
     try:
         raw = json.loads(_DATA_PATH.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:   # missing/unreadable file, bad JSON or UTF-8
         log.warning("airline_codes.json unavailable (%s); operators will be unresolved", exc)
+        return {}
+    if not isinstance(raw, dict):
+        # A hand-edit that leaves a list/scalar at the top level used to raise
+        # AttributeError at import time and stop the whole app from starting.
+        log.warning("airline_codes.json: top level must be a JSON object; ignoring the file")
         return {}
     cleaned: dict[str, dict[str, Any]] = {}
     for section in ("airlines", "overrides"):

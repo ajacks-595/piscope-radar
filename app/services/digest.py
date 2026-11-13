@@ -37,6 +37,8 @@ log = logging.getLogger("piscope.digest")
 
 # Single canonical key for the in-app cache row.
 _LATEST_KEY = "digest_latest_json"
+# Snapshots decoded per digest to estimate peak concurrent aircraft (bounds CPU).
+_PEAK_SAMPLES = 480
 
 
 # ---------- Aggregation ----------
@@ -125,15 +127,18 @@ def build_digest(now_ts: Optional[float] = None, window_hours: int = 24) -> dict
             "FROM daily_stats WHERE date = ?", (today,)
         ).fetchone()
 
-        # Peak msg rate — approximate from snapshot deltas over the window. Cheap if we
-        # cap rows; we sample every Nth snapshot.
-        snap_rows = conn.execute(
-            "SELECT ts, payload FROM feed_snapshots WHERE ts >= ? ORDER BY ts ASC",
-            (since,),
-        ).fetchmany(2880)  # 24h at 30s granularity ceiling; LIMIT-by-fetchmany is fine for ring buffer
+        # Peak concurrent aircraft — approximated from up to _PEAK_SAMPLES snapshots
+        # spread evenly over the WHOLE window. (Previously the first 2,880 rows in
+        # ts order, so at a dense snapshot cadence the newest part of the window —
+        # often the busiest — was never looked at.) Only the sampled payloads are
+        # read: each is a compressed blob, so fetching all of them is the real cost.
+        ts_rows = conn.execute(
+            "SELECT ts FROM feed_snapshots WHERE ts >= ? ORDER BY ts ASC", (since,),
+        ).fetchall()
         peak_aircraft = 0
-        for r in snap_rows[::6]:  # every ~6th sample to bound CPU
-            snap = events_store._decode_snapshot(r["payload"])
+        for ts in events_store.sample_evenly([r["ts"] for r in ts_rows], _PEAK_SAMPLES):
+            row = conn.execute("SELECT payload FROM feed_snapshots WHERE ts = ?", (ts,)).fetchone()
+            snap = events_store._decode_snapshot(row["payload"]) if row else None
             if snap and isinstance(snap.get("aircraft"), list):
                 peak_aircraft = max(peak_aircraft, len(snap["aircraft"]))
 
@@ -265,6 +270,7 @@ def _send_email(text: str) -> tuple[bool, Optional[str]]:
     sender = (settings_store.get("smtp_from") or user).strip()
     recipient = (settings_store.get("smtp_to") or "").strip()
     use_starttls = bool(settings_store.get("smtp_use_starttls"))   # DEFAULTS supplies True
+    use_ssl = bool(settings_store.get("smtp_use_ssl"))
     if not host or not sender or not recipient:
         return False, "SMTP not configured"
     msg = EmailMessage()
@@ -274,9 +280,15 @@ def _send_email(text: str) -> tuple[bool, Optional[str]]:
     msg["Date"] = formatdate(localtime=True)
     msg.set_content(text)
     try:
-        with smtplib.SMTP(host, port, timeout=15) as s:
+        if use_ssl:
+            # Implicit TLS (SMTPS): encrypted from the first byte, so no STARTTLS.
+            conn: smtplib.SMTP = smtplib.SMTP_SSL(host, port, timeout=15,
+                                                   context=ssl.create_default_context())
+        else:
+            conn = smtplib.SMTP(host, port, timeout=15)
+        with conn as s:
             s.ehlo()
-            if use_starttls:
+            if use_starttls and not use_ssl:
                 s.starttls(context=ssl.create_default_context())
                 s.ehlo()
             if user and password:

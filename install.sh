@@ -204,7 +204,8 @@ WorkingDirectory=${INSTALL_DIR}
 # indefinitely, and uvicorn otherwise waits for them forever on SIGTERM — every
 # restart then hung until systemd's 90 s SIGKILL, skipping the shutdown hook that
 # flushes buffered analytics. 5 s lets in-flight requests finish, then cancels.
-ExecStart=${INSTALL_DIR}/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port ${SERVICE_PORT} --timeout-graceful-shutdown 5
+# --no-server-header: don't advertise "server: uvicorn" through the proxy (2026-11-08 P3).
+ExecStart=${INSTALL_DIR}/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port ${SERVICE_PORT} --timeout-graceful-shutdown 5 --no-server-header
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
@@ -275,8 +276,10 @@ configure_lighttpd() {
     # delivered a byte, and an abandoned client's upstream connection stayed open
     # forever (lighttpd never wrote to it, so never noticed the client was gone).
     server.stream-response-body = 2
-    # Cap upload size at the proxy too (the app caps /api/import at 20 MB itself).
-    server.max-request-size = 26214400
+    # Cap upload size at the proxy too (the app caps /api/import at 64 MiB itself).
+    # NB: the unit is KILObytes — the old 26214400 meant 25 GiB, i.e. no cap at all.
+    # 66560 KB = 65 MiB: the 64 MiB app cap plus multipart framing overhead.
+    server.max-request-size = 66560
 }
 EOF
   # Symlink directly into conf-enabled. `lighttpd-enable-mod` chokes on the numeric

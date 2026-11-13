@@ -11,7 +11,7 @@ import logging
 from typing import Any, Optional
 
 from .. import settings as settings_store
-from .._http import get_client, validate_external_url
+from .._http import get_client, validate_external_url, validate_external_url_async
 
 
 log = logging.getLogger("piscope.ai.ollama")
@@ -41,7 +41,9 @@ async def ping() -> dict[str, Any]:
     if not url.startswith(("http://", "https://")):
         return {"ok": False, "error": "URL must start with http:// or https://"}
     try:
-        validate_external_url(url)
+        # On-demand + echoes upstream detail back, so also resolve the hostname
+        # (off the event loop) to refuse names that point at metadata addresses.
+        await validate_external_url_async(url, resolve=True)
     except ValueError as exc:
         return {"ok": False, "error": f"URL blocked: {exc}"}
     try:
@@ -70,6 +72,11 @@ async def generate(prompt: str, *, num_predict: int = 360, temperature: float = 
     """
     url = _validated_url()
     if url is None:
+        return None
+    try:
+        await validate_external_url_async(url, resolve=True)
+    except ValueError as exc:
+        log.info("ollama URL refused: %s", exc)
         return None
     model = (settings_store.get("ollama_model") or "gemma4:latest").strip()
     body = {

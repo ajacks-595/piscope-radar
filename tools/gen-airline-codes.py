@@ -2,7 +2,7 @@
 """Regenerate app/data/airline_codes.json from the OpenFlights airlines dataset.
 
 Usage:
-    python3 tools/gen-airline-codes.py [path/to/airlines.dat]
+    python3 tools/gen-airline-codes.py path/to/airlines.dat
 
 Input:  airlines.dat from https://github.com/jpatokal/openflights (data/airlines.dat),
         CSV columns: id, name, alias, iata, icao, callsign, country, active.
@@ -51,7 +51,12 @@ def _clean(v: str) -> str | None:
 
 
 def main() -> int:
-    src = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/airlines.dat")
+    # The input path is required: a fixed default under the world-writable /tmp let
+    # any local user plant the "dataset" that gets committed (bandit S108).
+    if len(sys.argv) != 2:
+        print("usage: gen-airline-codes.py path/to/airlines.dat", file=sys.stderr)
+        return 2
+    src = Path(sys.argv[1])
     if not src.exists():
         print(f"input not found: {src}", file=sys.stderr)
         return 1

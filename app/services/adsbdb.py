@@ -4,12 +4,13 @@ import logging
 import re
 from typing import Any, Optional
 
-from ._http import LRUCache, get_client
+from ._http import FailureBackoff, LRUCache, get_client
 
 
 log = logging.getLogger("piscope.adsbdb")
 
 _CACHE = LRUCache(max_size=2048)
+_BACKOFF = FailureBackoff()
 _CALLSIGN_RE = re.compile(r"^[A-Z0-9]{2,8}$")
 URL = "https://api.adsbdb.com/v0/callsign/{callsign}"
 
@@ -24,15 +25,22 @@ async def lookup(callsign: str) -> Optional[dict[str, Any]]:
     cached = _CACHE.get(callsign)
     if cached is not None:
         return cached
+    if _BACKOFF.blocked(callsign):
+        return None
     try:
         client = await get_client()
         r = await client.get(URL.format(callsign=callsign), timeout=6.0)
-        if r.status_code != 200:
+        if r.status_code == 404:          # adsbdb's "unknown callsign" — cache the miss
             _CACHE.set(callsign, {})
             return {}
+        if r.status_code != 200:          # 429 / 5xx: transient — back off, don't cache
+            log.info("adsbdb lookup for %s: HTTP %s", callsign, r.status_code)
+            _BACKOFF.record(callsign)
+            return None
         data = r.json()
     except Exception as exc:
         log.info("adsbdb lookup failed for %s: %s", callsign, exc)
+        _BACKOFF.record(callsign)
         return None
 
     # Shape-guard every level: a schema-changed / hostile upstream returning a

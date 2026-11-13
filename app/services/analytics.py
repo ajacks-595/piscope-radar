@@ -468,7 +468,8 @@ def overview(range_key: str) -> dict[str, Any]:
         matrix_where = "hour >= ?" if since_ts is not None else "1=1"
         matrix_params = [_utc_hour(since_ts)] if since_ts is not None else []
         matrix_rows = conn.execute(
-            "SELECT CAST(strftime('%w', substr(hour, 1, 10)) AS INTEGER) AS dow, "
+            # bandit B608 false positive: WHERE fragments are constant SQL with ? placeholders; values are bound
+            "SELECT CAST(strftime('%w', substr(hour, 1, 10)) AS INTEGER) AS dow, "  # nosec B608
             "       CAST(substr(hour, 12, 2) AS INTEGER) AS hod, "
             "       COUNT(*) AS hours_counted, "
             "       SUM(obs) AS obs, "
@@ -506,7 +507,8 @@ def overview(range_key: str) -> dict[str, Any]:
 
         # --- type breakdown (windowed, from the sighting ledger) ---
         type_rows = conn.execute(
-            "SELECT type_code, COUNT(*) AS sightings, COUNT(DISTINCT hex) AS unique_aircraft "
+            # bandit B608 false positive: WHERE fragments are constant SQL with ? placeholders; values are bound
+            "SELECT type_code, COUNT(*) AS sightings, COUNT(DISTINCT hex) AS unique_aircraft "  # nosec B608
             f"FROM aircraft_sightings WHERE {sight_where} AND type_code IS NOT NULL "
             "GROUP BY type_code ORDER BY sightings DESC LIMIT 25",
             sight_params,
@@ -532,7 +534,8 @@ def overview(range_key: str) -> dict[str, Any]:
         # resolve in Python, then slice for display — keeps the resolved/unresolved
         # coverage stats exact rather than top-N-truncated.
         op_rows = conn.execute(
-            "SELECT substr(callsign, 1, 3) AS prefix, COUNT(*) AS sightings, "
+            # bandit B608 false positive: WHERE fragments are constant SQL with ? placeholders; values are bound
+            "SELECT substr(callsign, 1, 3) AS prefix, COUNT(*) AS sightings, "  # nosec B608
             "       COUNT(DISTINCT hex) AS unique_aircraft "
             f"FROM aircraft_sightings WHERE {sight_where} "
             "AND callsign GLOB '[A-Z][A-Z][A-Z][0-9]*' "
@@ -555,7 +558,8 @@ def overview(range_key: str) -> dict[str, Any]:
                 "radio_callsign": info["callsign"] if info else None,
             })
         with_callsign = conn.execute(
-            f"SELECT COUNT(*) FROM aircraft_sightings WHERE {sight_where} "
+            # bandit B608 false positive: WHERE fragments are constant SQL with ? placeholders; values are bound
+            f"SELECT COUNT(*) FROM aircraft_sightings WHERE {sight_where} "  # nosec B608
             "AND callsign IS NOT NULL",
             sight_params,
         ).fetchone()[0]
@@ -568,7 +572,8 @@ def overview(range_key: str) -> dict[str, Any]:
 
         # --- altitude bands (observation-weighted, from hourly counters) ---
         band_row = conn.execute(
-            "SELECT SUM(alt_ground), SUM(alt_low), SUM(alt_mid), SUM(alt_high), "
+            # bandit B608 false positive: WHERE fragments are constant SQL with ? placeholders; values are bound
+            "SELECT SUM(alt_ground), SUM(alt_low), SUM(alt_mid), SUM(alt_high), "  # nosec B608
             f"SUM(alt_very_high) FROM hourly_stats WHERE {matrix_where}",
             matrix_params,
         ).fetchone()
@@ -579,14 +584,16 @@ def overview(range_key: str) -> dict[str, Any]:
 
         # --- range distribution (per-sighting best range, 25 nm buckets, 250+ capped) ---
         hist_rows = conn.execute(
-            "SELECT CAST(MIN(max_range_nm, 249.999) / 25 AS INTEGER) * 25 AS bucket, "
+            # bandit B608 false positive: WHERE fragments are constant SQL with ? placeholders; values are bound
+            "SELECT CAST(MIN(max_range_nm, 249.999) / 25 AS INTEGER) * 25 AS bucket, "  # nosec B608
             "       COUNT(*) AS n "
             f"FROM aircraft_sightings WHERE {sight_where} AND max_range_nm IS NOT NULL "
             "GROUP BY bucket ORDER BY bucket ASC",
             sight_params,
         ).fetchall()
         range_extremes = conn.execute(
-            "SELECT MAX(max_range_nm), "
+            # bandit B608 false positive: WHERE fragments are constant SQL with ? placeholders; values are bound
+            "SELECT MAX(max_range_nm), "  # nosec B608
             "MIN(CASE WHEN min_range_nm > 0 THEN min_range_nm END) "
             f"FROM aircraft_sightings WHERE {sight_where}",
             sight_params,
@@ -599,7 +606,8 @@ def overview(range_key: str) -> dict[str, Any]:
 
         # --- totals ---
         uniq = conn.execute(
-            f"SELECT COUNT(DISTINCT hex) FROM aircraft_sightings WHERE {sight_where}",
+            # bandit B608 false positive: WHERE fragments are constant SQL with ? placeholders; values are bound
+            f"SELECT COUNT(DISTINCT hex) FROM aircraft_sightings WHERE {sight_where}",  # nosec B608
             sight_params,
         ).fetchone()[0]
         # Military counted with the SAME classification the notable panel uses
@@ -611,7 +619,8 @@ def overview(range_key: str) -> dict[str, Any]:
         from . import notable as notable_rules
         mil_where, mil_params = notable_rules.military_where()
         mil_uniq = conn.execute(
-            "SELECT COUNT(DISTINCT hex) FROM aircraft_sightings "
+            # bandit B608 false positive: WHERE fragments are constant SQL with ? placeholders; values are bound
+            "SELECT COUNT(DISTINCT hex) FROM aircraft_sightings "  # nosec B608
             f"WHERE {sight_where} AND {mil_where}",
             [*sight_params, *mil_params],
         ).fetchone()[0]

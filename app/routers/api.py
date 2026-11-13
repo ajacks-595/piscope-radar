@@ -10,13 +10,12 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-import io
 import json
+import math
 import re
 import shutil
 import sqlite3
 import time
-import zipfile
 from pathlib import Path
 
 from fastapi import UploadFile, File
@@ -36,6 +35,9 @@ from ..services import hostguard
 from ..services import ratelimit
 from ..services._http import LRUCache, get_client, reset_client
 from ..services.feed import feed_service
+# Re-exported for back-compat; the source of truth moved to services/webhooks.py so
+# /api/import can share the endpoint cleaning.
+from ..services.webhooks import WEBHOOK_EVENT_TYPES  # noqa: F401
 
 
 log = logging.getLogger("piscope.api")
@@ -50,6 +52,64 @@ router = APIRouter(prefix="/api")
 _AI_CALLS_PER_MIN = 60            # /api/explain (miss), /api/explain/followup, /api/digest/run
 _DASHBOARD_RECOMPUTES_PER_MIN = 120   # /api/dashboard/summary cache MISSES only
 _FA_LOOKUPS_PER_MIN = 20          # /api/flightaware/{callsign} — each miss is a billed AeroAPI call
+
+
+# --- Expensive read endpoints (2026-11-08 P2-3) -------------------------------
+# Analytics / heatmap rollups cost 1–5 s of Pi CPU each and change slowly, but were
+# recomputed on every request — a LAN client looping them could pin the Pi. Results
+# are memoised for a short TTL (single-flight: concurrent misses for one key share
+# a single computation), at most two computations run at once, and cache MISSES
+# share a rate bucket, so jittering the query params to dodge the cache is capped.
+_EXPENSIVE_TTL_S = 60.0
+_EXPENSIVE_MISSES_PER_MIN = 30
+
+
+class _ExpensiveReadCache:
+    def __init__(self, ttl_s: float, max_entries: int = 64, concurrency: int = 2) -> None:
+        self.ttl_s = ttl_s
+        self.max_entries = max_entries
+        self._data: dict[Any, tuple[float, Any]] = {}
+        self._inflight: dict[Any, asyncio.Future] = {}
+        self._concurrency = concurrency
+        self._sem: Optional[asyncio.Semaphore] = None
+
+    def clear(self) -> None:
+        self._data.clear()
+
+    async def get(self, key: Any, fn, *args: Any) -> Any:
+        hit = self._data.get(key)
+        now = time.monotonic()
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        pending = self._inflight.get(key)
+        if pending is not None:
+            return await asyncio.shield(pending)
+        if not ratelimit.allow("expensive_read", limit=_EXPENSIVE_MISSES_PER_MIN, window_s=60.0):
+            raise HTTPException(status_code=429, detail="Too many uncached analytics requests; try again shortly")
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._inflight[key] = fut
+        try:
+            if self._sem is None:
+                self._sem = asyncio.Semaphore(self._concurrency)
+            async with self._sem:
+                value = await run_in_threadpool(fn, *args)
+        except asyncio.CancelledError:
+            fut.cancel()
+            raise
+        except BaseException as exc:
+            fut.set_exception(exc)
+            fut.exception()   # mark retrieved: no "never retrieved" warning when nobody waits
+            raise
+        finally:
+            self._inflight.pop(key, None)
+        fut.set_result(value)
+        self._data[key] = (time.monotonic() + self.ttl_s, value)
+        while len(self._data) > self.max_entries:
+            self._data.pop(next(iter(self._data)))
+        return value
+
+
+_EXPENSIVE_READS = _ExpensiveReadCache(_EXPENSIVE_TTL_S)
 
 
 # --- Request models (iter 11) -----------------------------------------------
@@ -79,7 +139,9 @@ class AircraftBrief(BaseModel):
     is independently re-sanitised in ai/_common (regex / range-clamp / printable-strip), so
     this is shape + docs validation, not the security boundary. Keep in sync with the field
     list there if you add inputs."""
-    model_config = ConfigDict(extra="ignore")
+    # allow_inf_nan=False: JSON NaN/Infinity (which Python's parser accepts) → 422
+    # instead of overflowing int() in the prompt sanitisers (2026-11-08).
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
     hex: str = Field(..., min_length=1)
     callsign: Optional[str] = None
     type_code: Optional[str] = None
@@ -226,6 +288,14 @@ async def post_settings(request: Request, values: dict[str, Any] = Body(...)) ->
     # Reject empty bodies — accidental wipes.
     if not values:
         raise HTTPException(status_code=400, detail="No settings provided")
+    # Python's JSON parser accepts the non-standard NaN / Infinity tokens (and turns
+    # 1e400 into inf). They are never a legitimate setting and used to 500 the write
+    # (2026-11-08 P1-1), so refuse them at the boundary with a clear 400. Other bad
+    # values keep the silent per-key rejection the Settings form relies on.
+    non_finite = sorted(k for k, v in values.items() if isinstance(v, float) and not math.isfinite(v))
+    if non_finite:
+        raise HTTPException(status_code=400, detail="Non-finite number for: " + ", ".join(
+            k[:64] for k in non_finite[:10]))
     values = {k: v for k, v in values.items() if k not in settings_store.CLIENT_READONLY_KEYS}
     _keep_request_host_allowed(request, values)
     # If the contact URL is changing, recycle the shared httpx client so the new User-Agent
@@ -235,9 +305,9 @@ async def post_settings(request: Request, values: dict[str, Any] = Body(...)) ->
     settings_store.set_many(values)
     if contact_changing:
         await reset_client()
-        planespotters._CACHE.clear()
-        hexdb._CACHE.clear()
-        adsbdb._CACHE.clear()
+        for mod in (planespotters, hexdb, adsbdb):
+            mod._CACHE.clear()
+            mod._BACKOFF.clear()
     return settings_store.get_all(redact=True)
 
 
@@ -357,10 +427,16 @@ async def coverage() -> dict[str, Any]:
     return {"bins": insights_store.polar_coverage()}
 
 
-@router.get("/heatmap")
-async def heatmap(top: int = 5000) -> dict[str, Any]:
+def _heatmap_payload(top: int) -> dict[str, Any]:
     pts = insights_store.heatmap_points(top_n=top)
     return {"points": [{"lat": p[0], "lon": p[1], "hits": p[2]} for p in pts]}
+
+
+@router.get("/heatmap")
+async def heatmap(top: int = 5000) -> dict[str, Any]:
+    # Clamp before keying the cache so top=5001..∞ all share one entry.
+    top = max(1, min(int(top), 20000))
+    return await _EXPENSIVE_READS.get(("heatmap", top), _heatmap_payload, top)
 
 
 @router.get("/leaderboard")
@@ -402,8 +478,10 @@ async def analytics_overview(range: str = "7d") -> dict[str, Any]:  # noqa: A002
     per-day traffic backfills further via the long-standing daily_stats table."""
     # overview() runs 10+ aggregating queries + Python post-processing; offload it
     # so a 30-day rollup can't stall the feed poll / WS broadcast / SSE heartbeat.
+    if range not in analytics_store.RANGE_SECONDS:
+        raise HTTPException(status_code=400, detail=f"range must be one of {'/'.join(analytics_store.RANGE_SECONDS)}")
     try:
-        return await run_in_threadpool(analytics_store.overview, range)
+        return await _EXPENSIVE_READS.get(("overview", range), analytics_store.overview, range)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -414,10 +492,11 @@ async def analytics_notable(range: str = "7d", limit: int = 80) -> dict[str, Any
     app/data/notable_rules.json, each with human-readable reasons) plus
     emergency-squawk events from the events pipeline."""
     try:
-        since = notable_store.window_since(range)
+        notable_store.window_since(range)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return await run_in_threadpool(notable_store.notable_in_window, since, limit)
+    limit = max(1, min(int(limit or 80), 500))
+    return await _EXPENSIVE_READS.get(("notable", range, limit), _notable_payload, range, limit)
 
 
 @router.get("/analytics/returning")
@@ -426,12 +505,24 @@ async def analytics_returning(range: str = "7d", min_days: int = 2,  # noqa: A00
     """Aircraft seen on ≥ min_days distinct days (whole retained ledger) that were
     active in the window. `is_new` flags ones that became returning during it."""
     try:
-        since = notable_store.window_since(range)
+        notable_store.window_since(range)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    aircraft = await run_in_threadpool(notable_store.returning_in_window, since, min_days, limit)
-    return {"aircraft": aircraft,
-            "min_days": max(2, min(int(min_days or 2), 365))}
+    min_days = max(2, min(int(min_days or 2), 365))
+    limit = max(1, min(int(limit or 100), 500))
+    aircraft = await _EXPENSIVE_READS.get(("returning", range, min_days, limit),
+                                          _returning_payload, range, min_days, limit)
+    return {"aircraft": aircraft, "min_days": min_days}
+
+
+# The window's since-timestamp is computed INSIDE the cached call (not passed in), so
+# the cache key is the range name and a cached result is at most one TTL stale.
+def _notable_payload(range_key: str, limit: int) -> dict[str, Any]:
+    return notable_store.notable_in_window(notable_store.window_since(range_key), limit)
+
+
+def _returning_payload(range_key: str, min_days: int, limit: int) -> list[dict[str, Any]]:
+    return notable_store.returning_in_window(notable_store.window_since(range_key), min_days, limit)
 
 
 @router.get("/analytics/aircraft/{hex_id}")
@@ -477,17 +568,6 @@ async def analytics_rules() -> dict[str, Any]:
 
 # --- Webhooks management ----------------------------------------------------
 
-# Event kinds an endpoint may subscribe to. Beyond the four aircraft kinds this includes
-# the watchdog system kinds (feed_down/feed_recovered) and the daily digest: the Settings
-# UI offers checkboxes for all of these and the feed loop / digest service fan out to them,
-# so they MUST survive the save filter. (Previously only the four aircraft kinds were kept,
-# which silently disabled receiver-offline alerts and digest-to-webhook delivery.)
-WEBHOOK_EVENT_TYPES = {
-    "emergency", "military", "watchlist", "rare",
-    "feed_down", "feed_recovered", "digest", "weekly_digest",
-}
-
-
 @router.get("/webhooks")
 async def list_webhooks() -> dict[str, Any]:
     try:
@@ -499,24 +579,11 @@ async def list_webhooks() -> dict[str, Any]:
 
 @router.post("/webhooks")
 async def save_webhooks(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    from ..services import webhooks as webhooks_service
     endpoints = body.get("webhooks") or []
     if not isinstance(endpoints, list):
         raise HTTPException(status_code=400, detail="webhooks must be a list")
-    clean: list[dict[str, Any]] = []
-    for ep in endpoints:
-        if not isinstance(ep, dict):
-            continue
-        url = (ep.get("url") or "").strip()
-        kind_ep = (ep.get("kind") or "generic").lower()
-        types = ep.get("types") or []
-        if not url.startswith(("http://", "https://")):
-            continue
-        if kind_ep not in {"discord", "slack", "mattermost", "ntfy", "generic"}:
-            kind_ep = "generic"
-        if not isinstance(types, list):
-            types = []
-        types = [t for t in types if t in WEBHOOK_EVENT_TYPES]
-        clean.append({"kind": kind_ep, "url": url, "types": types, "label": (ep.get("label") or "")[:60]})
+    clean = webhooks_service.clean_endpoints(endpoints)
     settings_store.set_one("webhooks_json", json.dumps(clean))
     return {"webhooks": clean}
 
@@ -562,20 +629,7 @@ async def save_views(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
     views = body.get("views") or []
     if not isinstance(views, list):
         raise HTTPException(status_code=400, detail="views must be a list")
-    clean = []
-    for v in views[:50]:
-        if not isinstance(v, dict):
-            continue
-        name = (v.get("name") or "").strip()[:60]
-        try:
-            lat = float(v.get("lat"))
-            lon = float(v.get("lon"))
-            zoom = max(1, min(int(v.get("zoom") or 6), 18))
-        except (TypeError, ValueError):
-            continue
-        if not name or not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
-            continue
-        clean.append({"name": name, "lat": lat, "lon": lon, "zoom": zoom})
+    clean = settings_store.clean_saved_views(views)
     settings_store.set_one("saved_views_json", json.dumps(clean))
     return {"views": clean}
 
@@ -662,144 +716,156 @@ async def delete_bookmark(hex_id: str) -> dict[str, Any]:
     return {"ok": True}
 
 
-def _build_export_zip(db_path: Path) -> bytes:
-    """Online-backup the DB to memory, dump SQL, and zip it. Synchronous + CPU/IO-bound
-    (whole-DB copy + zlib compression) — run via run_in_threadpool so it never blocks the
-    event loop, which would otherwise stall WS heartbeats during a large export (iter 11).
+_EXPORT_README = (
+    "PiScope Radar backup.\n\n"
+    "For your security, secret values (API keys, SMTP password, AI provider tokens) "
+    "have been STRIPPED from this backup. After restoring, re-enter them under "
+    "Settings. Everything else (events, records, coverage, settings) restores as-is.\n"
+)
+# Export and import are the two heaviest operations on the Pi (whole-DB dump /
+# rebuild). One of each at a time; extra concurrent requests get a 429 instead of
+# queueing up CPU and SD-card I/O. The export bucket also bounds a hostile page
+# that loops <img src=/piscope/api/export> (a cross-site GET needs no preflight).
+_EXPORT_LOCK = asyncio.Lock()
+_IMPORT_LOCK = asyncio.Lock()
+_EXPORTS_PER_10_MIN = 10
+# A full-year analytics ledger exports to ~40 MB (see services/restore.py). The
+# upload is read from Starlette's disk-spooled temp file, never into RAM. Keep the
+# lighttpd `server.max-request-size` in install.sh above this.
+MAX_IMPORT_UPLOAD_BYTES = 64 * 1024 * 1024
 
-    Secrets (API keys, SMTP password, provider tokens) are stripped from the dump (iter 11):
-    backup zips get emailed and cloud-stored, and we don't want plaintext credentials riding
-    along. The strip runs on the throwaway in-memory copy, so the live DB is untouched. On
-    restore those keys come back blank and must be re-entered in Settings.
-    """
-    bio = io.BytesIO()
-    # SQLite's online backup API gives us a consistent file even with the feed loop writing;
-    # secret values are blanked in the in-memory copy by redacted_sql_dump (shared with the
-    # daily backup so the two can't drift).
-    sql_dump = settings_store.redacted_sql_dump(db_path)
-    with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("piscope.sql", sql_dump)
-        zf.writestr("exported_at.txt", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + "\n")
-        zf.writestr(
-            "README-RESTORE.txt",
-            "PiScope Radar backup.\n\n"
-            "For your security, secret values (API keys, SMTP password, AI provider tokens) "
-            "have been STRIPPED from this backup. After restoring, re-enter them under "
-            "Settings. Everything else (events, records, coverage, settings) restores as-is.\n",
-        )
-    return bio.getvalue()
+
+def _build_export_file(db_path: Path) -> str:
+    """Write the secret-redacted backup zip to a private temp file and return its
+    path. Synchronous + CPU/IO-bound; run via run_in_threadpool. Streams the dump
+    into the zip (services/restore.py) so neither the 54 MB dump nor the zip is
+    held in memory on the 1 GB Pi; the response then streams the file.
+
+    Secrets are stripped on a throwaway in-memory copy (iter 11), so the live DB is
+    untouched. On restore those keys come back blank and must be re-entered."""
+    import os
+    import tempfile
+    from ..services import restore
+    fd, path = tempfile.mkstemp(prefix="piscope-export-", suffix=".zip")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            restore.write_backup_zip(db_path, fh, {
+                "exported_at.txt": restore.utc_stamp(),
+                "README-RESTORE.txt": _EXPORT_README,
+            })
+    except BaseException:
+        os.unlink(path)
+        raise
+    return path
 
 
 @router.get("/export")
-async def export_db() -> Response:
+async def export_db(request: Request) -> Response:
     """Return the entire database as a downloadable ZIP. Settings + events + history."""
+    import os
+    from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
+
+    # The UI downloads this same-origin; nothing legitimate pulls it cross-site.
+    if request.headers.get("sec-fetch-site") == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-site export refused")
     db_path = Path(settings_store.DB_PATH)
     if not db_path.exists():
         raise HTTPException(status_code=404, detail="No database file yet")
-    content = await run_in_threadpool(_build_export_zip, db_path)
+    if _EXPORT_LOCK.locked():
+        raise HTTPException(status_code=429, detail="An export is already running; try again shortly")
+    if not ratelimit.allow("export", limit=_EXPORTS_PER_10_MIN, window_s=600.0):
+        raise HTTPException(status_code=429, detail="Export rate limit exceeded; try again later")
+    async with _EXPORT_LOCK:
+        path = await run_in_threadpool(_build_export_file, db_path)
     fname = f"piscope-backup-{time.strftime('%Y%m%d-%H%M%S')}.zip"
-    return Response(
-        content=content,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
-    )
-
-
-def _deny_attach_authorizer(action: int, arg1, arg2, db_name, source):
-    """SQLite authorizer used during restore. The backup SQL is fully attacker-
-    controlled on this no-auth box (and /api/import is reachable cross-origin via
-    a multipart form — see import_db). `executescript` would happily run
-    `ATTACH DATABASE '/some/path' AS x; ...`, which is a file-write primitive
-    outside the intended DB. Deny ATTACH/DETACH; allow everything a real dump
-    needs (transactions, CREATE TABLE/INDEX, INSERT, PRAGMA)."""
-    if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):
-        return sqlite3.SQLITE_DENY
-    return sqlite3.SQLITE_OK
-
-
-def _build_restore_db(sql: str, tmp_path: Path) -> None:
-    """Execute the backup's SQL dump into a fresh temp DB. Synchronous; threadpool'd.
-    An authorizer blocks ATTACH/DETACH so a malicious dump can't reach outside the
-    temp file."""
-    if tmp_path.exists():
-        tmp_path.unlink()
-    with sqlite3.connect(tmp_path) as fresh:
-        fresh.set_authorizer(_deny_attach_authorizer)
-        try:
-            fresh.executescript(sql)
-            fresh.commit()
-        finally:
-            fresh.set_authorizer(None)
+    return FileResponse(path, media_type="application/zip", filename=fname,
+                        background=BackgroundTask(os.unlink, path))
 
 
 @router.post("/import")
 async def import_db(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     """Restore from a PiScope Radar backup .zip (the file produced by /api/export).
 
-    Strategy: load the SQL dump into a brand-new SQLite file in a temp location, atomically
-    move it over the live DB, and ask the feed service to re-init. Caller should reload the UI.
+    Strategy: validate the dump and rebuild it into a brand-new SQLite file with the
+    canonical schema (services/restore.py — size caps, whitelist authorizer, per-row
+    settings validation), atomically move that over the live DB, and ask the feed
+    service to re-init. Caller should reload the UI.
     """
     # CSRF hardening. multipart/form-data is a CORS "simple request" — a hostile
     # page could otherwise auto-submit a <form> that wipes/replaces the whole DB
     # with no JS, no auth, cross-origin. Requiring a non-safelisted header forces
     # the browser to send a CORS preflight first, which this no-CORS box never
     # answers, so cross-origin reaches die at the preflight. Same-origin callers
-    # (the real UI) set the header freely; see static/app.js.
+    # (the real UI) set the header freely; see static/app.js. (Not a secret: a
+    # non-browser LAN client can send it — the restore validation below is what
+    # makes a hostile file harmless.)
     if request.headers.get("x-piscope-import", "").strip() != "1":
         raise HTTPException(status_code=403, detail="Missing X-PiScope-Import header")
-    payload = await file.read(20 * 1024 * 1024)   # 20 MB cap; way more than we need
-    if not payload:
+    from ..services import restore
+
+    # Size from the spooled file itself (UploadFile.size can be None for some
+    # clients). The old code read at most 20 MB and silently truncated anything
+    # bigger, which then failed as "not a valid zip".
+    upload = file.file
+    upload.seek(0, 2)
+    size = upload.tell()
+    upload.seek(0)
+    if not size:
         raise HTTPException(status_code=400, detail="Empty file")
-    try:
-        with zipfile.ZipFile(io.BytesIO(payload)) as zf:
-            # Accept either the new piscope.sql or the legacy skywatch.sql layout so
-            # users can restore backups taken before the rename.
-            sql_name = "piscope.sql" if "piscope.sql" in zf.namelist() else ("skywatch.sql" if "skywatch.sql" in zf.namelist() else None)
-            if sql_name is None:
-                raise HTTPException(status_code=400, detail="Zip is missing piscope.sql / skywatch.sql")
-            sql = zf.read(sql_name).decode("utf-8", errors="replace")
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="Not a valid zip file")
-    # Build a fresh DB at a sibling path, then atomically swap. executescript on a
-    # restore can be heavy (whole-DB rebuild) so it runs in a threadpool (iter 11).
-    db_path = Path(settings_store.DB_PATH)
-    tmp_path = db_path.with_suffix(".import.tmp")
-    try:
-        await run_in_threadpool(_build_restore_db, sql, tmp_path)
-    except sqlite3.Error as exc:
-        tmp_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail=f"Could not restore: {exc}")
-    # Pause the feed so nothing writes while we swap the file out from under it.
-    await feed_service.stop()
-    try:
-        if db_path.exists():
-            # Flush the old WAL into the main file, then snapshot it as a recovery point so a
-            # mistaken import is reversible and the .bak is internally consistent. Best-effort.
-            try:
-                old = sqlite3.connect(db_path)
+    if size > MAX_IMPORT_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=(
+            f"Backup file is larger than {MAX_IMPORT_UPLOAD_BYTES // (1024 * 1024)} MB"))
+    if _IMPORT_LOCK.locked():
+        raise HTTPException(status_code=429, detail="An import is already running")
+    async with _IMPORT_LOCK:
+        db_path = Path(settings_store.DB_PATH)
+        tmp_path = db_path.with_name(db_path.name + ".import.tmp")
+        # Heavy (whole-DB rebuild) → worker thread, so the feed / WS / SSE keep going.
+        try:
+            report = await run_in_threadpool(restore.restore_zip, upload, tmp_path)
+        except restore.RestoreError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except sqlite3.Error as exc:
+            raise HTTPException(status_code=400, detail=f"Could not restore: {exc}")
+        log.info("import validated: %d statements in %.1fs; rows=%s; settings reset=%s",
+                 report["statements"], report["seconds"], report["rows"], report["settings_reset"])
+        # Pause the feed so nothing writes while we swap the file out from under it.
+        await feed_service.stop()
+        try:
+            if db_path.exists():
+                # Flush the old WAL into the main file, then snapshot it as a recovery point so a
+                # mistaken import is reversible and the .bak is internally consistent. Best-effort.
                 try:
-                    old.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                finally:
-                    old.close()
-                shutil.copy2(db_path, db_path.with_name(db_path.name + ".pre-import.bak"))
-            except (sqlite3.Error, OSError) as exc:
-                log.warning("pre-import backup failed (continuing with restore): %s", exc)
-        # Atomically replace the live DB. Path.replace is a single rename — unlike the old
-        # unlink-then-rename it never leaves a window with no database at all.
-        tmp_path.replace(db_path)
-        # The old WAL/SHM sidecars are stale relative to the freshly-restored DB; leaving them
-        # would let SQLite try to replay an unrelated WAL onto it. Remove them — init_db()
-        # re-creates fresh ones when it re-enables WAL mode.
-        for sidecar in (db_path.name + "-wal", db_path.name + "-shm"):
-            db_path.with_name(sidecar).unlink(missing_ok=True)
-        # Re-apply schema/pragmas/migrations, then drop the now-stale in-memory caches so
-        # reads reflect the restored data rather than the pre-import values.
-        settings_store.init_db()
-        settings_store.reload_cache()
-        insights_store._KNOWN_TYPES = None
-    finally:
-        await feed_service.start()
-    return {"ok": True, "message": "Database restored; please refresh the page."}
+                    old = sqlite3.connect(db_path)
+                    try:
+                        old.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    finally:
+                        old.close()
+                    shutil.copy2(db_path, db_path.with_name(db_path.name + ".pre-import.bak"))
+                except (sqlite3.Error, OSError) as exc:
+                    log.warning("pre-import backup failed (continuing with restore): %s", exc)
+            # Atomically replace the live DB. Path.replace is a single rename — unlike the old
+            # unlink-then-rename it never leaves a window with no database at all.
+            tmp_path.replace(db_path)
+            # The old WAL/SHM sidecars are stale relative to the freshly-restored DB; leaving them
+            # would let SQLite try to replay an unrelated WAL onto it. Remove them — init_db()
+            # re-creates fresh ones when it re-enables WAL mode.
+            for sidecar in (db_path.name + "-wal", db_path.name + "-shm"):
+                db_path.with_name(sidecar).unlink(missing_ok=True)
+            # Re-apply schema/pragmas/migrations, then drop the now-stale in-memory caches so
+            # reads reflect the restored data rather than the pre-import values.
+            settings_store.init_db()
+            settings_store.reload_cache()
+            insights_store._KNOWN_TYPES = None
+            _EXPENSIVE_READS.clear()
+        finally:
+            await feed_service.start()
+    msg = "Database restored; please refresh the page."
+    if report["settings_reset"]:
+        msg += (" These settings in the backup were invalid and were reset to defaults: "
+                + ", ".join(report["settings_reset"]) + ".")
+    return {"ok": True, "message": msg, "settings_reset": report["settings_reset"]}
 
 
 # --- AI explain (iteration 5) -----------------------------------------------
@@ -832,17 +898,24 @@ async def explain_status() -> dict[str, Any]:
     Response shape:
         {
           "configured": bool,                      # any provider ready?
-          "provider": {"name", "configured", "model"},
+          "provider": {"name", "configured", "model",
+                       "reachable", "checked_at", "error"},   # cached ping (P2-1)
           "model": "...", "url_set": bool          # legacy Ollama fields, kept for back-compat
         }
     """
     name = ai_svc.active_provider_name()
+    configured = ai_svc.is_configured()
+    reach = ai_svc.reachability() if configured else {"reachable": None, "checked_at": None, "error": None}
     return {
-        "configured": ai_svc.is_configured(),
+        "configured": configured,
         "provider": {
             "name": name,
-            "configured": ai_svc.is_configured(),
+            "configured": configured,
             "model": _provider_model_label(),
+            # Last background ping (None = not probed yet). Never blocks this call.
+            "reachable": reach["reachable"],
+            "checked_at": reach["checked_at"],
+            "error": reach["error"],
         },
         # Legacy fields — pre-iteration-7 clients (cached HTML on a stale browser) read these.
         # They will be removed once we're confident no one's still on the old shell.
@@ -997,6 +1070,12 @@ async def dashboard_summary(
     if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
         return JSONResponse(status_code=400, content={"success": False, "data": None,
                                                        "error": "lat/lon out of range"})
+    # Query floats accept "inf"/"nan"; the cache key int()s the optional filters,
+    # which raised (500) on them. Refuse non-finite values with the usual envelope.
+    numeric = (radius_km, overhead_threshold_s, overhead_radius_km, min_alt, max_alt, min_speed)
+    if any(v is not None and not math.isfinite(v) for v in numeric):
+        return JSONResponse(status_code=400, content={"success": False, "data": None,
+                                                       "error": "parameters must be finite numbers"})
     radius_km = max(0.1, min(float(radius_km), 500.0))
     top = max(1, min(int(top), 10))
     overhead_threshold_s = max(5.0, min(float(overhead_threshold_s), 300.0))
@@ -1093,7 +1172,14 @@ async def dashboard_events(
     from ..services.dashboard import haversine_km
 
     _require_valid_observer(lat, lon)
+    if not math.isfinite(radius_km):
+        raise HTTPException(status_code=400, detail="radius_km must be a finite number")
     radius_km = max(0.1, min(float(radius_km), 1000.0))
+    # Cheap pre-check so a full bus answers 503 before the stream starts; the
+    # subscribe() inside the generator enforces the cap for real.
+    if events_bus.at_capacity():
+        raise HTTPException(status_code=503, detail="Too many event-stream subscribers; try again later",
+                            headers={"Retry-After": "30"})
 
     # Last-Event-ID for replay-after-reconnect. Header is preferred; query
     # `since` is an explicit fallback for clients that can't set it.
@@ -1110,7 +1196,12 @@ async def dashboard_events(
         # Recommended client retry on disconnect (5 s).
         yield "retry: 5000\n\n"
 
-        sub = events_bus.subscribe(start_after_id=last_id)
+        try:
+            sub = events_bus.subscribe(start_after_id=last_id)
+        except events_bus.SubscriberLimitError:
+            # Lost the race to the cap between the pre-check and here.
+            yield "event: error\ndata: {\"error\": \"too_many_subscribers\"}\n\n"
+            return
         loop_done = False
         try:
             while not loop_done:
@@ -1173,6 +1264,7 @@ async def dashboard_events_stats() -> dict[str, Any]:
     from ..services import events_bus
     return {
         "subscribers": events_bus.subscriber_count(),
+        "subscriber_limit": events_bus.MAX_SUBSCRIBERS,
         "ring_size": events_bus.ring_size(),
         "latest_event_id": events_bus.latest_event_id(),
     }

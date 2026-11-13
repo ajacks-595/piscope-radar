@@ -127,7 +127,13 @@ class Page {
       setTimeout(() => { if (this._pending.has(id)) { this._pending.delete(id); reject(new Error('CDP timeout: ' + method)); } }, 15000);
     });
   }
-  async enable() { await this.cdp('Runtime.enable'); await this.cdp('Page.enable'); await this.cdp('Log.enable'); }
+  async enable() {
+    await this.cdp('Runtime.enable'); await this.cdp('Page.enable'); await this.cdp('Log.enable');
+    // Versioned static assets (?v=<VERSION>) are served `immutable`, and the profile dir
+    // persists between runs — so without this, a run against a build whose assets changed
+    // under the same VERSION (any dev iteration) silently tests last run's cached JS/CSS.
+    await this.cdp('Network.enable'); await this.cdp('Network.setCacheDisabled', { cacheDisabled: true });
+  }
   async navigate(url) { await this.cdp('Page.navigate', { url }); }
   async evaluate(expression) {
     const r = await this.cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });

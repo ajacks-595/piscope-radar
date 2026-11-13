@@ -26,6 +26,8 @@ from .settings import _connect  # type: ignore[attr-defined]
 # Snapshots are stored zlib-compressed because JSON of aircraft state compresses ~80%.
 # Format: first byte is a version tag so we can decode legacy plain-JSON rows too.
 _SNAPSHOT_MAGIC = b"Z1"   # 2-byte tag → zlib-deflated UTF-8 JSON follows
+# Decode-side cap on one inflated snapshot (real ones are well under 1 MB).
+_MAX_SNAPSHOT_JSON_BYTES = 32 * 1024 * 1024
 
 
 log = logging.getLogger("piscope.events")
@@ -102,13 +104,9 @@ def distinct_event_hexes_since(since_ts: float, kind: str) -> set[str]:
         return set()
 
 
-def prune_old_events(max_age_seconds: float = 7 * 24 * 3600) -> int:
-    """Trim events older than `max_age_seconds`. Returns rows removed."""
-    cutoff = time.time() - max_age_seconds
-    with _connect() as conn:
-        cur = conn.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
-        conn.commit()
-        return cur.rowcount or 0
+# NB: `events` is deliberately never pruned — it doubles as the notable-aircraft
+# history the analytics tab reads. (An unused prune_old_events() helper was removed
+# in the 2026-11-08 review so nothing wires it up by accident.)
 
 
 # --- Daily stats -------------------------------------------------------------
@@ -187,14 +185,30 @@ def prune_old_snapshots(max_age_seconds: float) -> int:
         return 0
 
 
+def sample_evenly(items: list[Any], max_points: int) -> list[Any]:
+    """Up to `max_points` items spread evenly across `items`, always keeping the
+    first and the last. Order is preserved."""
+    n = len(items)
+    if n <= max_points:
+        return list(items)
+    if max_points <= 1:
+        return [items[-1]]
+    step = (n - 1) / (max_points - 1)   # > 1 here, so the picked indices are distinct
+    return [items[round(i * step)] for i in range(max_points)]
+
+
 def snapshot_timeline(max_points: int = 600) -> list[float]:
-    """Return a list of recent snapshot timestamps for the timeline scrubber."""
+    """Snapshot timestamps for the replay scrubber, oldest → newest.
+
+    When the buffer holds more than `max_points` snapshots (a short
+    snapshot_every_n_polls or a long replay retention), return an even sample
+    across the WHOLE buffer that always includes the newest. The old
+    `ORDER BY ts ASC LIMIT n` returned the oldest n, so the scrubber could never
+    reach the most recent minutes (2026-11-08 P3)."""
+    max_points = max(1, min(int(max_points), 5000))
     with _connect() as conn:
-        rows = conn.execute(
-            "SELECT ts FROM feed_snapshots ORDER BY ts ASC LIMIT ?",
-            (max(1, int(max_points)),),
-        ).fetchall()
-    return [r["ts"] for r in rows]
+        rows = conn.execute("SELECT ts FROM feed_snapshots ORDER BY ts ASC").fetchall()
+    return sample_evenly([r["ts"] for r in rows], max_points)
 
 
 def _decode_snapshot(raw: Any) -> Optional[dict[str, Any]]:
@@ -206,7 +220,17 @@ def _decode_snapshot(raw: Any) -> Optional[dict[str, Any]]:
         if isinstance(raw, (bytes, bytearray, memoryview)):
             b = bytes(raw)
             if b.startswith(_SNAPSHOT_MAGIC):
-                return json.loads(zlib.decompress(b[len(_SNAPSHOT_MAGIC):]).decode("utf-8"))
+                # Bounded inflate: a real snapshot (hundreds of aircraft) is well under
+                # 1 MB of JSON, but a row restored from a crafted backup could be a zlib
+                # bomb — unbounded decompress() would let one replay scrub (or the
+                # digest's peak sampling) exhaust the Pi's memory.
+                d = zlib.decompressobj()
+                body = d.decompress(b[len(_SNAPSHOT_MAGIC):], _MAX_SNAPSHOT_JSON_BYTES)
+                if d.unconsumed_tail:
+                    log.warning("snapshot payload exceeds %d bytes inflated; skipping",
+                                _MAX_SNAPSHOT_JSON_BYTES)
+                    return None
+                return json.loads(body.decode("utf-8"))
             return json.loads(b.decode("utf-8"))
         return json.loads(raw)
     except Exception:

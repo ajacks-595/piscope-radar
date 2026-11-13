@@ -27,6 +27,17 @@ from ._http import validate_external_url, validate_external_url_async, _BLOCKED_
 log = logging.getLogger("piscope.feed")
 
 ADSB_LOL_URL = "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{nm}"
+def _first_coord(*values: Any, default: float) -> float:
+    """First of `values` that is set (not None / ""), as a float; else `default`."""
+    for v in values:
+        if v not in (None, ""):
+            return float(v)
+    return default
+
+
+# Concurrent live-map WebSocket clients (one per open browser tab). Each receives
+# every broadcast, so the Pi 3 saturates well before this; it bounds memory/FDs.
+MAX_WS_SUBSCRIBERS = 100
 # Seconds an aircraft must be out of coverage before its trail is dropped and its
 # military/emergency/watchlist alert de-dup re-arms.
 REARM_GRACE_S = 120
@@ -44,7 +55,8 @@ class FeedService:
 
     def __init__(self) -> None:
         self.aircraft: dict[str, Aircraft] = {}
-        self.trails: dict[str, deque[tuple[float, float, float]]] = {}  # hex → deque of (lat, lon, ts)
+        # hex → deque of (lat, lon, ts, altitude_baro_or_None, ground_speed_or_None)
+        self.trails: dict[str, deque[tuple[float, float, float, Optional[int], Optional[float]]]] = {}
         self.receiver: Optional[dict[str, float]] = None
         self.connection_state: str = "idle"            # idle | polling | error
         self.last_error: Optional[str] = None
@@ -213,7 +225,12 @@ class FeedService:
 
     # --- pub/sub -------------------------------------------------------------
 
-    def subscribe(self) -> asyncio.Queue:
+    def subscribe(self) -> Optional[asyncio.Queue]:
+        """Attach a WebSocket subscriber, or return None at MAX_WS_SUBSCRIBERS
+        (2026-11-08 P2-4: the list was unbounded, so one LAN client could open
+        sockets until the Pi ran out of memory / file descriptors)."""
+        if len(self._subscribers) >= MAX_WS_SUBSCRIBERS:
+            return None
         q: asyncio.Queue = asyncio.Queue(maxsize=4)
         self._subscribers.append(q)
         return q
@@ -299,6 +316,7 @@ class FeedService:
             "receiver": self.receiver,
             "feeds": self.feed_status,
             "subscriber_count": len(self._subscribers),
+            "subscriber_limit": MAX_WS_SUBSCRIBERS,
             "aircraft_count": len(self.aircraft),
             "trails_count": len(self.trails),
             "daily": {
@@ -350,8 +368,11 @@ class FeedService:
         except ValueError as exc:
             log.warning("Refusing to probe receiver.json: %s", exc)
             return
+        client = self._client
+        if client is None:   # stopped (or not started) — nothing to probe with
+            return
         try:
-            r = await self._client.get(f"{base}/data/receiver.json")
+            r = await client.get(f"{base}/data/receiver.json")
             r.raise_for_status()
             data = r.json()
             lat = data.get("lat")
@@ -365,8 +386,11 @@ class FeedService:
     async def _fetch_one(self, name: str, url: str, *, kind: str) -> list[dict[str, Any]]:
         """Fetch a single source. Tracks per-feed status."""
         started = time.time()
+        client = self._client
+        if client is None:
+            return []
         try:
-            r = await self._client.get(url, headers={"User-Agent": "PiScope-Radar/1.0"})
+            r = await client.get(url, headers={"User-Agent": "PiScope-Radar/1.0"})
             r.raise_for_status()
             data = r.json()
             rows = (data.get("aircraft") if kind == "tar1090" else (data.get("ac") or data.get("aircraft"))) or []
@@ -409,13 +433,8 @@ class FeedService:
             # Prefer the user's receiver coords as the global feed centre — they nearly always
             # want adsb.lol traffic around their actual location, not some unrelated default.
             # The dedicated global_center_* fields are only used when receiver coords aren't set.
-            lat = (s.get("global_center_lat") if s.get("global_center_lat") not in (None, "")
-                   else s.get("receiver_lat") if s.get("receiver_lat") not in (None, "")
-                   else 51.5)
-            lon = (s.get("global_center_lon") if s.get("global_center_lon") not in (None, "")
-                   else s.get("receiver_lon") if s.get("receiver_lon") not in (None, "")
-                   else -0.1)
-            lat, lon = float(lat), float(lon)
+            lat = _first_coord(s.get("global_center_lat"), s.get("receiver_lat"), default=51.5)
+            lon = _first_coord(s.get("global_center_lon"), s.get("receiver_lon"), default=-0.1)
             nm = int(s.get("global_radius_nm") or 250)
             feeds.append(("primary", ADSB_LOL_URL.format(lat=lat, lon=lon, nm=nm), "adsblol"))
             if self.receiver is None:
@@ -593,7 +612,11 @@ class FeedService:
                 # Critical: pass `conn=poll_conn` so the event write happens inside our batch
                 # transaction. Opening a fresh connection here would deadlock against our own
                 # write lock until busy_timeout (5 s) fires per event.
-                def _fire(kind: str, payload: dict[str, Any]) -> None:
+                # `ac`/`ac_dict` are bound as defaults: the closure runs within this
+                # iteration, but binding makes that explicit (no late-binding B023)
+                # and gives the type checker the narrowed, non-None `ac`.
+                def _fire(kind: str, payload: dict[str, Any], ac: Aircraft = ac,
+                          ac_dict: dict[str, Any] = ac_dict) -> None:
                     events_store.record_event(
                         kind, hex=ac.hex, callsign=ac.callsign, registration=ac.registration,
                         distance_nm=ac.distance_nm, payload=payload, conn=poll_conn,

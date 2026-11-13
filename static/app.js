@@ -49,6 +49,12 @@ const API = {
 
 const RADAR_THEMES = new Set(['radar', 'radarModern']);
 const RADAR_VARIANTS = { radar: 'classic', radarModern: 'modern' };
+// Theme used when the server has none stored. Keep in step with settings.DEFAULTS
+// and the data-theme attribute on <html> in index.html.
+const DEFAULT_THEME = 'midnight';
+
+// Inline icon from the sprite in index.html. `name` is always a literal in this file.
+const icon = (name, cls = '') => `<svg class="icon${cls ? ' ' + cls : ''}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 
 // `maxZoom` is per-provider — applied when the tile layer is built, otherwise Leaflet
 //  defaults to 18 and providers that don't reach that (notably OpenTopoMap @ 17) serve
@@ -58,16 +64,21 @@ const RADAR_VARIANTS = { radar: 'classic', radarModern: 'modern' };
 //  adding new tile providers. The filter target is the .leaflet-tile-pane via a body
 //  data-attribute toggled by applyTileLayerForTheme().
 const TILE_PRESETS = {
-  // ----- CartoDB (free for non-commercial use, no API key) -----
-  dark:        { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',  attribution: '© OpenStreetMap, © CartoDB', label: 'Dark (CartoDB)', maxZoom: 20 },
-  darkClean:   { url: 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Dark — no labels (CartoDB)', maxZoom: 20 },
-  light:       { url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Light (CartoDB)', maxZoom: 20 },
-  lightClean:  { url: 'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Light — no labels (CartoDB)', maxZoom: 20 },
-  voyager:     { url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Voyager (CartoDB)', maxZoom: 20 },
-  voyagerClean:{ url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png', attribution: '© OpenStreetMap, © CartoDB', label: 'Voyager — no labels (CartoDB)', maxZoom: 20 },
+  // (The six CartoDB presets — dark / light / voyager, with and without labels — were
+  //  removed in 1.8.0: basemaps.cartocdn.com now answers every keyless request with an
+  //  "API KEY REQUIRED" placeholder tile. A stored map_style naming one of them simply
+  //  falls back to the theme default below.)
   // ----- Esri ArcGIS Online (free for non-commercial; light attribution) -----
   sat:         { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Satellite (Esri)', maxZoom: 19 },
   esriDark:    { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Dark Gray (Esri)', maxZoom: 16 },
+  // The "Automatic" base for most themes: Esri's neutral canvases, recoloured by the
+  // ACTIVE theme's --map-tint filter (themes.css) via #map[data-tile-filter="theme"],
+  // so the map — most of the screen — carries the theme's hue instead of reading as
+  // the same neutral grey under every dark theme.
+  themed:      { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Dark, tinted to the theme (Esri)', maxZoom: 16, tint: 'theme' },
+  themedLight: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Light, tinted to the theme (Esri)', maxZoom: 16, tint: 'theme' },
+  // The fixed navy version of the same idea, selectable under any theme.
+  esriMidnight:{ url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Midnight Blue (Esri)', maxZoom: 16, tint: 'midnight' },
   esriLight:   { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Light Gray (Esri)', maxZoom: 16 },
   esriTopo:    { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Topographic (Esri)', maxZoom: 19 },
   esriStreet:  { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Streets (Esri)', maxZoom: 19 },
@@ -92,23 +103,54 @@ const TILE_PRESETS = {
   esriStreetDark: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', label: 'Streets Esri (Dark)', maxZoom: 19, darkFilter: true },
 };
 
+// What "Automatic (follow theme)" means per theme. `themed` / `themedLight` pick up the
+// theme's own tint; the rest are bases whose look IS the theme (satellite, a paper chart).
 const THEME_DEFAULT_TILES = {
-  radar: 'esriDark', radarModern: 'esriDark', terminal: 'dark',
-  light: 'esriLight', dark: 'esriDark', tactical: 'sat',
-  sectional: 'voyager', solarizedDark: 'esriDark', solarizedLight: 'esriLight',
-  nord: 'esriDark', synthwave: 'esriDark',
-  // iteration 5 dark themes
-  dracula: 'esriDark', tokyoNight: 'esriDark', catppuccinMocha: 'esriDark',
+  // PiScope originals
+  midnight: 'themed', light: 'themedLight', dark: 'themed',
+  radar: 'themed', radarModern: 'themed', terminal: 'esriDark',
+  tactical: 'sat', sectional: 'natgeo', nightVision: 'themed', highContrast: 'themed',
+  // community palettes
+  nord: 'themed', gruvbox: 'themed', dracula: 'themed', tokyoNight: 'themed',
+  catppuccinMocha: 'themed', solarizedDark: 'themed', solarizedLight: 'themedLight',
+  synthwave: 'themed',
 };
 
-const AIRCRAFT_SVG = '<svg viewBox="0 0 20 22"><path d="M10,0 L13,6 L20,8 L20,10 L13,10 L12,18 L15,20 L15,21 L10,19.5 L5,21 L5,20 L8,18 L7,10 L0,10 L0,8 L7,6 Z"/></svg>';
-// Wrapped: SVG inside a non-rotating outer marker so labels can sit beside the icon
-// without spinning. The wrap is what gets the heading rotation applied to it.
-const MARKER_HTML = `<div class="ac-svg-wrap">${AIRCRAFT_SVG}</div><div class="ac-label" hidden></div>`;
+// Aircraft silhouettes, nose-up on a 32-unit grid (generated by tools/gen-icons.js).
+// One per broad airframe class so the map reads at a glance; `scale` is relative to
+// the standard jet.
+const AIRCRAFT_SHAPES = {
+  jet:   { scale: 1, d: 'M16 1.6C17.2 1.6 17.9 3.9 17.9 6.4L17.9 11.3L20.4 12.9L20.4 11.6C20.4 10.9 22.2 10.9 22.2 11.6L22.2 14.1L29.9 19.1C30.6 19.6 30.5 21.2 29.6 20.9L17.9 17.9L17.5 24.4L22.3 27.9C22.9 28.4 22.7 29.7 21.9 29.5L16.9 28.2L16 30.4L15.1 28.2L10.1 29.5C9.3 29.7 9.1 28.4 9.7 27.9L14.5 24.4L14.1 17.9L2.4 20.9C1.5 21.2 1.4 19.6 2.1 19.1L9.8 14.1L9.8 11.6C9.8 10.9 11.6 10.9 11.6 11.6L11.6 12.9L14.1 11.3L14.1 6.4C14.1 3.9 14.8 1.6 16 1.6Z' },
+  heavy: { scale: 1.2, d: 'M16 1C17.5 1 18.3 3.6 18.3 6.4L18.3 10.6L20.1 11.7L20.1 10.3C20.1 9.6 21.9 9.6 21.9 10.3L21.9 12.8L24.5 14.4L24.5 13.1C24.5 12.4 26.2 12.4 26.2 13.1L26.2 15.5L30.9 18.5C31.6 19 31.5 20.7 30.6 20.4L18.3 17.6L17.8 24.4L23.3 28.2C23.9 28.7 23.7 30 22.9 29.8L17 28.4L16 31L15 28.4L9.1 29.8C8.3 30 8.1 28.7 8.7 28.2L14.2 24.4L13.7 17.6L1.4 20.4C0.5 20.7 0.4 19 1.1 18.5L5.8 15.5L5.8 13.1C5.8 12.4 7.5 12.4 7.5 13.1L7.5 14.4L10.1 12.8L10.1 10.3C10.1 9.6 11.9 9.6 11.9 10.3L11.9 11.7L13.7 10.6L13.7 6.4C13.7 3.6 14.5 1 16 1Z' },
+  light: { scale: 0.8, d: 'M16 3.4C17.3 3.4 17.6 5.4 17.6 7.4L17.6 10.2L29.6 10.6C30.6 10.7 30.6 13.9 29.6 14L17.5 14.6L16.9 23.6L21.4 24.2C22.2 24.3 22.2 26.6 21.4 26.7L16.7 27.1L16 28.8L15.3 27.1L10.6 26.7C9.8 26.6 9.8 24.3 10.6 24.2L15.1 23.6L14.5 14.6L2.4 14C1.4 13.9 1.4 10.7 2.4 10.6L14.4 10.2L14.4 7.4C14.4 5.4 14.7 3.4 16 3.4Z' },
+  fast:  { scale: 0.92, d: 'M16 1.4C17 1.4 17.5 4.4 17.6 7.6L18.4 12.6L28.6 22.4C29.3 23.1 29 24.6 28.2 24.6L19.2 24.2L20.9 28.6C21.2 29.4 20.6 30.2 19.9 30L16.9 28.9L16 30.2L15.1 28.9L12.1 30C11.4 30.2 10.8 29.4 11.1 28.6L12.8 24.2L3.8 24.6C3 24.6 2.7 23.1 3.4 22.4L13.6 12.6L14.4 7.6C14.5 4.4 15 1.4 16 1.4Z' },
+  heli:  { scale: 0.95, d: 'M16 6.2C19.4 6.2 20.3 9.6 20.3 12.6C20.3 16.2 18.4 18.2 17.1 19L16.8 26.2L19.9 26.6C20.6 26.7 20.6 28.6 19.9 28.7L16.6 29L16 29.6L15.4 29L12.1 28.7C11.4 28.6 11.4 26.7 12.1 26.6L15.2 26.2L14.9 19C13.6 18.2 11.7 16.2 11.7 12.6C11.7 9.6 12.6 6.2 16 6.2Z', rotor: 'M16 12.4L27 4.2M16 12.4L5 4.2M16 12.4L27 20.6M16 12.4L5 20.6' },
+};
+// ICAO type designators that are rotorcraft, for feeds that omit the emitter category.
+const HELI_TYPES = /^(EC\d\d|H1[2-7]\d|H[2-9]\d|A1[0-8]9|AS\d\d|B06|B407|B412|B429|B505|R22|R44|R66|S61|S76|S92|MI\d+|CH47|NH90|UH1|LYNX|G2CA)$/;
+
+// ADS-B emitter category → silhouette: A7 rotorcraft, A6 high-performance, A5 heavy,
+// A1 light (B1 gliders / B4 ultralights share it). Everything else is the standard jet.
+function markerShape(ac) {
+  const cat = ac.category || '';
+  if (cat === 'A7' || HELI_TYPES.test((ac.type_code || '').toUpperCase())) return 'heli';
+  if (cat === 'A6') return 'fast';
+  if (cat === 'A5') return 'heavy';
+  if (cat === 'A1' || cat === 'B1' || cat === 'B4') return 'light';
+  return 'jet';
+}
+function markerSvg(shape) {
+  const s = AIRCRAFT_SHAPES[shape] || AIRCRAFT_SHAPES.jet;
+  return `<svg viewBox="0 0 32 32">${s.rotor ? `<path class="rotor" d="${s.rotor}"/>` : ''}<path d="${s.d}"/></svg>`;
+}
+// The glyph sits in a non-rotating outer marker so labels can sit beside the icon
+// without spinning; updateMarkerVisual() drops the right silhouette into the wrap.
+const MARKER_HTML = '<div class="ac-svg-wrap"></div><div class="ac-label" hidden></div>';
 // In-memory route cache (mirrors the server one) for use in map labels.
 // Maps callsign -> { origin_iata, destination_iata } or null if no route exists.
 const _routeCache = new Map();
 const _routeInFlight = new Set();
+const _routeRetryAt = new Map();   // callsign -> epoch ms before which we don't re-ask
 
 const state = {
   aircraft: new Map(),
@@ -146,7 +188,13 @@ const themeColors = {
   accent: '#0f0', accentMuted: '#0a0', mapTrail: '#0a0', mapRangeRing: '#066',
 };
 
+// Bumped on every theme change. The marker and trail diff-skip caches fold it into
+// their keys — without it a parked aircraft (or a trail that hasn't grown) kept the
+// previous theme's colours until it next moved.
+let themeEpoch = 0;
+
 function refreshThemeColorCache() {
+  themeEpoch += 1;
   const cs = getComputedStyle(document.documentElement);
   themeColors.ground    = cs.getPropertyValue('--band-ground').trim()    || themeColors.ground;
   themeColors.low       = cs.getPropertyValue('--band-low').trim()       || themeColors.low;
@@ -337,23 +385,16 @@ function etaToOverhead(ac) {
   return { minutes: t, distance_nm: cpaDist };
 }
 
+// Resolved by the first aircraft frame from either source (WS snapshot or REST
+// fallback) — init() waits on it so the boot sequence (and __piscopeReady) follows
+// the first render, as it did when init awaited the REST fetch outright.
+let _onFirstAircraftFrame = null;
+
 function applyAircraftUpdate(data) {
+  if (_onFirstAircraftFrame) { _onFirstAircraftFrame(); _onFirstAircraftFrame = null; }
   state.connectionState = data.connection_state || 'polling';
   state.receiver = data.receiver || state.receiver;
   state.feedNow = data.now;
-  // Track message rate using deltas across polls. The backend currently exposes total contacts
-  // (not raw decoded messages), so this surfaces "active contacts/s" which is the user-meaningful number.
-  const nowMs = performance.now();
-  const lastTotal = state.totalMessages || 0;
-  const newTotal = data.total_messages || 0;
-  if (state.lastRateAt && nowMs > state.lastRateAt) {
-    const dtSec = (nowMs - state.lastRateAt) / 1000;
-    const dContacts = Math.max(0, newTotal - lastTotal);
-    state.recentRate = dtSec > 0 ? dContacts / dtSec : 0;
-  }
-  state.lastRateAt = nowMs;
-  state.totalMessages = newTotal;
-
   // Replay mode owns the map/sidebar while it's active. A live WS frame arrives
   // every ~2 s; without this guard it overwrote state.aircraft and re-rendered,
   // so a scrubbed replay frame survived at most one poll before snapping back to
@@ -401,7 +442,7 @@ function applyAircraftUpdate(data) {
   updateConnectionPill();
   updateAircraftCount();
   updateReceiverLabel();
-  updateMessageRate();
+  updateRangeStat();
   renderSidebar();
   refreshMapMarkers();
   refreshTrails();
@@ -438,7 +479,7 @@ function applyAircraftUpdate(data) {
   // Follow mode — keep the selected aircraft centred as new positions arrive.
   if (state.follow && state.selectedHex) {
     const ac = state.aircraft.get(state.selectedHex);
-    if (ac && ac.lat != null) map.panTo([ac.lat, ac.lon], { animate: true, duration: 0.6 });
+    if (ac && ac.lat != null) panToVisible([ac.lat, ac.lon], { animate: true, duration: 0.6 });
   }
 
   // Keep the most recent live snapshot for replay's "live" return path.
@@ -447,10 +488,16 @@ function applyAircraftUpdate(data) {
 
 // ---------- Topbar status ----------
 
+const CONNECTION_LABELS = { polling: 'Live', idle: 'Idle', error: 'Feed error' };
+
 function updateConnectionPill() {
   const el = document.getElementById('connection-pill');
-  el.className = `pill ${state.connectionState}`;
-  el.textContent = state.connectionState;
+  // The backend reports idle | polling | error; replay is a client-side state on top.
+  const st = state.replayActive ? 'replay' : state.connectionState;
+  const cls = `pill ${st}`;
+  if (el.className !== cls) el.className = cls;
+  const label = state.replayActive ? 'Replay' : (CONNECTION_LABELS[st] || st);
+  if (el.textContent !== label) el.textContent = label;
 }
 
 function updateAircraftCount() {
@@ -466,12 +513,25 @@ function updateReceiverLabel() {
   }
 }
 
-function updateMessageRate() {
-  const el = document.getElementById('messages-rate');
+// Furthest aircraft in the feed right now — a glanceable "how is reception".
+function updateRangeStat() {
+  const wrap = document.getElementById('range-stat');
+  const el = document.getElementById('range-max');
+  if (!wrap || !el) return;
+  let max = 0;
+  for (const ac of state.aircraft.values()) {
+    if (ac.distance_nm != null && ac.distance_nm > max) max = ac.distance_nm;
+  }
+  wrap.hidden = !(max > 0);
+  setText(el, Math.round(max));
+}
+
+// Write text only when it changed (avoids needless DOM churn on every poll).
+function setText(target, text) {
+  const el = typeof target === 'string' ? document.getElementById(target) : target;
   if (!el) return;
-  if (state.recentRate == null) { el.textContent = '— /s'; return; }
-  // Show "contacts/s" alongside a running tally so the user sees activity even when the rate is 0.
-  el.textContent = `${state.recentRate.toFixed(1)} ↑/s · ${state.totalMessages.toLocaleString()} total`;
+  const s = String(text);
+  if (el.textContent !== s) el.textContent = s;
 }
 
 // ---------- Sidebar ----------
@@ -532,7 +592,8 @@ const sidebarRows = new Map();   // hex → { li, refs: { callsign, typeReg, alt
 
 function renderSidebar() {
   const list = document.getElementById('aircraft-list');
-  const visible = [...state.aircraft.values()].filter(passesFilters).sort(compareAircraft);
+  const all = [...state.aircraft.values()];
+  const visible = all.filter(passesFilters).sort(compareAircraft);
   const visibleHexes = new Set(visible.map((a) => a.hex));
 
   // Remove rows that no longer pass filters.
@@ -559,6 +620,35 @@ function renderSidebar() {
     }
     prev = row.li;
   }
+  updateListSummary(all, visible.length);
+}
+
+// Category chips, the "N aircraft" line and the empty state above/around the list.
+function updateListSummary(all, shown) {
+  // Chip counts are per class across the whole feed (independent of the other
+  // filters), so "Military 3" is visible before you filter for it.
+  const counts = { commercial: 0, military: 0, ga: 0, heli: 0 };
+  for (const ac of all) {
+    if (ac.military) counts.military++;
+    if (isCommercial(ac)) counts.commercial++;
+    if (isGA(ac)) counts.ga++;
+    if (isHelicopter(ac)) counts.heli++;
+  }
+  for (const k of Object.keys(counts)) setText(`cat-n-${k}`, counts[k].toLocaleString());
+  setText('cat-n-all', all.length.toLocaleString());
+  setText('list-count', shown.toLocaleString());
+  setText('list-count-label', shown === all.length ? 'aircraft' : `of ${all.length.toLocaleString()} shown`);
+  const empty = document.getElementById('list-empty');
+  if (empty) {
+    const isEmpty = shown === 0;
+    if (empty.hidden === isEmpty) empty.hidden = !isEmpty;
+    if (isEmpty) {
+      const none = all.length === 0;
+      setText('list-empty-text', none ? 'No aircraft in range right now.' : 'No aircraft match these filters.');
+      const reset = document.getElementById('list-empty-reset');
+      if (reset) reset.hidden = none;
+    }
+  }
 }
 
 function createSidebarRow(ac) {
@@ -570,13 +660,12 @@ function createSidebarRow(ac) {
     <span class="alt-dot"></span>
     <div class="aircraft-info">
       <div class="callsign"><span class="callsign-text"></span><span class="badges"></span></div>
-      <div class="type-reg"></div>
+      <div class="type-reg"><span class="type-reg-text"></span><span class="source-dot"></span></div>
     </div>
     <div class="aircraft-stats">
-      <span class="altitude"></span>
+      <span class="altitude"><span class="alt-text"></span> <span class="trend"></span></span>
       <span class="speed-dist"></span>
     </div>
-    <span class="source-dot"></span>
   `;
   li.addEventListener('click', () => selectAircraft(ac.hex, { pan: true }));
   return {
@@ -585,8 +674,9 @@ function createSidebarRow(ac) {
       dot: li.querySelector('.alt-dot'),
       callsign: li.querySelector('.callsign-text'),
       badges: li.querySelector('.badges'),
-      typeReg: li.querySelector('.type-reg'),
-      altitude: li.querySelector('.altitude'),
+      typeReg: li.querySelector('.type-reg-text'),
+      altitude: li.querySelector('.alt-text'),
+      trend: li.querySelector('.trend'),
       speedDist: li.querySelector('.speed-dist'),
       sourceDot: li.querySelector('.source-dot'),
     },
@@ -600,8 +690,14 @@ function updateSidebarRow(row, ac) {
   if (r.callsign.textContent !== name) r.callsign.textContent = name;
   const typeReg = [ac.type_code, ac.registration].filter(Boolean).join(' · ') || ' ';
   if (r.typeReg.textContent !== typeReg) r.typeReg.textContent = typeReg;
-  const altText = `${formatAltitude(ac)} ${trendArrow(ac)}`;
+  const altText = formatAltitude(ac);
   if (r.altitude.textContent !== altText) r.altitude.textContent = altText;
+  const trend = ac.vertical_trend === 'climb' ? 'climb' : (ac.vertical_trend === 'descent' ? 'descent' : 'level');
+  if (r.trend.dataset.t !== trend) {
+    r.trend.dataset.t = trend;
+    r.trend.className = `trend ${trend}`;
+    r.trend.textContent = trend === 'climb' ? '↑' : (trend === 'descent' ? '↓' : '');
+  }
   const speedDist = `${formatSpeed(ac)} · ${formatDistance(ac)}`;
   if (r.speedDist.textContent !== speedDist) r.speedDist.textContent = speedDist;
 
@@ -612,12 +708,24 @@ function updateSidebarRow(row, ac) {
     r.badges.innerHTML = badgesFor(ac);
   }
 
-  // Class state + colour
-  r.dot.style.background = bandColorVar(ac.altitude_band);
+  // Heading glyph: tinted by altitude band, turned to the aircraft's heading in 5°
+  // steps (so a gentle turn doesn't write a style on every poll).
+  const band = ac.altitude_band || '';
+  if (r.dot.dataset.band !== band) {
+    r.dot.dataset.band = band;
+    r.dot.style.background = bandColorVar(band);
+  }
+  const hdg = String(ac.heading != null ? Math.round(ac.heading / 5) * 5 : 0);
+  if (r.dot.dataset.hdg !== hdg) {
+    r.dot.dataset.hdg = hdg;
+    r.dot.style.transform = `rotate(${hdg}deg)`;
+  }
+  // Source tag: ADS-B is the norm and stays quiet; MLAT / TIS-B / Mode-S get a tag.
   const sourceCls = sourceClass(ac.data_source);
   if (r.sourceDot.dataset.cls !== sourceCls) {
     r.sourceDot.className = `source-dot ${sourceCls}`;
     r.sourceDot.dataset.cls = sourceCls;
+    r.sourceDot.textContent = ['mlat', 'tisb', 'modes'].includes(sourceCls) ? sourceLabel(ac.data_source) : '';
     r.sourceDot.title = ac.data_source || '';
   }
   row.li.classList.toggle('selected', ac.hex === state.selectedHex);
@@ -654,14 +762,9 @@ function formatAltitude(ac) {
   if (ac.altitude_baro == null) return '—';
   return `${ac.altitude_baro.toLocaleString()} ft`;
 }
-function trendArrow(ac) {
-  if (ac.vertical_trend === 'climb')   return '↑';
-  if (ac.vertical_trend === 'descent') return '↓';
-  return '·';
-}
 function formatSpeed(ac) {
-  if (ac.ground_speed == null) return '— kts';
-  return `${Math.round(ac.ground_speed)} kts`;
+  if (ac.ground_speed == null) return '— kt';
+  return `${Math.round(ac.ground_speed)} kt`;
 }
 function formatDistance(ac) {
   if (ac.distance_nm == null) return '— nm';
@@ -684,7 +787,9 @@ function escapeHtml(s) {
 // ---------- Map setup ----------
 
 function setupMap() {
-  map = L.map('map', { zoomControl: true, attributionControl: true }).setView([54, -2], 6);
+  // The full app has its own control rail (#map-controls); Leaflet's built-in zoom
+  // control is kept only for embed mode, where the rail is stripped with the chrome.
+  map = L.map('map', { zoomControl: !!window.__embed, attributionControl: true }).setView([54, -2], 6);
   // Expose for debugging from the console / preview tools.
   window.__map = map;
   markersLayer = L.layerGroup().addTo(map);
@@ -722,11 +827,10 @@ function setupMap() {
   map.on('contextmenu', (e) => {
     const { lat, lng } = e.latlng;
     showContextMenu(e.originalEvent.clientX, e.originalEvent.clientY, [
-      { label: `📍 Set receiver here (${lat.toFixed(3)}, ${lng.toFixed(3)})`,
+      { label: `Set receiver here (${lat.toFixed(3)}, ${lng.toFixed(3)})`,
         run: () => setReceiverLocation(lat, lng) },
       { label: 'Copy coords to clipboard',
-        run: () => navigator.clipboard?.writeText(`${lat.toFixed(5)}, ${lng.toFixed(5)}`)
-                    .then(() => toast('Coords copied')) },
+        run: () => copyText(`${lat.toFixed(5)}, ${lng.toFixed(5)}`, 'Coords copied') },
     ]);
   });
 
@@ -791,6 +895,34 @@ function enterPickMode() {
   document.addEventListener('keydown', onKey);
 }
 
+/* The map is full-bleed underneath the floating panels, so "the middle of the map" is
+ * not the middle of what the user can see. mapInsets() reports how far the chrome
+ * reaches in from each edge (px); the helpers below fit and pan relative to the clear
+ * area. offsetWidth/offsetLeft ignore CSS transforms, so the numbers are right even
+ * while a panel is mid-slide. */
+function mapInsets() {
+  const out = { top: 0, right: 0, bottom: 0, left: 0 };
+  if (window.__embed) return out;
+  const root = document.documentElement;
+  const topbar = document.getElementById('topbar');
+  const sidebar = document.getElementById('sidebar');
+  const detail = document.getElementById('detail');
+  const gap = topbar ? topbar.offsetTop : 12;
+  if (topbar) out.top = topbar.offsetTop + topbar.offsetHeight;
+  if (sidebar && !isDrawerLayout() && root.dataset.sidebar !== 'collapsed') {
+    out.left = sidebar.offsetLeft + sidebar.offsetWidth;
+  }
+  if (detail && root.dataset.detail === 'open') {
+    if (isPhoneLayout()) out.bottom = detail.offsetHeight;   // bottom sheet
+    else out.right = detail.offsetWidth + gap;
+  }
+  return out;
+}
+// Breakpoints mirror app.css: the list is a drawer at ≤860px, the detail panel a
+// bottom sheet at ≤640px.
+function isDrawerLayout() { return window.matchMedia('(max-width: 860px)').matches; }
+function isPhoneLayout() { return window.matchMedia('(max-width: 640px)').matches; }
+
 function fitToData() {
   if (!map) return;
   const positions = [...state.aircraft.values()]
@@ -799,16 +931,54 @@ function fitToData() {
   if (state.receiver) positions.push([state.receiver.lat, state.receiver.lon]);
   if (positions.length === 0) return;
   const bounds = L.latLngBounds(positions);
-  map.fitBounds(bounds, { padding: [40, 40], maxZoom: 9 });
+  const ins = mapInsets();
+  const pad = 36;
+  map.fitBounds(bounds, {
+    paddingTopLeft: [ins.left + pad, ins.top + pad],
+    paddingBottomRight: [ins.right + pad, ins.bottom + pad],
+    maxZoom: 9,
+  });
+}
+
+// Where the map must be centred for `latlng` to sit mid-way across the clear area.
+function centerForVisible(latlng, zoom) {
+  const ins = mapInsets();
+  const dx = (ins.left - ins.right) / 2;
+  const dy = (ins.top - ins.bottom) / 2;
+  if (!dx && !dy) return L.latLng(latlng);
+  return map.unproject(map.project(latlng, zoom).subtract([dx, dy]), zoom);
+}
+
+function panToVisible(latlng, opts) {
+  if (!map) return;
+  map.panTo(centerForVisible(latlng, map.getZoom()), opts);
+}
+
+// Nudge the map just enough to bring `latlng` out from under a panel. Used when an
+// aircraft is picked on the map itself, where re-centring would be disorienting.
+function ensureVisible(latlng) {
+  if (!map) return;
+  const ins = mapInsets();
+  const size = map.getSize();
+  const pt = map.latLngToContainerPoint(latlng);
+  const m = 48;
+  let dx = 0;
+  let dy = 0;
+  if (pt.x < ins.left + m) dx = pt.x - (ins.left + m);
+  else if (pt.x > size.x - ins.right - m) dx = pt.x - (size.x - ins.right - m);
+  if (pt.y < ins.top + m) dy = pt.y - (ins.top + m);
+  else if (pt.y > size.y - ins.bottom - m) dy = pt.y - (size.y - ins.bottom - m);
+  if (dx || dy) map.panBy([dx, dy], { animate: true, duration: 0.35 });
 }
 
 function recenterOnReceiver() {
   if (!map || !state.receiver) return;
-  map.setView([state.receiver.lat, state.receiver.lon], 7);
+  const zoom = 7;
+  map.setView(centerForVisible([state.receiver.lat, state.receiver.lon], zoom), zoom);
 }
 
 function applyTileLayerForTheme() {
-  const theme = state.settings.theme || 'radar';
+  const theme = state.settings.theme || DEFAULT_THEME;
   if (tileLayer) {
     map.removeLayer(tileLayer);
     tileLayer = null;
@@ -845,7 +1015,7 @@ function applyTileLayerForTheme() {
   // Toggle the map root's "dark filter" attribute so the CSS rule for inverting light
   // tiles applies (or doesn't). Cleaner than swapping classes per preset.
   const mapEl = document.getElementById('map');
-  if (mapEl) mapEl.dataset.tileFilter = preset.darkFilter ? 'dark' : '';
+  if (mapEl) mapEl.dataset.tileFilter = preset.darkFilter ? 'dark' : (preset.tint || '');
   // Keep the aviation overlay rendering above whichever base tiles are active.
   syncAeroOverlay();
 }
@@ -875,9 +1045,21 @@ function syncAeroOverlay() {
   if (btn) {
     btn.setAttribute('aria-pressed', wantVisible ? 'true' : 'false');
     btn.classList.toggle('active', wantVisible);
-    btn.title = keySet
-      ? (enabled ? 'Hide aviation overlay' : 'Show aviation overlay (OpenAIP)')
-      : 'Aviation overlay — add an OpenAIP key in Settings → Map';
+    setText('aero-desc', keySet ? 'Airspace and navaids · OpenAIP' : 'Needs an OpenAIP key — click to add one');
+  }
+  syncLayersBadge();
+}
+
+// The layers button carries a count of the overlays currently switched on, so it's
+// clear something is drawn on the map even with the popover shut. (Range rings are
+// on by default and not counted.)
+function syncLayersBadge() {
+  const ids = ['toggle-airports', 'toggle-aero', 'toggle-weather', 'toggle-heatmap', 'toggle-day-night'];
+  const n = ids.filter((id) => document.getElementById(id)?.getAttribute('aria-pressed') === 'true').length;
+  const badge = document.getElementById('layers-badge');
+  if (badge) {
+    badge.hidden = n === 0;
+    badge.textContent = String(n);
   }
 }
 
@@ -946,7 +1128,7 @@ async function loadAirportData() {
 function makeAirportIcon(ap, withLabel) {
   const large = ap.t === 'L';
   const size = large ? 12 : 8;
-  const label = withLabel && (ap.iata || ap.icao) ? `<span class="ap-label">${ap.iata || ap.icao}</span>` : '';
+  const label = withLabel && (ap.iata || ap.icao) ? `<span class="ap-label">${escapeHtml(ap.iata || ap.icao)}</span>` : '';
   return L.divIcon({
     className: `airport-marker ${large ? 'ap-large' : 'ap-medium'}`,
     html: `<span class="ap-dot"></span>${label}`,
@@ -962,8 +1144,8 @@ async function syncAirportOverlay() {
   if (btn) {
     btn.setAttribute('aria-pressed', want ? 'true' : 'false');
     btn.classList.toggle('active', want);
-    btn.title = want ? 'Hide airport overlay' : 'Show airport overlay (large + medium)';
   }
+  syncLayersBadge();
   if (!want) {
     if (airportLayer) { map.removeLayer(airportLayer); airportLayer = null; }
     if (_airportZoomHandler) { map.off('zoomend', _airportZoomHandler); _airportZoomHandler = null; }
@@ -1065,13 +1247,16 @@ function refreshMapMarkers() {
     if (ac.lat == null || ac.lon == null) continue;
     seen.add(ac.hex);
     const existing = aircraftMarkers.get(ac.hex);
+    // Diff-skip: stringify everything visible into a signature and only touch the DOM
+    // when the signature changes. With 600+ aircraft updating every 2 s, this drops
+    // the per-tick CPU dramatically (most aircraft are unchanged from poll to poll).
+    // display_name / type_code feed the label and the accessible name, and change when
+    // enrichment backfills them — without them here those went stale.
+    const sig = `${ac.lat}|${ac.lon}|${ac.heading ?? 0}|${ac.altitude_band}|`
+              + `${ac.is_emergency_squawk?1:0}|${ac.on_ground?1:0}|${ac.military?1:0}|`
+              + `${state.selectedHex === ac.hex?1:0}|${state.settings.map_label_mode || 'off'}|`
+              + `${ac.display_name || ''}|${ac.type_code || ''}|${ac.category || ''}|${themeEpoch}`;
     if (existing) {
-      // Diff-skip: stringify everything visible into a signature and only touch the DOM
-      // when the signature changes. With 600+ aircraft updating every 2 s, this drops
-      // the per-tick CPU dramatically (most aircraft are unchanged from poll to poll).
-      const sig = `${ac.lat}|${ac.lon}|${ac.heading ?? 0}|${ac.altitude_band}|`
-                + `${ac.is_emergency_squawk?1:0}|${ac.on_ground?1:0}|${ac.military?1:0}|`
-                + `${state.selectedHex === ac.hex?1:0}|${state.settings.map_label_mode || 'off'}`;
       if (existing._sig !== sig) {
         existing._sig = sig;
         existing.setLatLng([ac.lat, ac.lon]);
@@ -1079,7 +1264,8 @@ function refreshMapMarkers() {
       }
     } else {
       const marker = createMarker(ac);
-      marker.addTo(markersLayer);
+      marker._sig = sig;
+      marker.addTo(markersLayer);   // the 'add' handler applies the visual state
       aircraftMarkers.set(ac.hex, marker);
     }
   }
@@ -1102,12 +1288,17 @@ function buildSnapshotAircraft() {
   return out;
 }
 
+// Marker hit box: the glyph is always 22 px, but the clickable box is 24 px with a
+// mouse and 32 px on touch screens (WCAG 2.5.8 / Lighthouse target-size want ≥ 24 px).
+// Must match the .aircraft-marker sizes in app.css.
+const MARKER_BOX_PX = window.matchMedia && window.matchMedia('(pointer: coarse)').matches ? 32 : 24;
+
 function createMarker(ac) {
   const icon = L.divIcon({
     className: 'aircraft-marker',
     html: MARKER_HTML,
-    iconSize: [22, 22],
-    iconAnchor: [11, 11],
+    iconSize: [MARKER_BOX_PX, MARKER_BOX_PX],
+    iconAnchor: [MARKER_BOX_PX / 2, MARKER_BOX_PX / 2],
   });
   const marker = L.marker([ac.lat, ac.lon], { icon, riseOnHover: true });
   // Belt-and-braces label click: the label sits outside the 22×22 icon bounding box,
@@ -1116,6 +1307,11 @@ function createMarker(ac) {
   // Attaching an explicit handler on the marker's DOM after first render guarantees
   // the label is a proper click target across all browsers.
   marker.on('add', () => {
+    // The icon element only exists once the marker is on the map, so a brand-new (or
+    // re-added) marker gets its rotation / colour / classes / accessible name here.
+    // createMarker's own updateMarkerVisual() call runs before that and was a no-op,
+    // which left new markers unstyled and unnamed until their signature next changed.
+    updateMarkerVisual(marker, state.aircraft.get(ac.hex) || ac);
     const el = marker.getElement();
     const label = el?.querySelector('.ac-label');
     if (label) label.onclick = (e) => {
@@ -1136,11 +1332,10 @@ function createMarker(ac) {
     showContextMenu(me.clientX, me.clientY, [
       { label: 'Open detail panel', run: () => selectAircraft(ac.hex, { pan: false }) },
       { label: 'Follow this aircraft', run: () => { state.selectedHex = ac.hex; if (!state.follow) toggleFollow(); else toast('Following ' + (current?.display_name || ac.hex)); } },
-      { label: 'Copy hex to clipboard', run: () => navigator.clipboard?.writeText(ac.hex).then(() => toast('Copied ' + ac.hex)) },
+      { label: 'Copy hex to clipboard', run: () => copyText(ac.hex, 'Copied ' + ac.hex) },
       { label: 'Open on adsb.fi', run: () => window.open(`https://globe.adsb.fi/?icao=${ac.hex}`, '_blank', 'noopener') },
     ]);
   });
-  updateMarkerVisual(marker, ac);
   return marker;
 }
 
@@ -1150,15 +1345,28 @@ function updateMarkerVisual(marker, ac) {
   const isSelected = ac.hex === state.selectedHex;
   const isGround = !!ac.on_ground;
   const heading = ac.heading != null ? ac.heading : 0;
-  const scale = isSelected ? 1.4 : (isGround ? 0.55 : 1);
+  // Swap in the silhouette for this airframe class (only when it changes — the
+  // category/type can arrive after the first position).
+  const shape = markerShape(ac);
+  if (el.dataset.shape !== shape) {
+    const wrap = el.querySelector('.ac-svg-wrap');
+    if (wrap) wrap.innerHTML = markerSvg(shape);
+    el.dataset.shape = shape;
+  }
+  const scale = AIRCRAFT_SHAPES[shape].scale * (isSelected ? 1.35 : (isGround ? 0.6 : 1));
   const svg = el.querySelector('svg');
-  if (svg) svg.style.transform = `rotate(${heading}deg) scale(${scale})`;
+  if (svg) svg.style.transform = `rotate(${heading}deg) scale(${scale.toFixed(2)})`;
   let cls = 'aircraft-marker';
   if (isSelected) cls += ' selected';
   if (isGround) cls += ' ground';
   if (ac.is_emergency_squawk) cls += ' emergency';
   if (ac.military) cls += ' military';
   el.className = cls;
+  // Leaflet gives keyboard-focusable markers role="button"; give that button a name
+  // (screen readers announced an unnamed button per aircraft). Name + type only — both
+  // stable, so this doesn't rewrite the DOM on every position update.
+  const accName = (ac.display_name || ac.hex.toUpperCase()) + (ac.type_code ? `, ${ac.type_code}` : '');
+  if (el.getAttribute('aria-label') !== accName) el.setAttribute('aria-label', accName);
   el.style.color = ac.is_emergency_squawk ? 'var(--alert)' : resolveBandColor(ac.altitude_band);
   el.style.zIndex = isSelected ? 1000 : (ac.is_emergency_squawk ? 800 : '');
   updateMarkerLabel(el, ac);
@@ -1212,23 +1420,32 @@ function maybePrefetchRoutes() {
     _routePrefetchScheduled = false;
     const callsigns = new Set();
     for (const ac of state.aircraft.values()) {
-      if (ac.callsign && !_routeCache.has(ac.callsign) && !_routeInFlight.has(ac.callsign)) {
+      if (ac.callsign && !_routeCache.has(ac.callsign) && !_routeInFlight.has(ac.callsign)
+          && !((_routeRetryAt.get(ac.callsign) || 0) > Date.now())) {
         callsigns.add(ac.callsign);
       }
     }
     // Cap per-cycle work — at 400 aircraft we'd hammer the server otherwise.
     const batch = [...callsigns].slice(0, 20);
+    // Bound the label route cache like the enrichment caches: a wall dashboard sees
+    // thousands of callsigns a day. Oldest entries go first (Map insertion order).
+    while (_routeCache.size > 4000) _routeCache.delete(_routeCache.keys().next().value);
     for (const cs of batch) {
       _routeInFlight.add(cs);
       try {
-        const data = await fetch(API.adsbdb(cs)).then((r) => r.json());
-        if (data && (data.origin_iata || data.destination_iata)) {
+        const data = await fetchJsonOk(API.adsbdb(cs));
+        if (data === null) {
+          // Transient upstream failure: retry this callsign in a couple of minutes
+          // rather than caching "no route" for the rest of the session.
+          _routeRetryAt.set(cs, Date.now() + 120000);
+          if (_routeRetryAt.size > 4000) _routeRetryAt.delete(_routeRetryAt.keys().next().value);
+        } else if (data.origin_iata || data.destination_iata) {
           _routeCache.set(cs, { origin_iata: data.origin_iata, destination_iata: data.destination_iata });
         } else {
           _routeCache.set(cs, null);
         }
       } catch (e) {
-        _routeCache.set(cs, null);
+        _routeRetryAt.set(cs, Date.now() + 120000);
       } finally {
         _routeInFlight.delete(cs);
       }
@@ -1281,7 +1498,7 @@ function speedColor(speed) {
 // newest point's array (a fresh object per append) — length alone can't be the key: once a
 // trail reaches trail_length each append shifts one point out, the length stays constant,
 // and the drawn trail froze while the aircraft flew on.
-const _trailRenderCache = new Map();   // hex → { len, last, mode, fade, isSel, anySel }
+const _trailRenderCache = new Map();   // hex → { len, last, mode, fade, isSel, anySel, epoch }
 
 function refreshTrails() {
   if (!map) return;
@@ -1300,10 +1517,11 @@ function refreshTrails() {
     const last = pts[pts.length - 1];
     const cached = _trailRenderCache.get(hex);
     if (cached && cached.len === pts.length && cached.last === last && cached.mode === mode
-        && cached.fade === fade && cached.isSel === isSel && cached.anySel === anySel) {
+        && cached.fade === fade && cached.isSel === isSel && cached.anySel === anySel
+        && cached.epoch === themeEpoch) {
       continue;
     }
-    _trailRenderCache.set(hex, { len: pts.length, last, mode, fade, isSel, anySel });
+    _trailRenderCache.set(hex, { len: pts.length, last, mode, fade, isSel, anySel, epoch: themeEpoch });
 
     const baseOpacity = anySel ? (isSel ? 0.95 : 0.18) : 0.55;
     const weight = isSel ? 2.5 : 1.2;
@@ -1398,10 +1616,13 @@ function selectAircraft(hex, { pan }) {
   refreshTrails();
   routeLineLayer.clearLayers();
   const ac = state.aircraft.get(hex);
-  if (pan && ac && ac.lat != null) {
-    map.panTo([ac.lat, ac.lon], { animate: true });
-  }
+  closeSidebarDrawer();          // phone/tablet: get the list out of the way
+  // Open the panel first so the pan below knows how much of the map it covers.
   renderDetailPanel(ac);
+  if (ac && ac.lat != null) {
+    if (pan) panToVisible([ac.lat, ac.lon], { animate: true });
+    else ensureVisible([ac.lat, ac.lon]);
+  }
   // Reflect the selection in the URL so the share-link round-trips.
   if (typeof scheduleUrlStateWrite === 'function') scheduleUrlStateWrite();
 }
@@ -1414,6 +1635,7 @@ function deselectAircraft() {
   if (!prev) return;
   state.selectedHex = null;
   state.selectedEnrichment = null;
+  state.selectedRoute = null;
   state._pendingSelect = null;   // drop any not-yet-consumed URL selection too
   refreshRowSelection(prev, false);
   refreshMapMarkers();
@@ -1429,74 +1651,95 @@ function refreshRowSelection(hex, on) {
   // control, so a value containing a quote or backslash would otherwise throw a
   // SyntaxError out of querySelector and break selection.
   const row = document.querySelector(`.aircraft-row[data-hex="${CSS.escape(hex)}"]`);
-  if (row) row.classList.toggle('selected', !!on);
+  if (!row) return;
+  row.classList.toggle('selected', !!on);
+  // Picked on the map? Bring its row into view so list and map agree. `nearest` is a
+  // no-op when the row is already visible (e.g. it was the thing clicked).
+  if (on) row.scrollIntoView({ block: 'nearest' });
 }
 
 function renderDetailPanel(ac) {
   const empty = document.getElementById('detail-empty');
   const content = document.getElementById('detail-content');
   const panel = document.getElementById('detail');
+  const root = document.documentElement;
   if (!ac) {
     empty.hidden = false;
     content.hidden = true;
-    // On narrow screens (.detail is a slide-in overlay) this slides it back off so the
-    // map is reachable again. Inert on desktop, where .detail.open has no CSS effect —
-    // the rule lives only inside the ≤900px media query and the panel is a fixed column.
+    // .open is what slides the panel on screen (from the right on desktop, up from the
+    // bottom as a sheet on phones); data-detail on <html> tells the map furniture and
+    // mapInsets() that the panel is covering part of the map.
     if (panel) panel.classList.remove('open');
+    delete root.dataset.detail;
     return;
   }
   empty.hidden = true;
   content.hidden = false;
   if (panel) panel.classList.add('open');
+  root.dataset.detail = 'open';
   state.selectedEnrichment = { hex: ac.hex, callsign: ac.callsign };
+  state.selectedRoute = null;
   content.innerHTML = `
-    <div class="detail-close-bar"><button class="icon-button" id="detail-close" type="button" title="Close (Esc)" aria-label="Close aircraft details">✕</button></div>
-    <section>
+    <div class="detail-hero">
+      <div class="detail-photo skeleton" id="detail-photo"></div>
+    </div>
+    <section class="detail-head">
       <div class="detail-header">
         <span class="callsign">${escapeHtml(ac.display_name)}</span>
         <span class="badges-row">${badgesFor(ac)}</span>
       </div>
       <div class="detail-subtitle" id="detail-subtitle">${escapeHtml([ac.type_code, ac.registration, ac.hex.toUpperCase()].filter(Boolean).join(' · '))}</div>
-      <div style="margin-top:6px"><button id="bookmark-toggle" class="secondary" style="font-size:11px; padding:4px 10px">☆ Bookmark</button></div>
+      <div class="detail-actions">
+        <button id="bookmark-toggle" class="secondary small" type="button">${icon('star')}<span>Bookmark</span></button>
+        <button id="detail-follow" class="secondary small" type="button" aria-pressed="false">${icon('follow')}<span>Follow</span></button>
+        <button id="detail-share" class="secondary small" type="button">${icon('link')}<span>Copy link</span></button>
+      </div>
+    </section>
+    <section>
+      <h3>${icon('route')}Route</h3>
+      <div id="detail-route"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div></div>
     </section>
     <section id="detail-live">${liveSectionHtml(ac)}</section>
-    <section><h3>Photo</h3><div class="detail-photo skeleton" id="detail-photo"></div></section>
-    <section><h3>Route</h3><div id="detail-route"><div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div></div></section>
     <section id="ai-section" hidden>
-      <h3>AI brief</h3>
+      <h3>${icon('sparkles')}AI brief</h3>
       <div class="fa-action-row">
-        <button class="secondary" id="ai-explain-btn">✨ Explain this aircraft</button>
+        <button class="secondary small" id="ai-explain-btn" type="button">${icon('sparkles')}<span>Explain this aircraft</span></button>
         <span class="hint" id="ai-explain-hint"></span>
       </div>
       <div id="ai-result"></div>
       <div id="ai-chat" hidden>
         <div id="ai-chat-history" class="ai-chat-history"></div>
         <div class="ai-chat-input-row">
-          <textarea id="ai-chat-input" rows="2" maxlength="500" placeholder="Ask a follow-up… (Shift+Enter for newline)"></textarea>
-          <button id="ai-chat-send" class="secondary">Send</button>
+          <textarea id="ai-chat-input" rows="2" maxlength="500" aria-label="Follow-up question" placeholder="Ask a follow-up… (Shift+Enter for newline)"></textarea>
+          <button id="ai-chat-send" class="secondary" type="button">Send</button>
         </div>
       </div>
     </section>
     <section>
-      <h3>FlightAware</h3>
+      <h3>${icon('plane')}FlightAware</h3>
       <div class="fa-action-row">
-        <button class="secondary" id="fa-fetch-btn">Fetch flight data</button>
+        <button class="secondary small" id="fa-fetch-btn" type="button">Fetch flight data</button>
         <span class="hint" id="fa-fetch-hint"></span>
       </div>
       <div id="fa-result"></div>
     </section>
     <section>
-      <h3>Quick links</h3>
+      <h3>${icon('external')}Quick links</h3>
       <div class="detail-quick-links" id="quick-links">${quickLinks(ac)}</div>
     </section>
   `;
-  document.getElementById('detail-close').addEventListener('click', deselectAircraft);
+  content.scrollTop = 0;
+  // The ✕ (#detail-close) lives in index.html — it stays put while this content scrolls —
+  // and is wired to deselectAircraft once, in bindUI.
   document.getElementById('fa-fetch-btn').addEventListener('click', () => fetchFlightAware(ac));
   document.getElementById('bookmark-toggle').addEventListener('click', toggleBookmarkSelected);
+  document.getElementById('detail-follow').addEventListener('click', toggleFollow);
+  document.getElementById('detail-share').addEventListener('click', copyShareLink);
   // Show the AI section only when /api/explain/status reports the backend is configured.
   // Status is fetched once per detail render so toggling the setting takes effect immediately.
   syncAiSection(ac);
   updateBookmarkStar();
+  syncToggleButtons();
   fetchEnrichment(ac);
 }
 
@@ -1514,108 +1757,101 @@ function compassDirection(deg) {
   const dirs = ['N','NE','E','SE','S','SW','W','NW'];
   return dirs[Math.round(deg / 45) % 8];
 }
-function compassRoseSvg(track, vrate) {
-  // Small instrument-style indicator: ring + cardinal label + heading arrow + vertical-rate text.
-  const t = track != null ? Math.round(track) : null;
-  const arrow = t != null ? `<g transform="rotate(${t} 30 30)"><path d="M30,8 L35,32 L30,27 L25,32 Z" fill="var(--accent)"/></g>` : '';
-  const trackLabel = t != null ? `<text x="30" y="58" text-anchor="middle" font-size="9" fill="var(--primary-text)" font-weight="700">${t}°</text>` : '';
-  const v = vrate;
-  let vArrow = '';
-  if (v != null && Math.abs(v) > 50) {
-    const sign = v > 0 ? '▲' : '▼';
-    const colour = v > 0 ? 'var(--success)' : 'var(--alert)';
-    vArrow = `<text x="46" y="58" font-size="10" fill="${colour}" font-weight="700">${sign}${Math.abs(v)}</text>`;
-  }
-  return `
-    <svg class="compass-rose" viewBox="0 0 60 64" width="64" height="64" aria-hidden="true">
-      <circle cx="30" cy="30" r="24" fill="none" stroke="var(--separator)" stroke-width="1"/>
-      <text x="30" y="11" text-anchor="middle" font-size="9" fill="var(--secondary-text)">N</text>
-      ${arrow}
-      ${trackLabel}
-      ${vArrow}
-    </svg>
-  `;
+const COMPASS_NAMES = { N: 'North', NE: 'North-east', E: 'East', SE: 'South-east', S: 'South', SW: 'South-west', W: 'West', NW: 'North-west' };
+// The few transponder codes worth spelling out. 7500/7600/7700 are the emergency set.
+const SQUAWK_NOTES = {
+  7500: 'Unlawful interference', 7600: 'Radio failure', 7700: 'General emergency',
+  7000: 'VFR conspicuity', 1200: 'VFR', 2000: 'No code assigned',
+};
+
+function haversineNm(lat1, lon1, lat2, lon2) {
+  const rad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * rad;
+  const dLon = (lon2 - lon1) * rad;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) ** 2;
+  return 2 * 3440.065 * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
 function signalBarSvg(rssi) {
   // rssi is in dBFS, typically -50 (weak) to 0 (very strong). Render as 5 stacked bars.
-  if (rssi == null) return '<span class="hint">— dBFS</span>';
+  if (rssi == null) return '';
   const norm = Math.max(0, Math.min(1, (rssi + 50) / 50));   // 0..1
   const filled = Math.max(1, Math.min(5, Math.round(norm * 5)));
   let bars = '';
   for (let i = 0; i < 5; i++) {
-    const h = 4 + i * 2;
-    const fill = i < filled ? 'var(--accent)' : 'var(--separator)';
-    bars += `<rect x="${i * 4}" y="${10 - h}" width="3" height="${h}" fill="${fill}"/>`;
+    const h = 3 + i * 2;
+    bars += `<rect x="${i * 4}" y="${11 - h}" width="3" height="${h}" rx="1"${i < filled ? ' class="on"' : ''}/>`;
   }
-  return `<span class="signal-cluster"><svg viewBox="0 0 19 10" width="36" height="14" aria-hidden="true">${bars}</svg><span class="signal-num">${rssi.toFixed(1)} dBFS</span></span>`;
+  return `<svg class="signal-bars" viewBox="0 0 19 11" width="22" height="12" aria-hidden="true">${bars}</svg>`;
+}
+
+// One stat tile. Every argument is trusted markup built by the caller (escape there).
+function tileHtml(label, value, unit, sub, { cls = '', subCls = '', extra = '' } = {}) {
+  return `<div class="tile${cls ? ' ' + cls : ''}"><span class="tile-label">${label}</span>`
+    + `<span class="tile-value">${value}${unit ? `<small>${unit}</small>` : ''}${extra}</span>`
+    + `<span class="tile-sub${subCls ? ' ' + subCls : ''}">${sub || ''}</span></div>`;
 }
 
 function liveSectionHtml(ac) {
   const eta = etaToOverhead(ac);
   const bearing = bearingFromReceiver(ac);
   const vrate = ac.baro_rate != null ? ac.baro_rate : ac.geom_rate;
-  const altStr = ac.on_ground ? 'GND'
-                              : (ac.altitude_baro != null ? `${ac.altitude_baro.toLocaleString()} ft` : '—');
-  const speedStr = ac.ground_speed != null ? `${Math.round(ac.ground_speed)} kt` : '—';
-  const distStr = ac.distance_nm != null ? `${ac.distance_nm.toFixed(1)} nm` : '—';
-  const bearingStr = bearing != null ? `${Math.round(bearing)}° ${compassDirection(bearing)}` : '—';
+  const track = ac.track != null ? ac.track : ac.heading;
 
-  // Performance fields — only render rows whose value is present.
-  const perf = [
+  // --- headline tiles ---------------------------------------------------------
+  let altTile;
+  if (ac.on_ground) {
+    altTile = tileHtml('Altitude', 'GND', '', 'On the ground');
+  } else {
+    const moving = vrate != null && Math.abs(vrate) > 50;
+    const vText = moving ? `${vrate > 0 ? '▲' : '▼'} ${Math.abs(vrate).toLocaleString()} fpm` : (vrate != null ? 'Level' : '');
+    altTile = tileHtml('Altitude',
+      ac.altitude_baro != null ? ac.altitude_baro.toLocaleString() : '—',
+      ac.altitude_baro != null ? 'ft' : '', vText,
+      { subCls: moving ? (vrate > 0 ? 'up' : 'down') : '' });
+  }
+  const speedSub = ac.mach != null ? `Mach ${ac.mach.toFixed(2)}` : (ac.ias != null ? `IAS ${Math.round(ac.ias)} kt` : '');
+  const speedTile = tileHtml('Speed',
+    ac.ground_speed != null ? Math.round(ac.ground_speed) : '—', ac.ground_speed != null ? 'kt' : '', speedSub);
+  const trackTile = tileHtml('Track',
+    track != null ? `${Math.round(track)}°` : '—', '',
+    track != null ? COMPASS_NAMES[compassDirection(track)] : '',
+    { extra: track != null ? `<svg class="icon track-arrow" style="transform:rotate(${Math.round(track)}deg)" aria-hidden="true"><use href="#i-arrow-up"/></svg>` : '' });
+  const distTile = tileHtml('Distance',
+    ac.distance_nm != null ? ac.distance_nm.toFixed(1) : '—', ac.distance_nm != null ? 'nm' : '',
+    bearing != null ? `bearing ${Math.round(bearing)}° ${compassDirection(bearing)}` : '');
+  // Name the position source only when the feed says what it is. dump1090-fa style
+  // feeds (a local PiAware) carry no per-aircraft source, which arrives here as "other".
+  const sourceKnown = sourceClass(ac.data_source) !== 'other';
+  const signalTile = tileHtml('Signal',
+    ac.rssi != null ? ac.rssi.toFixed(1) : '—', ac.rssi != null ? 'dBFS' : '',
+    `${signalBarSvg(ac.rssi)}${sourceKnown ? ' ' + escapeHtml(sourceLabel(ac.data_source)) : ''}`);
+  const squawkNote = SQUAWK_NOTES[ac.squawk]
+    || (ac.emergency && ac.emergency !== 'none' ? ac.emergency : '');
+  const squawkTile = tileHtml('Squawk', ac.squawk ? escapeHtml(ac.squawk) : '—', '',
+    escapeHtml(squawkNote), { cls: ac.is_emergency_squawk ? 'alert' : '' });
+
+  // --- everything else the transponder reports; only fields that are present -----
+  const extras = [
     ['IAS', ac.ias != null ? `${Math.round(ac.ias)} kt` : null],
     ['TAS', ac.tas != null ? `${Math.round(ac.tas)} kt` : null],
     ['Mach', ac.mach != null ? ac.mach.toFixed(3) : null],
     ['Geom. alt.', ac.altitude_geom != null ? `${ac.altitude_geom.toLocaleString()} ft` : null],
-    ['Roll', ac.roll != null ? `${ac.roll.toFixed(1)}° ${Math.abs(ac.roll) < 1 ? 'level' : (ac.roll > 0 ? 'right' : 'left')}` : null],
-    ['Turn rate', ac.track_rate != null ? `${ac.track_rate >= 0 ? '+' : ''}${ac.track_rate.toFixed(1)} °/s` : null],
-  ].filter((r) => r[1] != null);
-  const autopilot = [
     ['Selected alt.', ac.nav_altitude_mcp != null ? `${ac.nav_altitude_mcp.toLocaleString()} ft` : null],
     ['Selected QNH', ac.nav_qnh != null ? `${ac.nav_qnh.toFixed(1)} mb` : null],
-  ].filter((r) => r[1] != null);
-  const extras = [
+    ['Roll', ac.roll != null ? `${ac.roll.toFixed(1)}° ${Math.abs(ac.roll) < 1 ? 'level' : (ac.roll > 0 ? 'right' : 'left')}` : null],
+    ['Turn rate', ac.track_rate != null ? `${ac.track_rate >= 0 ? '+' : ''}${ac.track_rate.toFixed(1)} °/s` : null],
+    ['Wind', ac.wind_speed != null && ac.wind_direction != null ? `${ac.wind_direction}° / ${ac.wind_speed} kt` : null],
+    ['Outside temp', ac.oat != null ? `${ac.oat} °C` : null],
     ['CPA', eta ? `${eta.minutes.toFixed(1)} min · ${eta.distance_nm.toFixed(1)} nm` : null],
     ['Position', ac.lat != null ? `${ac.lat.toFixed(4)}, ${ac.lon.toFixed(4)}` : null],
-    ['Source', sourceLabel(ac.data_source)],
-    ['Last seen', ac.seen != null ? `${ac.seen.toFixed(1)} s ago` : null],
   ].filter((r) => r[1] != null);
 
-  const squawkChip = ac.squawk
-    ? `<span class="chip ${ac.is_emergency_squawk ? 'chip-alert' : ''}"># SQ ${escapeHtml(ac.squawk)}${ac.is_emergency_squawk ? ` · ${escapeHtml(ac.emergency)}` : ''}</span>`
-    : '';
-
+  const seen = ac.seen != null ? `<span class="h3-aside">seen ${ac.seen.toFixed(1)} s ago</span>` : '';
   return `
-    <h3>Live</h3>
-    <div class="live-grid">
-      <div class="live-stats">
-        <div class="stat-row"><span class="stat-label">Altitude</span><span class="stat-val">${escapeHtml(altStr)}</span></div>
-        <div class="stat-row"><span class="stat-label">Speed</span><span class="stat-val">${escapeHtml(speedStr)}</span></div>
-        <div class="stat-row"><span class="stat-label">Distance</span><span class="stat-val">${escapeHtml(distStr)}</span></div>
-        <div class="stat-row"><span class="stat-label">Bearing</span><span class="stat-val">${escapeHtml(bearingStr)}</span></div>
-        <div class="stat-row"><span class="stat-label">Signal</span><span class="stat-val">${signalBarSvg(ac.rssi)}</span></div>
-      </div>
-      <div class="live-compass">
-        ${compassRoseSvg(ac.track, vrate)}
-        ${vrate != null ? `<div class="vrate">${vrate > 0 ? '+' : ''}${vrate} fpm</div>` : ''}
-      </div>
-    </div>
-    ${squawkChip ? `<div class="chip-row">${squawkChip}</div>` : ''}
-    ${perf.length ? `
-      <h4 class="subhead">⊕ Performance</h4>
-      <dl class="detail-grid compact">
-        ${perf.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join('')}
-      </dl>` : ''}
-    ${autopilot.length ? `
-      <h4 class="subhead">▶ Autopilot</h4>
-      <dl class="detail-grid compact">
-        ${autopilot.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join('')}
-      </dl>` : ''}
-    ${extras.length ? `
-      <h4 class="subhead">⌖ More</h4>
-      <dl class="detail-grid compact">
-        ${extras.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join('')}
-      </dl>` : ''}
+    <h3>${icon('live')}Live${seen}</h3>
+    <div class="tiles">${altTile}${speedTile}${trackTile}${distTile}${signalTile}${squawkTile}</div>
+    ${extras.length ? `<dl class="kv">${extras.map(([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl>` : ''}
   `;
 }
 
@@ -1633,11 +1869,12 @@ function quickLinks(ac) {
   const hex = encodeURIComponent(ac.hex);
   const reg = encodeURIComponent(ac.registration || '');
   const links = [];
-  if (ac.callsign) links.push(`<a target="_blank" rel="noopener" href="https://flightaware.com/live/flight/${cs}">FlightAware</a>`);
-  if (ac.callsign) links.push(`<a target="_blank" rel="noopener" href="https://www.flightradar24.com/${cs}">FR24</a>`);
-  links.push(`<a target="_blank" rel="noopener" href="https://globe.adsb.fi/?icao=${hex}">adsb.fi</a>`);
-  links.push(`<a target="_blank" rel="noopener" href="https://www.planespotters.net/hex/${hex}">Planespotters</a>`);
-  if (reg) links.push(`<a target="_blank" rel="noopener" href="https://www.jetphotos.com/photo/keyword/${reg}">JetPhotos</a>`);
+  const ext = icon('external');
+  if (ac.callsign) links.push(`<a target="_blank" rel="noopener" href="https://flightaware.com/live/flight/${cs}">FlightAware${ext}</a>`);
+  if (ac.callsign) links.push(`<a target="_blank" rel="noopener" href="https://www.flightradar24.com/${cs}">FR24${ext}</a>`);
+  links.push(`<a target="_blank" rel="noopener" href="https://globe.adsb.fi/?icao=${hex}">adsb.fi${ext}</a>`);
+  links.push(`<a target="_blank" rel="noopener" href="https://www.planespotters.net/hex/${hex}">Planespotters${ext}</a>`);
+  if (reg) links.push(`<a target="_blank" rel="noopener" href="https://www.jetphotos.com/photo/keyword/${reg}">JetPhotos${ext}</a>`);
   return links.join('');
 }
 
@@ -1648,10 +1885,59 @@ function updateDetailLiveSection() {
   if (!live) return;
   if (!ac) {
     // Aircraft left coverage
-    live.innerHTML = `<h3>Live</h3><p class="hint err">Aircraft has left coverage.</p>`;
+    live.innerHTML = `<h3>${icon('live')}Live</h3><p class="hint err">Aircraft has left coverage.</p>`;
     return;
   }
   live.innerHTML = liveSectionHtml(ac);
+  updateRouteProgress(ac);
+}
+
+/* ---------- Route strip ----------------------------------------------------- */
+// How far along origin → destination the aircraft is, from great-circle distances.
+// adsbdb routes are keyed by callsign and are sometimes stale (the same flight number
+// reused on another leg), so if the aircraft is nowhere near the line between the two
+// airports the progress is withheld rather than drawn wrong.
+function routeProgress(route, ac) {
+  if (!route || !ac || ac.lat == null || ac.lon == null) return null;
+  if (route.origin_lat == null || route.destination_lat == null) return null;
+  const flown = haversineNm(route.origin_lat, route.origin_lon, ac.lat, ac.lon);
+  const toGo = haversineNm(ac.lat, ac.lon, route.destination_lat, route.destination_lon);
+  const direct = haversineNm(route.origin_lat, route.origin_lon, route.destination_lat, route.destination_lon);
+  if (!(flown + toGo > 0) || flown + toGo > direct * 1.35 + 80) return null;
+  return { pct: Math.max(3, Math.min(97, (flown / (flown + toGo)) * 100)), toGo };
+}
+
+function routeHtml(route, ac) {
+  const prog = routeProgress(route, ac);
+  const operator = route.airline_name
+    ? (route.airline_icao
+      ? `<button type="button" class="link-button operator-link" data-operator-icao="${escapeHtml(route.airline_icao)}" data-operator-name="${escapeHtml(route.airline_name)}" title="Show fleet currently in view">${escapeHtml(route.airline_name)}</button>`
+      : `<span>${escapeHtml(route.airline_name)}</span>`)
+    : '<span></span>';
+  return `
+    <div class="route${prog ? ' has-progress' : ''}" style="--progress:${prog ? prog.pct.toFixed(1) : 50}%">
+      <div class="route-end">
+        <span class="code">${escapeHtml(route.origin_iata || route.origin_icao)}</span>
+        <span class="name">${escapeHtml(route.origin_name || '')}</span>
+      </div>
+      <div class="route-track"><span class="route-fill"></span><span class="route-plane"><svg class="icon" viewBox="0 0 32 32" aria-hidden="true"><path d="${AIRCRAFT_SHAPES.jet.d}"/></svg></span></div>
+      <div class="route-end dest">
+        <span class="code">${escapeHtml(route.destination_iata || route.destination_icao)}</span>
+        <span class="name">${escapeHtml(route.destination_name || '')}</span>
+      </div>
+    </div>
+    <div class="route-meta">${operator}<span class="route-togo">${prog ? `${Math.round(prog.toGo).toLocaleString()} nm to go` : ''}</span></div>
+  `;
+}
+
+// Keep the strip moving as positions arrive (called from the live-section refresh).
+function updateRouteProgress(ac) {
+  const el = document.querySelector('#detail-route .route');
+  if (!el || !state.selectedRoute) return;
+  const prog = routeProgress(state.selectedRoute, ac);
+  el.classList.toggle('has-progress', !!prog);
+  if (prog) el.style.setProperty('--progress', `${prog.pct.toFixed(1)}%`);
+  setText(document.querySelector('#detail-route .route-togo'), prog ? `${Math.round(prog.toGo).toLocaleString()} nm to go` : '');
 }
 
 // ---------- Enrichment fetches ----------
@@ -1659,7 +1945,7 @@ function updateDetailLiveSection() {
 async function fetchEnrichment(ac) {
   // hexdb (registration, type)
   const hex = ac.hex;
-  cachedFetch('hexdb', hex, () => fetch(API.hexdb(hex)).then((r) => r.json())).then((data) => {
+  cachedFetch('hexdb', hex, () => fetchJsonOk(API.hexdb(hex))).then((data) => {
     if (!data) return;
     // Guard against a slow lookup for a previously-selected aircraft repainting
     // the now-current aircraft's subtitle (the photo/route callbacks below
@@ -1675,7 +1961,7 @@ async function fetchEnrichment(ac) {
   // photo gallery — render a small carousel for any aircraft with more than one photo.
   const photoEl = document.getElementById('detail-photo');
   if (photoEl) {
-    cachedFetch('photo', hex, () => fetch(API.photo(hex)).then((r) => r.json())).then((data) => {
+    cachedFetch('photo', hex, () => fetchJsonOk(API.photo(hex))).then((data) => {
       if (!photoEl.isConnected) return;
       const photos = Array.isArray(data?.photos) ? data.photos
         : (data?.photo_url ? [{ url: data.photo_url, photographer: data.photographer, link: data.link }] : []);
@@ -1693,37 +1979,33 @@ async function fetchEnrichment(ac) {
   const routeEl = document.getElementById('detail-route');
   if (routeEl) {
     if (!ac.callsign) { routeEl.innerHTML = '<span class="hint">No callsign — cannot look up route.</span>'; return; }
-    cachedFetch('adsbdb', ac.callsign, () => fetch(API.adsbdb(ac.callsign)).then((r) => r.json())).then((data) => {
+    cachedFetch('adsbdb', ac.callsign, () => fetchJsonOk(API.adsbdb(ac.callsign))).then((data) => {
       if (!routeEl.isConnected) return;
+      if (hex !== state.selectedHex) return;
       if (data && data.origin_icao && data.destination_icao) {
-        routeEl.innerHTML = `
-          <div class="route-line">
-            <div class="airport">
-              <div class="code">${escapeHtml(data.origin_iata || data.origin_icao)}</div>
-              <div class="name">${escapeHtml(data.origin_name || '')}</div>
-            </div>
-            <div class="arrow">→</div>
-            <div class="airport">
-              <div class="code">${escapeHtml(data.destination_iata || data.destination_icao)}</div>
-              <div class="name">${escapeHtml(data.destination_name || '')}</div>
-            </div>
-          </div>
-          ${data.airline_name ? `<div class="hint operator-link" data-operator-icao="${escapeHtml(data.airline_icao || '')}" data-operator-name="${escapeHtml(data.airline_name)}" style="margin-top:6px; cursor:pointer; text-decoration:underline" title="Show fleet currently in view">${escapeHtml(data.airline_name)} →</div>` : ''}
-        `;
+        state.selectedRoute = data;
+        // Position may have moved on while the lookup was in flight — use the latest.
+        routeEl.innerHTML = routeHtml(data, state.aircraft.get(hex) || ac);
         // The link only does something useful when we know the operator's ICAO prefix to match against.
-        if (data.airline_icao) {
-          routeEl.querySelector('.operator-link')?.addEventListener('click', (e) => {
-            const icao = e.currentTarget.dataset.operatorIcao;
-            const name = e.currentTarget.dataset.operatorName;
-            openOperatorProfile(icao, name);
-          });
-        }
+        routeEl.querySelector('.operator-link')?.addEventListener('click', (e) => {
+          openOperatorProfile(e.currentTarget.dataset.operatorIcao, e.currentTarget.dataset.operatorName);
+        });
         drawRouteLineOnMap(data, ac);
+      } else if (data === null) {
+        // Upstream hiccup (502/429) — not cached, so re-selecting retries it.
+        routeEl.innerHTML = '<span class="hint err">Route lookup unavailable — try again shortly</span>';
       } else {
         routeEl.innerHTML = '<span class="hint">No route found</span>';
       }
     }).catch(() => routeEl.innerHTML = '<span class="hint err">Route lookup failed</span>');
   }
+}
+
+// JSON body of a successful response, or null for any non-2xx (the enrichment
+// endpoints answer 502 when an upstream is down). Throws only on network errors.
+async function fetchJsonOk(url) {
+  const r = await fetch(url);
+  return r.ok ? r.json() : null;
 }
 
 const _ENRICH_CACHE_CAP = 2000;   // per kind (hexdb/adsbdb/photo)
@@ -1737,6 +2019,9 @@ function cachedFetch(cacheKey, key, fn) {
     return Promise.resolve(v);
   }
   return fn().then((data) => {
+    // null = transient failure: don't pin it for the whole session (the server backs
+    // off upstream retries itself), so the next selection can succeed.
+    if (data == null) return data;
     cache.set(key, data);
     // Bound growth: a busy receiver sees thousands of distinct hexes/callsigns a
     // day, so an uncapped Map leaked tens of MB over a multi-day wall-dashboard
@@ -1782,7 +2067,17 @@ async function syncAiSection(ac) {
       // Prefer the iteration-7 structured `provider` block (gives a meaningful label for
       // any provider). Fall back to legacy `model` for browsers still on the iter-6 shell.
       const label = status.provider?.model || status.model || '';
-      hint.textContent = label ? `via ${label}` : '';
+      // reachable === false → the last background ping failed (e.g. the claude-shim
+      // is down); say so up front instead of letting every click fail. null = unknown.
+      if (status.provider?.reachable === false) {
+        hint.textContent = `${label || 'AI provider'} unreachable`;
+        hint.title = status.provider.error || '';
+        hint.classList.add('err');
+      } else {
+        hint.textContent = label ? `via ${label}` : '';
+        hint.title = '';
+        hint.classList.remove('err');
+      }
     }
     // Replace the click handler each render so it always targets the current aircraft.
     btn.onclick = () => fetchExplain(ac);
@@ -1850,18 +2145,18 @@ async function testOllamaConnection() {
       const m = data.configured_model;
       if (m && !data.model_present) {
         out.textContent = `✓ reachable, but model "${m}" not found (have: ${(data.models || []).slice(0,5).join(', ') || 'none'})`;
-        out.style.color = 'var(--alert)';
+        out.style.color = 'var(--alert-text)';
       } else {
         out.textContent = `✓ reachable — ${data.models?.length || 0} models available`;
-        out.style.color = 'var(--accent)';
+        out.style.color = 'var(--accent-text)';
       }
     } else {
       out.textContent = `✗ ${data.error || 'unreachable'}`;
-      out.style.color = 'var(--alert)';
+      out.style.color = 'var(--alert-text)';
     }
   } catch (e) {
     out.textContent = `✗ ${e.message}`;
-    out.style.color = 'var(--alert)';
+    out.style.color = 'var(--alert-text)';
   }
 }
 
@@ -1887,18 +2182,18 @@ async function testCloudApiConnection() {
       const m = data.configured_model;
       if (m && !data.model_present) {
         out.textContent = `✓ ${okPhrase}, but model "${m}" wasn't in the list (have: ${(data.models || []).slice(0,3).join(', ') || 'none'})`;
-        out.style.color = 'var(--alert)';
+        out.style.color = 'var(--alert-text)';
       } else {
         out.textContent = `✓ ${okPhrase} — ${data.models?.length || 0} models available`;
-        out.style.color = 'var(--accent)';
+        out.style.color = 'var(--accent-text)';
       }
     } else {
       out.textContent = `✗ ${data.error || 'unreachable'}`;
-      out.style.color = 'var(--alert)';
+      out.style.color = 'var(--alert-text)';
     }
   } catch (e) {
     out.textContent = `✗ ${e.message}`;
-    out.style.color = 'var(--alert)';
+    out.style.color = 'var(--alert-text)';
   }
 }
 
@@ -1920,14 +2215,14 @@ async function testClaudeCliConnection() {
       if (data.version) parts.push(data.version);
       if (data.model && data.model !== '(default)') parts.push(data.model);
       out.textContent = `✓ shim reachable${parts.length ? ` — ${parts.join(', ')}` : ''}`;
-      out.style.color = 'var(--accent)';
+      out.style.color = 'var(--accent-text)';
     } else {
       out.textContent = `✗ ${data.error || 'unreachable'}`;
-      out.style.color = 'var(--alert)';
+      out.style.color = 'var(--alert-text)';
     }
   } catch (e) {
     out.textContent = `✗ ${e.message}`;
-    out.style.color = 'var(--alert)';
+    out.style.color = 'var(--alert-text)';
   }
 }
 
@@ -2044,8 +2339,9 @@ async function fetchExplain(ac) {
   // still sees a frozen button if we don't reflect it visually.
   if (btn.disabled) return;
   btn.disabled = true;
-  const originalText = btn.textContent;
-  btn.textContent = 'Generating…';
+  const label = btn.querySelector('span') || btn;
+  const originalText = label.textContent;
+  label.textContent = 'Generating…';
   result.innerHTML = '<div class="skeleton skeleton-line wide"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line"></div>';
   try {
     // Only send the structured enrichment fields the backend allow-lists; anything else
@@ -2059,12 +2355,12 @@ async function fetchExplain(ac) {
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      result.innerHTML = `<p class="hint" style="color:var(--alert)">Explain failed: ${escapeHtml(err.detail || res.statusText)}</p>`;
+      result.innerHTML = `<p class="hint err">Explain failed: ${escapeHtml(err.detail || res.statusText)}</p>`;
       return;
     }
     const data = await res.json();
     if (data.source === 'unavailable') {
-      result.innerHTML = `<p class="hint" style="color:var(--alert)">AI unavailable: ${escapeHtml(data.error || 'unknown')}</p>`;
+      result.innerHTML = `<p class="hint err">AI unavailable: ${escapeHtml(data.error || 'unknown')}</p>`;
       return;
     }
     // Render with paragraph breaks. The brief is plain prose; we escape it and replace
@@ -2084,7 +2380,7 @@ async function fetchExplain(ac) {
       ? `<div class="ai-verify"><span class="hint">Cross-check:</span> ${wikipediaLink}${wikipediaLink && skybraryLink ? ' · ' : ''}${skybraryLink}</div>`
       : '';
     const sourceLabel = data.source === 'cache' ? 'Cached response' : 'Fresh AI response';
-    result.innerHTML = `<div class="ai-brief">${paragraphs}</div>${verifyRow}<div style="margin-top:6px"><span class="hint">${sourceLabel}</span></div>`;
+    result.innerHTML = `<div class="ai-brief">${paragraphs}</div>${verifyRow}<p class="hint">${sourceLabel}</p>`;
     // Seed the chat thread with the brief as the first assistant message. Any follow-up
     // exchange is appended in sendAiChat. Anchor the chat to this aircraft so a later
     // selection of a different hex resets the conversation.
@@ -2092,10 +2388,10 @@ async function fetchExplain(ac) {
     _aiChatState.turns = [{ role: 'assistant', content: data.text || '' }];
     renderAiChat();
   } catch (e) {
-    result.innerHTML = `<p class="hint" style="color:var(--alert)">Network error: ${escapeHtml(e.message)}</p>`;
+    result.innerHTML = `<p class="hint err">Network error: ${escapeHtml(e.message)}</p>`;
   } finally {
     btn.disabled = false;
-    btn.textContent = originalText;
+    label.textContent = originalText;
   }
 }
 
@@ -2252,7 +2548,9 @@ async function loadSettings() {
   state.settings = await res.json();
   applySettingsToUI();
   populateSettingsModal();
-  await refreshBudget();
+  // The FlightAware budget bar isn't needed to draw the map; don't hold map setup
+  // (and so the first tile, the LCP) behind another round-trip.
+  refreshBudget();
 }
 
 // Single source of truth for theme application — both the topbar select and the
@@ -2264,6 +2562,8 @@ function applyTheme(theme, { persist } = {}) {
   state.settings.theme = theme;
   document.documentElement.dataset.theme = theme;
   syncThemeSelects(theme);
+  syncThemeChrome(theme);
+  if (persist) rememberTheme(theme);
   refreshThemeColorCache();
   radar?.setVariant(RADAR_VARIANTS[theme] || null);
   if (map) applyTileLayerForTheme();
@@ -2271,6 +2571,10 @@ function applyTheme(theme, { persist } = {}) {
   refreshMapMarkers();
   refreshTrails();
   refreshRangeRings();
+  if (state.selectedRoute && state.selectedHex && routeLineLayer) {
+    const sel = state.aircraft.get(state.selectedHex);
+    if (sel) drawRouteLineOnMap(state.selectedRoute, sel);
+  }
   if (typeof scheduleUrlStateWrite === 'function') scheduleUrlStateWrite();
   if (persist) {
     fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2285,11 +2589,69 @@ function syncThemeSelects(theme) {
   if (setting && setting.value !== theme) setting.value = theme;
 }
 
+// Theme gallery — one card per <option> of #theme-select, in the top-bar popover and in
+// Settings → Appearance. Each swatch carries its own data-theme, so the colours it
+// shows are that theme's real tokens from themes.css rather than a copy kept here.
+function buildThemeGalleries() {
+  const select = document.getElementById('theme-select');
+  if (!select) return;
+  const makeCard = (opt) => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'theme-card';
+    card.dataset.themeId = opt.value;
+    card.setAttribute('aria-pressed', 'false');
+    card.innerHTML = `<span class="theme-swatch" data-theme="${escapeHtml(opt.value)}">`
+      + '<i class="sw-accent"></i><i class="sw-text"></i><i class="sw-text2"></i>'
+      + '<i class="sw-band sw-b1"></i><i class="sw-band sw-b2"></i><i class="sw-band sw-b3"></i><i class="sw-band sw-b4"></i>'
+      + `</span><span class="theme-name">${escapeHtml(opt.textContent)}</span>`;
+    card.addEventListener('click', () => applyTheme(opt.value, { persist: true }));
+    return card;
+  };
+  for (const gridId of ['theme-grid', 'setting-theme-grid']) {
+    const grid = document.getElementById(gridId);
+    if (!grid || grid.childElementCount) continue;
+    // The <optgroup>s in #theme-select become headed sections of the gallery.
+    for (const child of select.children) {
+      if (child.tagName === 'OPTGROUP') {
+        const heading = document.createElement('div');
+        heading.className = 'theme-group';
+        heading.textContent = child.label;
+        grid.appendChild(heading);
+        for (const opt of child.children) grid.appendChild(makeCard(opt));
+      } else {
+        grid.appendChild(makeCard(child));
+      }
+    }
+  }
+}
+
+// Things outside the stylesheet that follow the theme: which gallery card is marked
+// active, and the browser-chrome colour (mobile address bar / installed-PWA title bar).
+function syncThemeChrome(theme) {
+  for (const card of document.querySelectorAll('.theme-card')) {
+    card.setAttribute('aria-pressed', card.dataset.themeId === theme ? 'true' : 'false');
+  }
+  const meta = document.querySelector('meta[name="theme-color"]');
+  const panel = getComputedStyle(document.documentElement).getPropertyValue('--panel-bg').trim();
+  if (meta && panel) meta.setAttribute('content', panel);
+}
+
+// Remember the persisted theme in this browser so the next load can paint it before
+// /api/settings answers (see the bootstrap in index.html). Only called for the stored
+// theme — never for a share-link `#theme=` preview — and never from an embed.
+function rememberTheme(theme) {
+  if (window.__embed) return;
+  try { localStorage.setItem('piscope_theme', theme); } catch (e) { /* storage blocked */ }
+}
+
 function applySettingsToUI() {
-  const theme = state.settings.theme || 'radar';
+  const theme = state.settings.theme || DEFAULT_THEME;
   // Sync both theme selects without re-POSTing (server just told us this value).
   document.documentElement.dataset.theme = theme;
   syncThemeSelects(theme);
+  syncThemeChrome(theme);
+  rememberTheme(theme);
   refreshThemeColorCache();
   state.filters.showGround = !!state.settings.show_ground;
   document.getElementById('show-ground').checked = state.filters.showGround;
@@ -2322,20 +2684,60 @@ function applySettingsToUI() {
 }
 
 function syncToggleButtons() {
-  const setBtn = (id, on, titleOn, titleOff) => {
+  const setBtn = (id, on, tipOn, tipOff) => {
     const b = document.getElementById(id); if (!b) return;
     b.classList.toggle('active', on);
     b.setAttribute('aria-pressed', on ? 'true' : 'false');
-    b.title = on ? titleOn : titleOff;
+    if (tipOn) b.dataset.tip = on ? tipOn : tipOff;
   };
-  setBtn('toggle-audio', state.audioEnabled, 'Audio alerts on — click to mute (A)', 'Audio alerts (off) (A)');
-  const audioBtn = document.getElementById('toggle-audio');
-  if (audioBtn) audioBtn.textContent = state.audioEnabled ? '🔊' : '🔇';
-  setBtn('toggle-follow', state.follow, 'Follow mode on (F)', 'Follow selected aircraft (F)');
-  setBtn('toggle-replay', state.replayActive, 'Exit replay (return to live) (P)', 'Replay timeline (P)');
-  setBtn('toggle-weather', !!state.settings.weather_overlay_enabled, 'Weather radar visible (W)', 'Weather radar overlay (W)');
-  setBtn('toggle-day-night', !!state.settings.day_night_enabled, 'Day/night shading on (N)', 'Day/night terminator (N)');
-  setBtn('toggle-heatmap', !!heatmapLayer, 'Heatmap visible', 'Traffic heatmap');
+  setBtn('toggle-audio', state.audioEnabled, 'Audio alerts on · A', 'Audio alerts off · A');
+  // Speaker icon follows the state (both the top-bar button and its phone-menu twin).
+  const speaker = state.audioEnabled ? '#i-volume' : '#i-volume-off';
+  for (const use of document.querySelectorAll('#toggle-audio use, [data-proxy="toggle-audio"] use')) use.setAttribute('href', speaker);
+  setBtn('toggle-follow', state.follow, 'Following selected · F', 'Follow selected · F');
+  setBtn('detail-follow', state.follow);
+  setBtn('toggle-replay', state.replayActive, 'Exit replay · P', 'Replay · P');
+  setBtn('toggle-weather', !!state.settings.weather_overlay_enabled);
+  setBtn('toggle-day-night', !!state.settings.day_night_enabled);
+  setBtn('toggle-heatmap', !!heatmapLayer);
+  setBtn('toggle-rings', !!state.settings.range_rings_enabled);
+  const mode = state.settings.map_label_mode || 'off';
+  for (const b of document.querySelectorAll('#label-mode [data-label-mode]')) {
+    b.setAttribute('aria-pressed', b.dataset.labelMode === mode ? 'true' : 'false');
+  }
+  syncLayersBadge();
+}
+
+// ---------- Quick map settings (Layers popover) -------------------------------
+// Range rings and label mode also live in Settings → Map; these are the one-click
+// versions. Both write through to the server straight away, and openSettings()
+// re-reads state.settings, so the modal never saves a stale copy back over them.
+function persistSettings(patch) {
+  return fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch) }).catch(() => {});
+}
+function toggleRangeRings() {
+  state.settings.range_rings_enabled = !state.settings.range_rings_enabled;
+  refreshRangeRings();
+  syncToggleButtons();
+  persistSettings({ range_rings_enabled: state.settings.range_rings_enabled });
+}
+function setLabelMode(mode) {
+  if (!['off', 'callsign', 'full'].includes(mode) || mode === state.settings.map_label_mode) return;
+  state.settings.map_label_mode = mode;
+  syncLabelPaneAttrs();
+  refreshMapMarkers();
+  maybePrefetchRoutes();
+  syncToggleButtons();
+  persistSettings({ map_label_mode: mode });
+}
+
+// "Translucent panels" is a per-browser preference (a slow kiosk and a fast laptop can
+// share one Pi), so it lives in localStorage rather than the settings table.
+function setGlassPreference(on) {
+  if (on) delete document.documentElement.dataset.glass;
+  else document.documentElement.dataset.glass = 'off';
+  try { localStorage.setItem('piscope_glass', on ? '1' : '0'); } catch (e) { /* storage blocked */ }
 }
 
 function populateSettingsModal() {
@@ -2355,7 +2757,9 @@ function populateSettingsModal() {
       themeSelect.appendChild(o);
     }
   }
-  themeSelect.value = s.theme || 'radar';
+  themeSelect.value = s.theme || DEFAULT_THEME;
+  const glassPref = document.getElementById('pref-glass');
+  if (glassPref) glassPref.checked = document.documentElement.dataset.glass !== 'off';
 
   document.getElementById('setting-rings').value = s.range_rings_nm || '50,100,150,200';
   document.getElementById('setting-rings-enabled').checked = !!s.range_rings_enabled;
@@ -2447,9 +2851,11 @@ function populateSettingsModal() {
   if (el('setting-smtp-port'))       el('setting-smtp-port').value = s.smtp_port || 587;
   if (el('setting-smtp-user'))       el('setting-smtp-user').value = s.smtp_user || '';
   if (el('setting-smtp-pass'))       el('setting-smtp-pass').value = '';
+  if (el('smtp-pass-status'))        el('smtp-pass-status').textContent = s.smtp_pass_set ? 'A password is currently stored. Leave blank to keep it.' : 'No password stored.';
   if (el('setting-smtp-from'))       el('setting-smtp-from').value = s.smtp_from || '';
   if (el('setting-smtp-to'))         el('setting-smtp-to').value = s.smtp_to || '';
   if (el('setting-smtp-starttls'))   el('setting-smtp-starttls').checked = s.smtp_use_starttls !== false;
+  if (el('setting-smtp-ssl'))        el('setting-smtp-ssl').checked = !!s.smtp_use_ssl;
 }
 
 // Latitude / longitude validators — returns the parsed number or null. Anything outside the
@@ -2543,6 +2949,7 @@ async function saveSettings() {
     smtp_from:    document.getElementById('setting-smtp-from')?.value.trim() || '',
     smtp_to:      document.getElementById('setting-smtp-to')?.value.trim() || '',
     smtp_use_starttls: !!document.getElementById('setting-smtp-starttls')?.checked,
+    smtp_use_ssl: !!document.getElementById('setting-smtp-ssl')?.checked,
   };
   // Network access. Only sent when the controls exist, so a mismatched cached shell
   // can never silently switch the guard off. The server adds the Host this page was
@@ -2652,7 +3059,15 @@ async function testConnection() {
 
 // ---------- Modal + UI wiring ----------
 
-function openSettings()  { document.getElementById('settings-modal').hidden = false; loadWebhooksIntoSettings(); }
+function openSettings() {
+  closePopover();
+  // Refill from state.settings on every open: the quick toggles (audio, labels, range
+  // rings, …) change settings outside this form, and reopening should also discard
+  // whatever was typed before a Cancel.
+  populateSettingsModal();
+  document.getElementById('settings-modal').hidden = false;
+  loadWebhooksIntoSettings();
+}
 function closeSettings() { document.getElementById('settings-modal').hidden = true; }
 
 /* ---------- Weather radar overlay (RainViewer, no key) -------------------- */
@@ -2827,8 +3242,12 @@ function renderPhotoGallery(photos) {
   detailPhotoIndex = 0;
   root.innerHTML = '';
   root.classList.add('detail-photos');
+  root.classList.remove('skeleton');
+  // Without a photo the hero collapses to a slim band instead of an empty 16:9 box.
+  root.classList.toggle('no-photo', !detailPhotos.length);
   if (!detailPhotos.length) {
-    const span = document.createElement('span'); span.className = 'hint'; span.textContent = 'No photo on file';
+    const span = document.createElement('span'); span.className = 'hint';
+    span.innerHTML = `${icon('image')}<span>No photo on file</span>`;
     root.appendChild(span);
     return;
   }
@@ -2845,8 +3264,10 @@ function renderPhotoGallery(photos) {
   credit.textContent = `© ${detailPhotos[0].photographer || 'planespotters.net'}`;
   root.appendChild(credit);
   if (detailPhotos.length > 1) {
-    const prev = document.createElement('button'); prev.className = 'photo-nav prev'; prev.textContent = '‹';
-    const next = document.createElement('button'); next.className = 'photo-nav next'; next.textContent = '›';
+    const prev = document.createElement('button'); prev.className = 'photo-nav prev'; prev.type = 'button';
+    prev.setAttribute('aria-label', 'Previous photo'); prev.innerHTML = icon('chevron-left');
+    const next = document.createElement('button'); next.className = 'photo-nav next'; next.type = 'button';
+    next.setAttribute('aria-label', 'Next photo'); next.innerHTML = icon('chevron-right');
     prev.onclick = (e) => { e.stopPropagation(); rotatePhoto(-1); };
     next.onclick = (e) => { e.stopPropagation(); rotatePhoto(1); };
     root.appendChild(prev); root.appendChild(next);
@@ -2928,12 +3349,12 @@ async function wizardAdvance() {
       const status = document.getElementById('wizard-loc-status');
       if (lat === null || lon === null) {
         status.textContent = 'Invalid coords — lat is -90..90, lon is -180..180.';
-        status.style.color = 'var(--alert)';
+        status.style.color = 'var(--alert-text)';
         return false;
       }
       await setReceiverLocation(lat, lon);
       status.textContent = 'Saved.';
-      status.style.color = 'var(--accent)';
+      status.style.color = 'var(--accent-text)';
     }
   } else if (_wizardStep === 3) {
     const contact = document.getElementById('wizard-contact').value.trim();
@@ -3041,7 +3462,7 @@ function closeOperatorProfile() {
 }
 
 /* ---------- Saved views --------------------------------------------------- */
-async function openViews() { document.getElementById('views-modal').hidden = false; await loadViews(); }
+async function openViews() { closePopover(); document.getElementById('views-modal').hidden = false; await loadViews(); }
 function closeViews() { document.getElementById('views-modal').hidden = true; }
 async function loadViews() {
   try { const data = await fetch(API.views).then((r) => r.json()); savedViewsCache = data.views || []; }
@@ -3058,8 +3479,8 @@ async function loadViews() {
     const li = document.createElement('li');
     li.innerHTML = `
       <span><div class="vname">${escapeHtml(v.name)}</div><div class="vmeta">${Number(v.lat).toFixed(2)}, ${Number(v.lon).toFixed(2)} · z${Number(v.zoom) || ''}</div></span>
-      <button class="secondary go">Go</button>
-      <button class="secondary del">Delete</button>
+      <button class="secondary go" type="button">Go</button>
+      <button class="secondary danger del" type="button">Delete</button>
     `;
     li.querySelector('.go').onclick = () => { map.setView([v.lat, v.lon], v.zoom); closeViews(); };
     li.querySelector('.del').onclick = async () => {
@@ -3105,7 +3526,7 @@ function renderWebhookList() {
         <option value="ntfy">ntfy.sh</option>
         <option value="generic">Generic JSON POST</option>
       </select>
-      <input class="wh-url" type="url" placeholder="https://discord.com/api/webhooks/..." value="${escapeHtml(hook.url || '')}" style="grid-column: 1 / -1" />
+      <input class="wh-url" type="url" placeholder="https://discord.com/api/webhooks/..." value="${escapeHtml(hook.url || '')}" />
       <div class="types-row">
         <label><input type="checkbox" class="wh-t-emergency"> Emergency</label>
         <label><input type="checkbox" class="wh-t-military"> Military</label>
@@ -3117,8 +3538,8 @@ function renderWebhookList() {
         <label><input type="checkbox" class="wh-t-weekly_digest" title="Weekly summary"> Weekly</label>
       </div>
       <div class="controls-row">
-        <button class="secondary wh-test">Test</button>
-        <button class="secondary wh-remove" style="margin-left:auto; border-color:var(--alert); color:var(--alert)">Remove</button>
+        <button class="secondary small wh-test" type="button">Send test</button>
+        <button class="secondary small danger wh-remove" type="button">Remove</button>
       </div>
     `;
     row.querySelector('.wh-kind').value = hook.kind || 'discord';
@@ -3190,36 +3611,64 @@ async function renderPolarCoverage() {
   let bins = [];
   try { const data = await fetch(API.coverage).then((r) => r.json()); bins = data.bins || []; } catch (e) { return; }
   polarBinsCache = bins;
+  // Draw at device resolution (capped at 2x) so the chart is crisp on HiDPI screens;
+  // CSS scales the canvas box, the drawing code keeps working in 480-unit space.
+  const SIZE = 480;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (canvas.width !== SIZE * dpr) { canvas.width = SIZE * dpr; canvas.height = SIZE * dpr; }
   const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const W = SIZE, H = SIZE;
   ctx.clearRect(0, 0, W, H);
   const cx = W / 2, cy = H / 2;
   const maxNm = Math.max(50, ...bins.map((b) => b.max_nm || 0));
-  const R = Math.min(W, H) / 2 - 30;
+  const R = Math.min(W, H) / 2 - 34;
   const css = getComputedStyle(document.documentElement);
-  const accent = (css.getPropertyValue('--accent').trim() || '#00ff40');
-  const separator = (css.getPropertyValue('--separator').trim() || '#333');
+  const accent = (css.getPropertyValue('--accent').trim() || '#3ddcb0');
   const text = (css.getPropertyValue('--secondary-text').trim() || '#aaa');
-  ctx.strokeStyle = separator; ctx.lineWidth = 0.6; ctx.fillStyle = text; ctx.font = '10px system-ui';
+  const grid = colorWithAlpha(css.getPropertyValue('--primary-text').trim() || '#ffffff', 0.14);
+  ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
+  // Range rings + spokes
+  ctx.strokeStyle = grid; ctx.lineWidth = 1;
   for (let i = 1; i <= 4; i++) {
-    const r = (R * i) / 4;
-    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
-    ctx.fillText(`${Math.round((maxNm * i) / 4)} nm`, cx + 4, cy - r);
+    ctx.beginPath(); ctx.arc(cx, cy, (R * i) / 4, 0, Math.PI * 2); ctx.stroke();
   }
+  for (let d = 0; d < 360; d += 45) {
+    const rd = (d - 90) * Math.PI / 180;
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + R * Math.cos(rd), cy + R * Math.sin(rd)); ctx.stroke();
+  }
+  // Coverage polygon. colorWithAlpha (radar.js) copes with rgb()/hex theme tokens —
+  // the old `accent + '33'` only produced a valid colour for #hex themes, so in the
+  // rgb() ones the fill silently fell back to an opaque blob.
+  if (bins.length) {
+    ctx.beginPath();
+    bins.forEach((b, i) => {
+      const r = ((b.max_nm || 0) / maxNm) * R;
+      const rd = (b.bearing - 90) * Math.PI / 180;
+      const x = cx + r * Math.cos(rd), y = cy + r * Math.sin(rd);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.closePath();
+    const fill = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+    fill.addColorStop(0, colorWithAlpha(accent, 0.08));
+    fill.addColorStop(1, colorWithAlpha(accent, 0.34));
+    ctx.fillStyle = fill; ctx.fill();
+    ctx.strokeStyle = accent; ctx.lineWidth = 1.75; ctx.lineJoin = 'round'; ctx.stroke();
+  }
+  // Labels last so they sit on top of the fill.
+  ctx.fillStyle = text; ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  for (let i = 1; i <= 4; i++) {
+    ctx.fillText(`${Math.round((maxNm * i) / 4)} nm`, cx + 5, cy - (R * i) / 4 + 8);
+  }
+  ctx.textAlign = 'center';
+  ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
   for (const [label, d] of [['N', 0], ['E', 90], ['S', 180], ['W', 270]]) {
     const rd = (d - 90) * Math.PI / 180;
-    ctx.fillText(label, cx + (R + 12) * Math.cos(rd) - 4, cy + (R + 12) * Math.sin(rd) + 4);
+    ctx.fillText(label, cx + (R + 16) * Math.cos(rd), cy + (R + 16) * Math.sin(rd));
   }
-  ctx.beginPath();
-  bins.forEach((b, i) => {
-    const r = (b.max_nm / maxNm) * R;
-    const rd = (b.bearing - 90) * Math.PI / 180;
-    const x = cx + r * Math.cos(rd), y = cy + r * Math.sin(rd);
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  });
-  ctx.closePath();
-  ctx.fillStyle = accent + '33'; ctx.fill();
-  ctx.strokeStyle = accent; ctx.lineWidth = 1.5; ctx.stroke();
+  // Receiver at the centre
+  ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.fillStyle = accent; ctx.fill();
   polarMaxNmCache = maxNm;
   if (!canvas._polarHover) { canvas._polarHover = true; canvas.addEventListener('mousemove', polarMouseMove); canvas.addEventListener('mouseleave', polarMouseLeave); }
 }
@@ -3235,12 +3684,11 @@ function polarMouseMove(e) {
   const bin = polarBinsCache.find((b) => b.bearing === bearing) || { max_nm: 0 };
   let tip = document.getElementById('polar-tooltip');
   if (!tip) {
-    tip = document.createElement('div'); tip.id = 'polar-tooltip'; tip.className = 'context-menu';
-    tip.style.pointerEvents = 'none'; tip.style.padding = '4px 10px';
+    tip = document.createElement('div'); tip.id = 'polar-tooltip'; tip.className = 'context-menu polar-tip';
     document.body.appendChild(tip);
   }
   const compass = ['N','NE','E','SE','S','SW','W','NW'][Math.round(bearing/45)%8];
-  tip.innerHTML = `<div style="font-family:var(--font-mono); font-size:11px"><strong>${bearing}°</strong> ${compass}<br>${(bin.max_nm || 0).toFixed(1)} nm</div>`;
+  tip.innerHTML = `<strong>${bearing}°</strong> ${compass}<br>${(bin.max_nm || 0).toFixed(1)} nm`;
   tip.style.left = (e.clientX + 14) + 'px';
   tip.style.top = (e.clientY + 14) + 'px';
   tip.style.display = 'block';
@@ -3352,7 +3800,7 @@ function _anaNotableList(entries, emptyText) {
     const chips = (e.reasons || []).map((r) => `<span class="reason-chip" title="rule: ${escapeHtml(r.rule)}">${escapeHtml(r.label)}</span>`).join('');
     const type = e.type_code ? ` <code>${escapeHtml(e.type_code)}</code>` : '';
     const when = e.last_seen ? new Date(e.last_seen * 1000).toLocaleString() : '—';
-    return `<li><div class="notable-head"><strong>${_anaName(e)}</strong>${type}<span class="hint" style="margin-left:auto">${escapeHtml(when)}</span></div><div class="notable-chips">${chips}</div></li>`;
+    return `<li><div class="notable-head"><strong>${_anaName(e)}</strong>${type}<span class="hint">${escapeHtml(when)}</span></div><div class="notable-chips">${chips}</div></li>`;
   }).join('')}</ul>`;
 }
 
@@ -3360,7 +3808,7 @@ function _anaEmergencies(list) {
   if (!list || !list.length) return '<p class="hint">No emergency squawks in this window. Good.</p>';
   return `<ul class="ana-records">${list.slice(0, 8).map((e) => {
     const sq = e.squawk ? ` squawk <code>${escapeHtml(e.squawk)}</code>` : '';
-    return `<li>🚨 <strong>${_anaName(e)}</strong>${sq} — ${new Date(e.ts * 1000).toLocaleString()}</li>`;
+    return `<li>${icon('alert', 'alert')}<span><strong>${_anaName(e)}</strong>${sq} — ${new Date(e.ts * 1000).toLocaleString()}</span></li>`;
   }).join('')}</ul>`;
 }
 
@@ -3406,7 +3854,7 @@ async function renderAnalytics() {
     notable = nt;
     returning = rt;
   } catch (e) {
-    body.innerHTML = `<p class="hint" style="color:var(--alert)">Failed to load analytics: ${escapeHtml(e.message)}</p>`;
+    body.innerHTML = `<p class="hint err">Failed to load analytics: ${escapeHtml(e.message)}</p>`;
     if (caption) caption.textContent = '';
     return;
   }
@@ -3503,7 +3951,7 @@ async function renderAnalytics() {
         const who = escapeHtml(r.callsign || r.registration || r.hex || '—');
         const unit = (r.category === 'lowest_alt' || r.category === 'highest') ? ' ft'
           : r.category === 'fastest' ? ' kts' : ' nm';
-        return `<li>🏆 <strong>${escapeHtml(r.label || r.category)}</strong> — ${Number(r.value).toLocaleString()}${unit} by ${who} (${new Date(r.recorded_at * 1000).toLocaleDateString()})</li>`;
+        return `<li>${icon('star-fill')}<span><strong>${escapeHtml(r.label || r.category)}</strong> — ${Number(r.value).toLocaleString()}${unit} by ${who} (${new Date(r.recorded_at * 1000).toLocaleDateString()})</span></li>`;
       }).join('')}</ul>`
     : '<p class="hint">No all-time records broken in this window. See the Records tab for the standing bests.</p>';
 
@@ -3560,7 +4008,7 @@ async function renderTodayDigest() {
     const data = await fetch('/piscope/api/digest').then((r) => r.json());
     paintDigestCard(data.digest);
   } catch (e) {
-    card.innerHTML = `<p class="hint" style="color:var(--alert)">Failed to load digest: ${escapeHtml(e.message)}</p>`;
+    card.innerHTML = `<p class="hint err">Failed to load digest: ${escapeHtml(e.message)}</p>`;
     stamp.textContent = '';
   }
 }
@@ -3591,7 +4039,7 @@ function paintDigestCard(digest) {
     return `<li><span class="digest-kind digest-kind-${escapeHtml(c.kind)}">${escapeHtml(c.kind)}</span> <strong>${name}</strong>${type}<span class="hint">${dist} · ${when}</span></li>`;
   }).join('');
   const ai = digest.ai_commentary
-    ? `<section class="digest-ai"><h4>✨ AI commentary</h4><p>${escapeHtml(digest.ai_commentary)}</p></section>`
+    ? `<section class="digest-ai"><h4>${icon('sparkles')}AI commentary</h4><p>${escapeHtml(digest.ai_commentary)}</p></section>`
     : '';
   card.innerHTML = `
     <section class="digest-headlines">
@@ -3600,7 +4048,7 @@ function paintDigestCard(digest) {
       <div class="digest-stat"><div class="digest-stat-value">${Number(t.peak_concurrent_aircraft) || 0}</div><div class="hint">peak concurrent</div></div>
       <div class="digest-stat"><div class="digest-stat-value">${Math.round(Number(t.max_range_nm_today) || 0)}</div><div class="hint">max range nm</div></div>
     </section>
-    ${byBits ? `<div class="digest-breakdown" style="margin:8px 0">${byBits}</div>` : ''}
+    ${byBits ? `<div class="digest-breakdown">${byBits}</div>` : ''}
     ${topTypes ? `<section><h4>Top types in window</h4><table class="stats-table"><thead><tr><th>Type</th><th>Sightings</th></tr></thead><tbody>${topTypes}</tbody></table></section>` : ''}
     ${newTypes ? `<section><h4>New types in window</h4><p>${newTypes}</p></section>` : ''}
     ${callouts ? `<section><h4>Notable sightings</h4><ul class="digest-callouts">${callouts}</ul></section>` : ''}
@@ -3709,7 +4157,7 @@ async function renderBookmarksPanel() {
   list.innerHTML = '';
   if (!items.length) {
     const li = document.createElement('li');
-    li.innerHTML = '<span class="hint">No bookmarks yet. Click the ★ in the detail panel to add one.</span>';
+    li.innerHTML = '<span class="hint">No bookmarks yet. Use Bookmark in the detail panel to add one.</span>';
     list.appendChild(li);
     return;
   }
@@ -3719,8 +4167,8 @@ async function renderBookmarksPanel() {
     const meta = [b.type_code, b.registration, b.hex.toUpperCase()].filter(Boolean).join(' · ');
     li.innerHTML = `
       <span><div class="vname">${escapeHtml(label)}</div><div class="vmeta">${escapeHtml(meta)}</div></span>
-      <button class="secondary find">Find</button>
-      <button class="secondary del">Remove</button>
+      <button class="secondary find" type="button">Find</button>
+      <button class="secondary danger del" type="button">Remove</button>
     `;
     li.querySelector('.find').onclick = () => {
       // Try to find a live aircraft with this hex.
@@ -3746,8 +4194,9 @@ function updateBookmarkStar() {
   const btn = document.getElementById('bookmark-toggle');
   if (!btn || !state.selectedHex) return;
   const isBookmarked = bookmarkedHexes.has(state.selectedHex);
-  btn.textContent = isBookmarked ? '★ Bookmarked' : '☆ Bookmark';
+  btn.innerHTML = isBookmarked ? `${icon('star-fill')}<span>Bookmarked</span>` : `${icon('star')}<span>Bookmark</span>`;
   btn.classList.toggle('active', isBookmarked);
+  btn.setAttribute('aria-pressed', isBookmarked ? 'true' : 'false');
 }
 
 async function toggleBookmarkSelected() {
@@ -3786,8 +4235,14 @@ async function handleDbImport(e) {
     const res = await fetch(API.importDb, { method: 'POST', headers: { 'X-PiScope-Import': '1' }, body: fd });
     const data = await res.json();
     if (!res.ok) { status.textContent = `Failed: ${data.detail || res.statusText}`; status.className = 'hint err'; return; }
-    status.textContent = 'Restored! Reloading…'; status.className = 'hint ok';
-    setTimeout(() => location.reload(), 800);
+    // The server resets settings rows the backup carried invalid values for; give the
+    // user time to read which ones before the reload.
+    const reset = Array.isArray(data.settings_reset) ? data.settings_reset : [];
+    status.textContent = reset.length
+      ? `Restored, but these settings were invalid and reset to defaults: ${reset.join(', ')}. Reloading…`
+      : 'Restored! Reloading…';
+    status.className = 'hint ok';
+    setTimeout(() => location.reload(), reset.length ? 5000 : 800);
   } catch (err) {
     status.textContent = `Error: ${err.message}`; status.className = 'hint err';
   } finally { e.target.value = ''; }
@@ -3802,6 +4257,173 @@ function toast(message) {
   el.classList.add('visible');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('visible'), 2200);
+}
+
+// Copy text and confirm with a toast. navigator.clipboard only exists in a secure
+// context, and PiScope is usually served over plain HTTP on the LAN — fall back to the
+// selection-based copy there instead of silently doing nothing.
+async function copyText(text, okMessage) {
+  let ok = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  } catch (e) { /* fall through to the legacy path */ }
+  if (!ok) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+  }
+  toast(ok ? (okMessage || 'Copied') : 'Could not copy to the clipboard');
+  return ok;
+}
+
+// "Copy link" in the detail panel: the address bar already mirrors view + selection.
+function copyShareLink() {
+  clearTimeout(_urlStateWriteTimer);
+  writeUrlState();                    // flush any pending debounce so select= is current
+  return copyText(location.href, 'Link copied — opens this view and aircraft');
+}
+
+/* ---------- Popovers -------------------------------------------------------- */
+// One popover open at a time (layers, themes, the phone overflow menu). Light-dismiss
+// on outside press, Escape (see handleKeyboard) and window resize.
+let _popover = null;   // { el, anchor }
+function positionPopover(el, anchor, placement) {
+  const a = anchor.getBoundingClientRect();
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const m = 8;
+  let left;
+  let top;
+  if (placement === 'right') { left = a.right + 10; top = a.top - 4; }   // beside the map rail
+  else { left = a.right - w; top = a.bottom + 10; }                       // below, right edges aligned
+  left = Math.max(m, Math.min(left, vw - m - w));
+  top = Math.max(m, Math.min(top, vh - m - h));
+  el.style.left = `${Math.round(left)}px`;
+  el.style.top = `${Math.round(top)}px`;
+}
+function openPopover(id, anchor, placement) {
+  closePopover();
+  const el = document.getElementById(id);
+  if (!el || !anchor) return;
+  hideContextMenu();
+  el.hidden = false;
+  positionPopover(el, anchor, placement);
+  anchor.setAttribute('aria-expanded', 'true');
+  _popover = { el, anchor };
+  // Deferred so the press that opened it doesn't count as an outside press.
+  setTimeout(() => { if (_popover) document.addEventListener('pointerdown', _popoverOutside, true); }, 0);
+}
+function closePopover() {
+  if (!_popover) return;
+  _popover.el.hidden = true;
+  _popover.anchor.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('pointerdown', _popoverOutside, true);
+  _popover = null;
+}
+function togglePopover(id, anchor, placement) {
+  if (_popover && _popover.el.id === id) closePopover();
+  else openPopover(id, anchor, placement);
+}
+function _popoverOutside(e) {
+  if (!_popover) return;
+  if (_popover.el.contains(e.target) || _popover.anchor.contains(e.target)) return;
+  closePopover();
+}
+// A top-bar button that is folded into the phone overflow menu has no box to anchor
+// to; hang its popover off the overflow button instead.
+function popoverAnchor(id) {
+  const el = document.getElementById(id);
+  return el && el.offsetParent !== null ? el : document.getElementById('open-more');
+}
+
+/* ---------- Aircraft list: collapse / drawer / filters ----------------------- */
+// <html data-sidebar>: "collapsed" hides the list on desktop (remembered per browser);
+// "open" shows it as a drawer on tablet/phone, where it is closed by default.
+function syncSidebarToggle() {
+  const state_ = document.documentElement.dataset.sidebar;
+  const visible = isDrawerLayout() ? state_ === 'open' : state_ !== 'collapsed';
+  const btn = document.getElementById('toggle-sidebar');
+  if (btn) {
+    btn.setAttribute('aria-pressed', visible ? 'true' : 'false');
+    btn.dataset.tip = visible ? 'Hide aircraft list · [' : 'Show aircraft list · [';
+  }
+  const scrim = document.getElementById('scrim');
+  if (scrim) scrim.hidden = !(isDrawerLayout() && state_ === 'open');
+}
+function toggleSidebar() {
+  const root = document.documentElement;
+  if (isDrawerLayout()) {
+    if (root.dataset.sidebar === 'open') delete root.dataset.sidebar;
+    else root.dataset.sidebar = 'open';
+  } else {
+    const collapse = root.dataset.sidebar !== 'collapsed';
+    if (collapse) root.dataset.sidebar = 'collapsed'; else delete root.dataset.sidebar;
+    try { localStorage.setItem('piscope_sidebar', collapse ? 'collapsed' : 'open'); } catch (e) { /* storage blocked */ }
+  }
+  syncSidebarToggle();
+}
+function closeSidebarDrawer() {
+  const root = document.documentElement;
+  if (root.dataset.sidebar !== 'open') return;
+  delete root.dataset.sidebar;
+  syncSidebarToggle();
+}
+// Re-derive the attribute when the layout crosses the drawer breakpoint (rotate, resize).
+function applySidebarLayout() {
+  const root = document.documentElement;
+  let pref = null;
+  try { pref = localStorage.getItem('piscope_sidebar'); } catch (e) { /* storage blocked */ }
+  if (!isDrawerLayout() && pref === 'collapsed') root.dataset.sidebar = 'collapsed';
+  else delete root.dataset.sidebar;
+  syncSidebarToggle();
+}
+
+function setFiltersOpen(open) {
+  const panel = document.getElementById('filter-panel');
+  const btn = document.getElementById('toggle-filters');
+  if (!panel || !btn) return;
+  panel.hidden = !open;
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  btn.classList.toggle('active', open);
+  try { localStorage.setItem('piscope_filters', open ? '1' : '0'); } catch (e) { /* storage blocked */ }
+}
+// Dot on the filter button while the tucked-away sliders are narrowing the list.
+function updateFiltersBadge() {
+  const f = state.filters;
+  const narrowed = f.altMin > 0 || f.altMax < 60000 || f.distMax < 500 || !f.showGround;
+  const badge = document.getElementById('filters-badge');
+  if (badge) badge.hidden = !narrowed;
+}
+function syncCategoryChips() {
+  for (const chip of document.querySelectorAll('#category-chips .chip-btn')) {
+    const on = chip.dataset.category === state.filters.category;
+    chip.classList.toggle('active', on);
+    chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+}
+function resetFilters() {
+  const set = (id, value, evt) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (el.type === 'checkbox') el.checked = value; else el.value = value;
+    el.dispatchEvent(new Event(evt, { bubbles: true }));
+  };
+  set('filter-search', '', 'input');
+  set('filter-category', 'all', 'change');
+  set('alt-min', '0', 'input');
+  set('alt-max', '60000', 'input');
+  set('dist-max', '500', 'input');
+  set('show-ground', true, 'change');
 }
 
 /* ---------- Context menu -------------------------------------------------- */
@@ -3843,6 +4465,8 @@ function handleKeyboard(e) {
   if (e.key === 'p' || e.key === 'P') { toggleReplay(); return; }
   if (e.key === 'w' || e.key === 'W') { toggleWeatherOverlay(); return; }
   if (e.key === 'n' || e.key === 'N') { toggleDayNight(); return; }
+  if (e.key === 'l' || e.key === 'L') { togglePopover('layers-popover', document.getElementById('open-layers'), 'right'); return; }
+  if (e.key === '[') { toggleSidebar(); return; }
   // Sidebar navigation: ↑/↓ cycle through visible aircraft rows; Enter pans to the
   // current selection. The arrow keys deliberately don't pan (selectAircraft({pan:false}))
   // so the user can scrub the list quickly without yanking the map around.
@@ -3851,13 +4475,16 @@ function handleKeyboard(e) {
   if (e.key === 'Enter') {
     if (state.selectedHex && map) {
       const ac = state.aircraft.get(state.selectedHex);
-      if (ac && ac.lat != null) map.panTo([ac.lat, ac.lon], { animate: true });
+      if (ac && ac.lat != null) panToVisible([ac.lat, ac.lon], { animate: true });
     }
     return;
   }
   if (e.key === 'Escape') {
-    // Escape dismisses the topmost layer. If a modal or the context menu is open it closes
-    // that and leaves the aircraft selection intact; otherwise it closes the detail panel.
+    // Escape dismisses the topmost layer: an open popover first, then the phone list
+    // drawer. Past those, if a modal or the context menu is open it closes that and
+    // leaves the aircraft selection intact; otherwise it closes the detail panel.
+    if (_popover) { closePopover(); return; }
+    if (isDrawerLayout() && document.documentElement.dataset.sidebar === 'open') { closeSidebarDrawer(); return; }
     const modalWasOpen = !!document.querySelector('.modal:not([hidden])');
     const menuWasOpen = !!contextMenuEl;
     hideContextMenu(); closeSettings(); closeEvents(); closeStats(); closeViews(); closeKeyboardHelp(); closeOperatorProfile();
@@ -3883,38 +4510,43 @@ function moveSidebarFocus(delta) {
   target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 function showKeyboardHelp() {
+  closePopover();
   let m = document.getElementById('kb-help-modal');
   if (m) { m.hidden = false; return; }
+  const rows = [
+    ['Focus search', ['/']],
+    ['Cycle aircraft list', ['↑', '↓']],
+    ['Pan map to selected aircraft', ['Enter']],
+    ['Toggle follow mode', ['F']],
+    ['Recenter on receiver', ['R']],
+    ['Zoom to fit data', ['Z']],
+    ['Show / hide aircraft list', ['[']],
+    ['Map layers', ['L']],
+    ['Weather overlay', ['W']],
+    ['Day/night terminator', ['N']],
+    ['Toggle audio alerts', ['A']],
+    ['Open event log', ['E']],
+    ['Open stats', ['S']],
+    ['Saved views', ['V']],
+    ['Replay (playback)', ['P']],
+    ['This help', ['?']],
+    ['Close panel / dialog', ['Esc']],
+  ];
   m = document.createElement('div');
   m.id = 'kb-help-modal'; m.className = 'modal';
   m.innerHTML = `
     <div class="modal-shade" data-close-help></div>
-    <div class="modal-panel" style="width:min(420px,96vw)">
-      <header class="modal-header"><h2>Keyboard shortcuts</h2><button class="icon-button" data-close-help>✕</button></header>
+    <div class="modal-panel modal-narrow" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+      <header class="modal-header"><h2>${icon('keyboard')}Keyboard shortcuts</h2><button class="icon-button" type="button" aria-label="Close" data-close-help>${icon('x')}</button></header>
       <div class="tab-body">
-        <table class="help-table">
-          <tr><td><kbd>/</kbd></td><td>Focus search</td></tr>
-          <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Cycle aircraft list</td></tr>
-          <tr><td><kbd>Enter</kbd></td><td>Pan map to selected aircraft</td></tr>
-          <tr><td><kbd>F</kbd></td><td>Toggle follow mode</td></tr>
-          <tr><td><kbd>R</kbd></td><td>Recenter on receiver</td></tr>
-          <tr><td><kbd>Z</kbd></td><td>Zoom to fit data</td></tr>
-          <tr><td><kbd>A</kbd></td><td>Toggle audio alerts</td></tr>
-          <tr><td><kbd>E</kbd></td><td>Open event log</td></tr>
-          <tr><td><kbd>S</kbd></td><td>Open stats</td></tr>
-          <tr><td><kbd>V</kbd></td><td>Saved views</td></tr>
-          <tr><td><kbd>P</kbd></td><td>Replay (playback)</td></tr>
-          <tr><td><kbd>W</kbd></td><td>Weather overlay</td></tr>
-          <tr><td><kbd>N</kbd></td><td>Day/night terminator</td></tr>
-          <tr><td><kbd>?</kbd></td><td>This help</td></tr>
-          <tr><td><kbd>Esc</kbd></td><td>Close any modal</td></tr>
-        </table>
+        <div class="help-grid">
+          ${rows.map(([label, keys]) => `<div><span>${label}</span><span>${keys.map((k) => `<kbd>${k}</kbd>`).join('')}</span></div>`).join('')}
+        </div>
       </div>
     </div>
   `;
   document.body.appendChild(m);
-  m.querySelector('[data-close-help]').onclick = closeKeyboardHelp;
-  m.querySelector('.modal-shade').onclick = closeKeyboardHelp;
+  for (const el of m.querySelectorAll('[data-close-help]')) el.onclick = closeKeyboardHelp;
 }
 function closeKeyboardHelp() { const m = document.getElementById('kb-help-modal'); if (m) m.hidden = true; }
 
@@ -3935,7 +4567,7 @@ async function toggleFollow() {
   // If turning on with a selection, immediately re-centre.
   if (state.follow && state.selectedHex) {
     const ac = state.aircraft.get(state.selectedHex);
-    if (ac && ac.lat != null) map.panTo([ac.lat, ac.lon], { animate: true });
+    if (ac && ac.lat != null) panToVisible([ac.lat, ac.lon], { animate: true });
   }
   fetch(API.settings, { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ follow_selected: state.follow }) }).catch(() => {});
@@ -3945,6 +4577,7 @@ async function toggleFollow() {
 let eventsCurrentTab = 'all';
 
 async function openEvents() {
+  closePopover();
   state.eventsUnread = 0; updateEventsBadge();
   document.getElementById('events-modal').hidden = false;
   await loadEvents(eventsCurrentTab);
@@ -3985,12 +4618,19 @@ async function loadEvents(tab) {
       </span>
       <span class="ev-distance">${ev.distance_nm != null ? ev.distance_nm.toFixed(0) + ' nm' : '—'}</span>
     `;
+    // An event whose aircraft is still in the feed is a shortcut to it.
+    if (ev.hex && state.aircraft.has(ev.hex)) {
+      li.classList.add('live');
+      li.title = 'Show on map';
+      li.addEventListener('click', () => { closeEvents(); selectAircraft(ev.hex, { pan: true }); });
+    }
     list.appendChild(li);
   }
 }
 
 // ---------- Stats / health -------------------------------------------------
 async function openStats() {
+  closePopover();
   document.getElementById('stats-modal').hidden = false;
   await refreshStatsPanel();
 }
@@ -4009,27 +4649,35 @@ async function refreshStatsPanel() {
       const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
       return `${h}h ${m}m ${sec}s`;
     };
-    const feedRows = Object.entries(healthRes.feeds || {})
-      .map(([n, f]) => `${escapeHtml(n)}: ${f.ok ? 'OK' : 'FAIL'} (${f.rows ?? '—'} rows, ${f.duration_ms ?? '—'} ms)`)
-      .join('<br>') || '—';
-    const rows = [
-      ['Uptime', fmtSec(healthRes.uptime_seconds)],
-      ['Polls', healthRes.polls?.toLocaleString() ?? '—'],
-      ['Errors', healthRes.errors ?? '—'],
-      ['Last poll duration', `${healthRes.last_poll_duration_ms ?? '—'} ms`],
-      ['Polls / minute', healthRes.polls_per_min ?? '—'],
-      ['Connection state', escapeHtml(healthRes.connection_state || '—')],
+    const num = (v) => (v == null ? '—' : escapeHtml(typeof v === 'number' ? v.toLocaleString() : v));
+    const tiles = [
+      ['Uptime', escapeHtml(fmtSec(healthRes.uptime_seconds))],
+      ['Connection state', escapeHtml(CONNECTION_LABELS[healthRes.connection_state] || healthRes.connection_state || '—')],
+      ['Aircraft tracked', num(healthRes.aircraft_count)],
+      ['Polls', num(healthRes.polls)],
+      ['Polls / minute', num(healthRes.polls_per_min)],
+      ['Last poll duration', `${num(healthRes.last_poll_duration_ms)}<small>ms</small>`],
+      ['Errors', num(healthRes.errors)],
+      ['WS subscribers', num(healthRes.subscriber_count)],
+      ['Trails kept', num(healthRes.trails_count)],
+      ['Today — unique', num(healthRes.daily?.unique_aircraft)],
+      ['Today — max range', `${num(healthRes.daily?.max_range_nm)}<small>nm</small>`],
+      ['Today — emergencies', num(healthRes.daily?.emergencies)],
+      ['Today — military', num(healthRes.daily?.military_seen)],
       ['Receiver', healthRes.receiver ? `${healthRes.receiver.lat.toFixed(3)}, ${healthRes.receiver.lon.toFixed(3)}` : '—'],
-      ['WS subscribers', healthRes.subscriber_count ?? '—'],
-      ['Aircraft tracked', healthRes.aircraft_count ?? '—'],
-      ['Trails kept', healthRes.trails_count ?? '—'],
-      ['Today — unique', healthRes.daily?.unique_aircraft ?? '—'],
-      ['Today — max range', `${healthRes.daily?.max_range_nm ?? '—'} nm`],
-      ['Today — emergencies', healthRes.daily?.emergencies ?? '—'],
-      ['Today — military', healthRes.daily?.military_seen ?? '—'],
-      ['Feeds', feedRows],
     ];
-    hg.innerHTML = rows.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${v}</dd>`).join('');
+    hg.innerHTML = tiles.map(([k, v]) => `<div class="tile"><span class="tile-label">${escapeHtml(k)}</span><span class="tile-value">${v}</span></div>`).join('');
+    const feedsEl = document.getElementById('health-feeds');
+    if (feedsEl) {
+      const feedRows = Object.entries(healthRes.feeds || {}).map(([n, f]) => `
+        <div class="feed-row">
+          <span class="status-dot${f.ok ? '' : ' fail'}"></span>
+          <span class="feed-name">${escapeHtml(n)}</span>
+          <span class="hint">${f.ok ? 'OK' : 'FAIL'}</span>
+          <span class="feed-meta">${num(f.rows)} rows · ${num(f.duration_ms)} ms</span>
+        </div>`).join('');
+      feedsEl.innerHTML = feedRows ? `<h4>Feeds</h4>${feedRows}` : '';
+    }
   }
   // Daily history
   const tbody = document.getElementById('stats-rows');
@@ -4059,7 +4707,7 @@ async function toggleReplay() {
     state.replayTimestamps = data.timestamps || [];
   } catch (e) { state.replayTimestamps = []; }
   if (!state.replayTimestamps.length) {
-    alert('Replay buffer is empty. Wait a minute or two for snapshots to accumulate, then try again.');
+    toast('Replay buffer is empty — give it a minute or two to collect snapshots.');
     return;
   }
   state.replayActive = true;
@@ -4105,11 +4753,49 @@ function exitReplay() {
   state.replayActive = false;
   document.getElementById('replay-bar').hidden = true;
   syncToggleButtons();
+  updateConnectionPill();
   if (state.replayLiveSnapshot) applyAircraftUpdate(state.replayLiveSnapshot);
 }
 
 function bindUI() {
+  buildThemeGalleries();
   document.getElementById('open-settings').addEventListener('click', openSettings);
+  // --- shell: list toggle, map rail, popovers, detail close ---
+  document.getElementById('toggle-sidebar').addEventListener('click', toggleSidebar);
+  document.getElementById('scrim').addEventListener('click', closeSidebarDrawer);
+  document.getElementById('zoom-in').addEventListener('click', () => map && map.zoomIn());
+  document.getElementById('zoom-out').addEventListener('click', () => map && map.zoomOut());
+  document.getElementById('detail-close').addEventListener('click', deselectAircraft);
+  document.getElementById('open-help').addEventListener('click', showKeyboardHelp);
+  document.getElementById('open-layers').addEventListener('click', (e) => togglePopover('layers-popover', e.currentTarget, 'right'));
+  document.getElementById('open-themes').addEventListener('click', () => togglePopover('themes-popover', popoverAnchor('open-themes')));
+  document.getElementById('open-more').addEventListener('click', (e) => togglePopover('more-menu', e.currentTarget));
+  for (const item of document.querySelectorAll('#more-menu [data-proxy]')) {
+    item.addEventListener('click', () => {
+      closePopover();
+      document.getElementById(item.dataset.proxy)?.click();
+    });
+  }
+  document.getElementById('toggle-rings').addEventListener('click', toggleRangeRings);
+  for (const b of document.querySelectorAll('#label-mode [data-label-mode]')) {
+    b.addEventListener('click', () => setLabelMode(b.dataset.labelMode));
+  }
+  document.getElementById('pref-glass')?.addEventListener('change', (e) => setGlassPreference(e.target.checked));
+  window.addEventListener('resize', closePopover);
+  window.matchMedia('(max-width: 860px)').addEventListener('change', applySidebarLayout);
+  applySidebarLayout();
+  // --- list filters ---
+  document.getElementById('toggle-filters').addEventListener('click', () => setFiltersOpen(document.getElementById('filter-panel').hidden));
+  document.getElementById('reset-filters').addEventListener('click', resetFilters);
+  document.getElementById('list-empty-reset').addEventListener('click', resetFilters);
+  for (const chip of document.querySelectorAll('#category-chips .chip-btn')) {
+    chip.addEventListener('click', () => {
+      const sel = document.getElementById('filter-category');
+      sel.value = chip.dataset.category;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+  try { if (localStorage.getItem('piscope_filters') === '1') setFiltersOpen(true); } catch (e) { /* storage blocked */ }
   document.getElementById('fit-data').addEventListener('click', fitToData);
   document.getElementById('recenter').addEventListener('click', recenterOnReceiver);
   document.getElementById('toggle-aero').addEventListener('click', toggleAeroOverlay);
@@ -4187,9 +4873,10 @@ function bindUI() {
   // Filters
   const search = document.getElementById('filter-search');
   search.addEventListener('input', () => { state.filters.text = search.value; renderSidebar(); });
-  document.getElementById('filter-category').addEventListener('change', (e) => { state.filters.category = e.target.value; renderSidebar(); });
+  // The category chips write through this (hidden) select, so one handler covers both.
+  document.getElementById('filter-category').addEventListener('change', (e) => { state.filters.category = e.target.value; syncCategoryChips(); renderSidebar(); });
   document.getElementById('filter-sort').addEventListener('change', (e) => { state.filters.sort = e.target.value; renderSidebar(); });
-  document.getElementById('show-ground').addEventListener('change', (e) => { state.filters.showGround = e.target.checked; renderSidebar(); });
+  document.getElementById('show-ground').addEventListener('change', (e) => { state.filters.showGround = e.target.checked; updateFiltersBadge(); renderSidebar(); });
   const altMin = document.getElementById('alt-min');
   const altMax = document.getElementById('alt-max');
   const distMax = document.getElementById('dist-max');
@@ -4214,6 +4901,7 @@ function bindUI() {
       altFill.style.left = `${((lo - min) / span) * 100}%`;
       altFill.style.right = `${100 - ((hi - min) / span) * 100}%`;
     }
+    updateFiltersBadge();
     renderSidebar();
   }
   [altMin, altMax, distMax].forEach((el) => el.addEventListener('input', syncSliders));
@@ -4227,11 +4915,12 @@ function bindUI() {
 async function checkVersionBump() {
   try {
     const data = await fetch('/piscope/api/version').then((r) => r.json());
+    if (data.version) setText('app-version', `PiScope Radar v${data.version}`);
     const seen = localStorage.getItem('piscope_seen_version') || '';
     if (data.version && data.version !== seen) {
       // Skip the toast on the very first install (no previous version stored).
       if (seen) {
-        toast(`✨ PiScope Radar updated to v${data.version}`);
+        toast(`PiScope Radar updated to v${data.version}`);
       }
       localStorage.setItem('piscope_seen_version', data.version);
     }
@@ -4280,8 +4969,9 @@ function installDropHandler() {
       const res = await fetch(API.importDb, { method: 'POST', headers: { 'X-PiScope-Import': '1' }, body: fd });
       const data = await res.json();
       if (!res.ok) { toast(`Restore failed: ${data.detail || res.statusText}`); return; }
-      toast('Restored! Reloading…');
-      setTimeout(() => location.reload(), 800);
+      const reset = Array.isArray(data.settings_reset) ? data.settings_reset : [];
+      toast(reset.length ? `Restored; reset invalid settings: ${reset.join(', ')}` : 'Restored! Reloading…');
+      setTimeout(() => location.reload(), reset.length ? 4000 : 800);
     } catch (err) { toast(`Restore failed: ${err.message}`); }
   });
 }
@@ -4544,25 +5234,57 @@ async function init() {
     map.on('moveend', updateEmbedExpandLink);
     map.on('zoomend', updateEmbedExpandLink);
   }
+  const firstFrame = new Promise((resolve) => { _onFirstAircraftFrame = resolve; });
   const client = new PiScopeClient();
   client.connect();
-  // Best-effort initial REST fetch in case WS hasn't connected yet
-  try {
-    const res = await fetch('/piscope/api/aircraft');
-    if (res.ok) applyAircraftUpdate(await res.json());
-  } catch (e) {}
+  // The WS sends a full snapshot as soon as it connects, so only fall back to the
+  // REST snapshot if no frame has arrived shortly (e.g. a proxy that doesn't pass the
+  // WS upgrade). Fetching both unconditionally downloaded the same ~200 KB twice on
+  // every load — a real cost on mobile (2026-11-08 Lighthouse review).
+  const restFallback = setTimeout(async () => {
+    if (!_onFirstAircraftFrame) return;   // WS already delivered
+    try {
+      const res = await fetch('/piscope/api/aircraft');
+      if (res.ok) applyAircraftUpdate(await res.json());
+    } catch (e) {}
+  }, 1500);
+  await Promise.race([firstFrame, new Promise((r) => setTimeout(r, 6000))]);
+  clearTimeout(restFallback);
   // PWA — register the service worker. We use the `/piscope/sw.js` route (not the static
   // file) because that response sets `Service-Worker-Allowed: /piscope`, which is required
   // for the SW to control the whole /piscope tree from a file that lives inside /piscope/static.
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/piscope/sw.js', { scope: '/piscope' }).catch(() => {});
   }
+  renderPwaStatus();
   // Polish add-ons
   installDropHandler();
   checkVersionBump();
   bindWizard();
   // Wait a beat so the toast doesn't collide with a fresh-load version-bump toast.
   setTimeout(maybeShowOnboarding, 400);
+  // Stable automation hook: init() has finished wiring everything (E2E boot gate).
+  window.__piscopeReady = true;
+}
+
+// Service workers only exist in a secure context (HTTPS, or http://localhost). On the
+// usual http://<pi-ip>/piscope the browser hides navigator.serviceWorker entirely, so
+// registration above is skipped and there is no offline shell — say so in Settings
+// rather than letting the README's PWA promise fail silently.
+function renderPwaStatus() {
+  const el = document.getElementById('pwa-status');
+  if (!el) return;
+  if ('serviceWorker' in navigator) {
+    el.textContent = 'Offline app shell is active in this browser. Use your browser\'s ' +
+      '"Install" or "Add to Home Screen" to install PiScope as an app.';
+    el.className = 'hint ok';
+  } else {
+    el.textContent = 'This page is served over plain HTTP, so the browser disables service ' +
+      'workers: "Add to Home Screen" still makes a shortcut, but there is no offline app shell. ' +
+      'For the full PWA, serve PiScope over HTTPS (with authentication in front of it) or open ' +
+      'it as http://localhost on the Pi itself.';
+    el.className = 'hint';
+  }
 }
 
 document.addEventListener('DOMContentLoaded', init);

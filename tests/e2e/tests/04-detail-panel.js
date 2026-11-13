@@ -1,6 +1,6 @@
 'use strict';
 // The detail-panel close control (the bug this suite was born from): select an aircraft,
-// dismiss it via ✕ and Esc, verify modal-layering, and confirm the mobile slide-in/out.
+// dismiss it via ✕ and Esc, verify modal-layering, and confirm the phone bottom sheet.
 module.exports = {
   name: '04 · Detail panel open/close',
   viewport: 'desktop',
@@ -35,23 +35,28 @@ module.exports = {
     })()`);
     for (const [n, c] of desktop) t.ok('desktop · ' + n, c);
 
-    // Mobile: the panel is a full-screen overlay that slides via translateX on .detail.open.
-    // Assert on the element's OWN transform (deterministic, viewport-independent) and wait for
-    // the 0.25s slide to actually settle — rect-vs-innerWidth + fixed sleeps flaked under load
-    // (innerWidth read mid-viewport-change, and the panel was measured mid-transition).
-    const TX = `(()=>{const t=getComputedStyle(document.getElementById('detail')).transform;if(!t||t==='none')return 0;const m=t.match(/matrix\\(([^)]+)\\)/);return m?Math.round(parseFloat(m[1].split(',')[4])):0;})()`;
+    // Phone: the panel is a bottom sheet that slides up via translateY on .detail.open
+    // (1.8.0 — it used to be a side overlay sliding on translateX). Assert on the element's
+    // OWN transform (deterministic, viewport-independent) and wait for the slide to
+    // actually settle — rect-vs-innerHeight + fixed sleeps flake under load (innerHeight
+    // read mid-viewport-change, and the panel measured mid-transition).
+    const TY = `(()=>{const t=getComputedStyle(document.getElementById('detail')).transform;if(!t||t==='none')return 0;const m=t.match(/matrix\\(([^)]+)\\)/);return m?Math.round(parseFloat(m[1].split(',')[5])):0;})()`;
     const hasOpen = `document.getElementById('detail').classList.contains('open')`;
     await page.setViewport(VIEWPORTS.mobile); await sleep(300);
+    await page.waitFor(`(${TY})>50`, { timeout: 4000 }).catch(() => {});
+    t.ok('mobile · closed sheet rests below the viewport', (await page.evaluate(TY)) > 50, 'translateY=' + (await page.evaluate(TY)));
 
     await page.click('#aircraft-list .aircraft-row');
-    await page.waitFor(`Math.abs(${TX})<2`, { timeout: 4000 }).catch(() => {});
+    await page.waitFor(`Math.abs(${TY})<2`, { timeout: 4000 }).catch(() => {});
     t.ok('mobile · select adds .detail.open', await page.evaluate(hasOpen));
-    t.ok('mobile · select slides panel ON-screen (translateX≈0)', Math.abs(await page.evaluate(TX)) < 5, 'translateX=' + (await page.evaluate(TX)));
+    t.ok('mobile · select slides the sheet ON-screen (translateY≈0)', Math.abs(await page.evaluate(TY)) < 5, 'translateY=' + (await page.evaluate(TY)));
+    const sheet = await page.rect('#detail');
+    t.ok('mobile · sheet is docked to the bottom edge, full width', sheet && sheet.w === sheet.vw && Math.abs(sheet.y + sheet.h - sheet.vh) <= 1, JSON.stringify(sheet));
 
     await page.click('#detail-close');
-    await page.waitFor(`(${TX})>50`, { timeout: 4000 }).catch(() => {});
+    await page.waitFor(`(${TY})>50`, { timeout: 4000 }).catch(() => {});
     t.ok('mobile · ✕ removes .detail.open', !(await page.evaluate(hasOpen)));
-    t.ok('mobile · ✕ slides panel OFF-screen (translateX≈panel width)', (await page.evaluate(TX)) > 50, 'translateX=' + (await page.evaluate(TX)));
+    t.ok('mobile · ✕ slides the sheet OFF-screen (translateY≈sheet height)', (await page.evaluate(TY)) > 50, 'translateY=' + (await page.evaluate(TY)));
     await page.setViewport(VIEWPORTS.desktop);
 
     t.eq('no exceptions during detail-panel flow', page.exceptions.length, 0);

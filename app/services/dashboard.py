@@ -99,7 +99,9 @@ def _contact_compact(ac: dict[str, Any], distance_km: float, category: str,
         tags.append("emergency")
     if ac.get("watchlist_match"):
         tags.append("watchlist")
-    if ac.get("military"):
+    # category is often "military" already (categorize derives it from the same flag),
+    # which used to yield tags ["military", "military"].
+    if ac.get("military") and "military" not in tags:
         tags.append("military")
     out = {
         "icao": ac.get("hex"),

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Optional
 
 from . import _common
@@ -73,6 +74,47 @@ async def ping() -> dict[str, Any]:
     if mod is None:
         return {"ok": False, "error": "No AI provider selected"}
     return await mod.ping()
+
+
+# --- Cached reachability (2026-11-08 P2-1) --------------------------------------
+# is_configured() only checks settings, so with the claude-shim gone the UI still
+# offered "Explain" and every click came back "unavailable". reachability() reports
+# the last background ping of the active provider. It never blocks the caller (a
+# dead host would otherwise stall /api/explain/status for the connect timeout); a
+# stale or missing result schedules at most one probe per TTL, and any settings
+# write (cache_version bump) invalidates it.
+_REACH_TTL_S = 60.0
+_reach: dict[str, Any] = {"key": None, "checked_at": None, "ok": None, "error": None}
+_reach_task: Optional[asyncio.Task] = None
+
+
+def _reach_key() -> tuple[str, int]:
+    return active_provider_name(), settings_store.cache_version()
+
+
+async def _probe(key: tuple[str, int]) -> None:
+    try:
+        res = await ping()
+        ok, err = bool(res.get("ok")), (None if res.get("ok") else str(res.get("error") or "unreachable"))
+    except Exception as exc:   # ping() envelopes its own errors; belt and braces
+        ok, err = False, f"{type(exc).__name__}: {exc}"
+    _reach.update(key=key, checked_at=time.time(), ok=ok, error=(err or "")[:200] or None)
+
+
+def reachability() -> dict[str, Any]:
+    """{"reachable": True/False/None (unknown yet), "checked_at", "error"}."""
+    global _reach_task
+    key = _reach_key()
+    fresh = (_reach["key"] == key and _reach["checked_at"] is not None
+             and time.time() - _reach["checked_at"] < _REACH_TTL_S)
+    if not fresh and is_configured() and (_reach_task is None or _reach_task.done()):
+        try:
+            _reach_task = asyncio.get_running_loop().create_task(_probe(key))
+        except RuntimeError:   # no running loop (sync caller): just report what we have
+            pass
+    if _reach["key"] != key:
+        return {"reachable": None, "checked_at": None, "error": None}
+    return {"reachable": _reach["ok"], "checked_at": _reach["checked_at"], "error": _reach["error"]}
 
 
 async def generate(prompt: str, **kwargs: Any) -> Optional[str]:
